@@ -7,8 +7,8 @@ const BASE_URL = "https://player.pelisserieshoy.com";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "User-Agent": USER_AGENT,
+    "Accept": "*/*",
     "Accept-Language": "es-MX,es;q=0.9",
     "Referer": "https://sololatino.net/"
 };
@@ -27,7 +27,6 @@ async function getImdbId(tmdbId, mediaType) {
 }
 
 // 2. EXTRACTORES DE VIDEO
-// Extractor Vimeos
 async function resolveVimeos(url) {
     try {
         const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://vimeos.net/" } });
@@ -57,7 +56,6 @@ async function resolveVimeos(url) {
     }
 }
 
-// Extractor VOE
 async function resolveVOE(url) {
     try {
         const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: url } });
@@ -76,7 +74,6 @@ async function resolveVOE(url) {
     }
 }
 
-// Extractor StreamWish
 async function resolveStreamWish(url) {
     try {
         const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://hlswish.com/" } });
@@ -91,7 +88,7 @@ async function resolveStreamWish(url) {
     }
 }
 
-// 3. CONSULTAR EL SERVIDOR DE PELISERIESHOY
+// 3. CONSULTAR STREAM DIRECTO
 async function getDirectStream(serverId, token, cookie, playerUrl) {
     try {
         const postHeaders = {
@@ -132,7 +129,6 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     const streams = [];
 
     try {
-        // A. Obtener IMDb ID
         const imdbId = await getImdbId(tmdbId, mediaType);
         if (!imdbId) {
             console.log("[SoloLatino] No se encontró IMDb ID");
@@ -141,7 +137,6 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         console.log(`[SoloLatino] IMDb ID: ${imdbId}`);
 
-        // B. Armar slug (Película o Serie)
         const isMovie = mediaType === "movie";
         const s = parseInt(seasonNum || 1);
         const e = parseInt(episodeNum || 1);
@@ -151,14 +146,13 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         console.log(`[SoloLatino] Cargando reproductor: ${playerUrl}`);
 
-        // C. Obtener token de sesión
         const pageRes = await fetch(playerUrl, { headers: HEADERS });
         const html = await pageRes.text();
         const cookie = pageRes.headers.get("set-cookie") || "";
 
         const tokenMatch = html.match(/(?:let\s+token|const\s+_t|tok|_t|token)\s*.*['"]([a-f0-9]{32})['"]/);
         if (!tokenMatch) {
-            console.log("[SoloLatino] No se encontró token en la página del reproductor");
+            console.log("[SoloLatino] No se encontró token en el reproductor");
             return [];
         }
 
@@ -172,14 +166,17 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         };
         if (cookie) postHeaders["cookie"] = cookie;
 
-        // D. Handshake de activación
+        // Clic de activación
         await fetch(`${BASE_URL}/s.php`, {
             method: "POST",
             headers: postHeaders,
             body: `a=click&tok=${token}`
         }).catch(() => {});
 
-        // E. Obtener lista de servidores disponibles
+        // Pausa de 1 segundo obligatoria para validación de sesión
+        await new Promise((r) => setTimeout(r, 1000));
+
+        // Obtener lista de servidores
         const scanRes = await fetch(`${BASE_URL}/s.php`, {
             method: "POST",
             headers: postHeaders,
@@ -189,16 +186,18 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         const serverList = [];
         if (scanData?.langs_s?.LAT) {
-            serverList.push(...scanData.langs_s.LAT.map(s => ({ name: s[0], id: s[1], lang: "Latino" })));
+            serverList.push(...scanData.langs_s.LAT.map((srv) => ({ name: srv[0], id: srv[1], lang: "Latino" })));
         }
         if (scanData?.s) {
-            serverList.push(...scanData.s.map(s => ({ name: s[0], id: s[1], lang: "Latino" })));
+            serverList.push(...scanData.s.map((srv) => ({ name: srv[0], id: srv[1], lang: "Latino" })));
         }
 
-        console.log(`[SoloLatino] Servidores encontrados: ${serverList.length}`);
+        // Eliminar duplicados por ID de servidor
+        const uniqueServers = Array.from(new Map(serverList.map((s) => [s.id, s])).values());
+        console.log(`[SoloLatino] Servidores encontrados: ${uniqueServers.length}`);
 
-        // F. Resolver servidores en paralelo
-        const resolvePromises = serverList.slice(0, 5).map(async (srv) => {
+        // Resolver servidores en paralelo
+        const resolvePromises = uniqueServers.slice(0, 5).map(async (srv) => {
             const rawUrl = await getDirectStream(srv.id, token, cookie, playerUrl);
             if (!rawUrl) return null;
 
