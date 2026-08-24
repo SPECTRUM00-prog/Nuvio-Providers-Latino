@@ -87,7 +87,7 @@
       "author": "KennethJYS",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/detodopeliculas.js",
-      "enabled": false,
+      "enabled": true,
       "contentLanguage": ["es"]
     },
     {
@@ -98,7 +98,7 @@
       "author": "KennethJYS",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/hackstore.js",
-      "enabled": false,
+      "enabled": true,
       "contentLanguage": ["es"]
     },
     {
