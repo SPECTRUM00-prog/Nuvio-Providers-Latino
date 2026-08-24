@@ -3,12 +3,12 @@
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const BASE_URL = "https://player.peliserieshoy.com";
+const BASE_URL = "https://player.pelisserieshoy.com";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "*/*",
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "es-MX,es;q=0.9",
     "Referer": "https://sololatino.net/"
 };
