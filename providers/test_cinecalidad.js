@@ -1,8 +1,8 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-async function dumpVideoAppScript() {
+async function extractInnerFrame() {
     const url = "https://videoapp.zip/e/movie/1084244";
-    console.log(`=== EXRAYENDO SCRIPT COMPLETO DE: ${url} ===`);
+    console.log(`=== EXTRAYENDO IFRAME REAL DE VIDEOAPP: ${url} ===`);
 
     try {
         const res = await fetch(url, {
@@ -11,17 +11,19 @@ async function dumpVideoAppScript() {
                 "Referer": "https://www.cinecalidad.am/"
             }
         });
-
         const html = await res.text();
 
-        // Extraer todo el contenido del bloque <script>
-        const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/i);
-        if (scriptMatch) {
-            console.log("\n--- CÓDIGO JS DE VIDEOAPP ---");
-            console.log(scriptMatch[1]);
-            console.log("-----------------------------\n");
+        // 1. Buscar cualquier etiqueta <iframe>
+        const iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i) ||
+                            html.match(/src=["'](https?:\/\/[^"']+)["']/i);
+
+        if (iframeMatch) {
+            console.log("\n🎉 ¡REPRODUCTOR REAL ENCONTRADO DENTRO DEL IFRAME!");
+            console.log("URL interna:", iframeMatch[1]);
         } else {
-            console.log("❌ No se encontró el script.");
+            console.log("\nBuscando todas las etiquetas iframe en el HTML:");
+            const allIframes = html.match(/<iframe[\s\S]*?>/gi) || [];
+            allIframes.forEach(f => console.log(f));
         }
 
     } catch (e) {
@@ -29,4 +31,4 @@ async function dumpVideoAppScript() {
     }
 }
 
-dumpVideoAppScript();
+extractInnerFrame();
