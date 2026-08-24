@@ -33,23 +33,6 @@ function pureBtoa(str) {
     return output;
 }
 
-function pureAtob(input) {
-    if (typeof atob === "function") {
-        try { return atob(input); } catch (e) {}
-    }
-    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    var str = String(input).replace(/=+$/, "");
-    var output = "";
-    if (str.length % 4 === 1) return "";
-    for (var bc = 0, bs, buffer, idx = 0;
-         (buffer = str.charAt(idx++));
-         ~buffer && ((bs = bc % 4 ? bs * 64 + buffer : buffer),
-         bc++ % 4) ? (output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)))) : 0) {
-        buffer = chars.indexOf(buffer);
-    }
-    return output;
-}
-
 function normalizeText(text) {
     if (!text) return "";
     return text
@@ -138,14 +121,13 @@ function getServerLabel(url) {
 
 function resolveVidHide(url) {
     var targetUrl = url;
-    // Asegurar ruta de embed (/v/) en VidHide / Callistanise
-    if (targetUrl.includes("callistanise.com/") && !targetUrl.includes("/v/")) {
+    if (targetUrl.includes("callistanise.com/") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/")) {
         targetUrl = targetUrl.replace("callistanise.com/", "callistanise.com/v/");
-    } else if (targetUrl.includes("vidhideplus.com/") && !targetUrl.includes("/v/")) {
+    } else if (targetUrl.includes("vidhideplus.com/") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/")) {
         targetUrl = targetUrl.replace("vidhideplus.com/", "vidhideplus.com/v/");
     }
 
-    console.log(`[PelisPlus] Resolviendo VidHide: ${targetUrl}`);
+    console.log(`[PelisPlus] Fetching VidHide: ${targetUrl}`);
 
     return fetch(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
@@ -159,7 +141,7 @@ function resolveVidHide(url) {
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8Match) {
                 var streamUrl = m3u8Match[1];
-                console.log(`[PelisPlus] ✓ VidHide M3U8 encontrado`);
+                console.log(`[PelisPlus] ✓ VidHide M3U8 encontrado: ${streamUrl.substring(0, 60)}...`);
                 return {
                     url: streamUrl,
                     quality: detectQualityFromUrl(streamUrl),
@@ -169,23 +151,25 @@ function resolveVidHide(url) {
         }
         var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
         if (directMatch) {
+            console.log(`[PelisPlus] ✓ VidHide M3U8 directo encontrado`);
             return {
                 url: directMatch[0],
                 quality: detectQualityFromUrl(directMatch[0]),
                 headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
             };
         }
+        console.log("[PelisPlus] VidHide no contenía stream M3U8");
         return null;
     })
     .catch(function(err) {
-        console.log(`[PelisPlus] Error en VidHide: ${err.message}`);
+        console.log(`[PelisPlus] Error VidHide: ${err.message}`);
         return null;
     });
 }
 
 function resolveTurbovid(url) {
     var targetUrl = url;
-    console.log(`[PelisPlus] Resolviendo Turbovid: ${targetUrl}`);
+    console.log(`[PelisPlus] Fetching Turbovid: ${targetUrl}`);
 
     return fetch(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
@@ -199,7 +183,7 @@ function resolveTurbovid(url) {
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8Match) {
                 var streamUrl = m3u8Match[1];
-                console.log(`[PelisPlus] ✓ Turbovid M3U8 encontrado`);
+                console.log(`[PelisPlus] ✓ Turbovid M3U8 encontrado: ${streamUrl.substring(0, 60)}...`);
                 return {
                     url: streamUrl,
                     quality: detectQualityFromUrl(streamUrl),
@@ -209,15 +193,20 @@ function resolveTurbovid(url) {
         }
         var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
         if (directMatch) {
+            console.log(`[PelisPlus] ✓ Turbovid M3U8 directo encontrado`);
             return {
                 url: directMatch[0],
                 quality: detectQualityFromUrl(directMatch[0]),
                 headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
             };
         }
+        console.log("[PelisPlus] Turbovid no contenía stream M3U8");
         return null;
     })
-    .catch(function() { return null; });
+    .catch(function(err) {
+        console.log(`[PelisPlus] Error Turbovid: ${err.message}`);
+        return null;
+    });
 }
 
 function dispatchResolver(url) {
@@ -235,20 +224,33 @@ function dispatchResolver(url) {
 }
 
 function resolvePlayerEndpoint(playerUrl) {
-    console.log(`[PelisPlus] Consultando player endpoint: ${playerUrl}`);
     return fetch(playerUrl, { headers: DEFAULT_HEADERS, redirect: "follow" })
         .then(function(res) {
             var targetUrl = res.url || "";
+            console.log(`[PelisPlus] Endpoint status ${res.status} -> Redirigido a: ${targetUrl}`);
+
             if (targetUrl && !targetUrl.includes("tioplus.app/player/")) {
                 return dispatchResolver(targetUrl);
             }
+
             return res.text().then(function(html) {
+                console.log(`[PelisPlus] HTML recibido en endpoint (${html.length} chars): ${html.substring(0, 150)}...`);
+
                 var ifrMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
                 if (ifrMatch) {
                     var innerUrl = ifrMatch[1];
                     if (innerUrl.startsWith("/")) innerUrl = BASE_URL + innerUrl;
+                    console.log(`[PelisPlus] Iframe interno encontrado: ${innerUrl}`);
                     return dispatchResolver(innerUrl);
                 }
+
+                var locMatch = html.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
+                               html.match(/location\.replace\(["']([^"']+)["']\)/i);
+                if (locMatch) {
+                    console.log(`[PelisPlus] JS Redirect encontrado: ${locMatch[1]}`);
+                    return dispatchResolver(locMatch[1]);
+                }
+
                 var directM3u8 = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
                 if (directM3u8) {
                     return {
@@ -257,11 +259,12 @@ function resolvePlayerEndpoint(playerUrl) {
                         headers: { "User-Agent": USER_AGENT, "Referer": playerUrl }
                     };
                 }
+
                 return null;
             });
         })
         .catch(function(err) {
-            console.log(`[PelisPlus] Error resolviendo endpoint: ${err.message}`);
+            console.log(`[PelisPlus] Error en player endpoint: ${err.message}`);
             return null;
         });
 }
@@ -304,7 +307,6 @@ function searchPelisplus(query, isMovie) {
             return matches;
         }
 
-        // Fallback: búsqueda HTML tradicional
         return fetch(`${BASE_URL}/search/${encodeURIComponent(query)}`, { headers: DEFAULT_HEADERS })
             .then(function(r) { return r.text(); })
             .then(function(altHtml) {
