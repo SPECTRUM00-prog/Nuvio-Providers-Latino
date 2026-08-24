@@ -1,9 +1,48 @@
-// Inspección profunda de Embed69
+// Descifrador Universal de Embed69 para Nuvio
 const BASE_URL = "https://embed69.org";
 
-async function dumpEmbed69Script(imdbId) {
+// 1. Decodificador Base64 puro compatible con Hermes / FireTV
+function decodeB64ToBytes(b64) {
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    let str = String(b64).replace(/[=]+$/, "");
+    let output = [];
+    for (let bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output.push(255 & bs >> (-2 * bc & 6)) : 0) {
+        buffer = chars.indexOf(buffer);
+    }
+    return new Uint8Array(output);
+}
+
+// 2. SHA-256 en Web Crypto API
+async function sha256Hex(str) {
+    const buf = new TextEncoder().encode(str);
+    const hash = await crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function sha256Bytes(str) {
+    const buf = new TextEncoder().encode(str);
+    const hash = await crypto.subtle.digest("SHA-256", buf);
+    return new Uint8Array(hash);
+}
+
+// 3. Descifrado AES-CBC
+async function decryptAES(encryptedBase64, aesKeyBytes) {
+    try {
+        const raw = decodeB64ToBytes(encryptedBase64);
+        const iv = raw.slice(0, 16);
+        const ciphertext = raw.slice(16);
+        const key = await crypto.subtle.importKey("raw", aesKeyBytes.slice(0, 32), { name: "AES-CBC" }, false, ["decrypt"]);
+        const decrypted = await crypto.subtle.decrypt({ name: "AES-CBC", iv: iv }, key, ciphertext);
+        return new TextDecoder().decode(decrypted);
+    } catch (e) {
+        return null;
+    }
+}
+
+// 4. Resolvedor de PoW y Extractor
+async function getDecryptedEmbeds(imdbId) {
     const targetUrl = `${BASE_URL}/f/${imdbId}`;
-    console.log(`Analizando: ${targetUrl}`);
+    console.log(`[1] Obteniendo página: ${targetUrl}`);
 
     try {
         const res = await fetch(targetUrl, {
@@ -15,26 +54,51 @@ async function dumpEmbed69Script(imdbId) {
 
         const html = await res.text();
 
-        // 1. Buscar botones o pestañas de servidores en el HTML
-        console.log("\n[1] Buscando botones de servidores / data-url / data-src:");
-        const buttons = html.match(/<(?:button|li|div|a)[^>]+(?:data-src|data-url|data-server|data-id|server)[^>]*>/gi) || [];
-        if (buttons.length > 0) {
-            buttons.slice(0, 10).forEach(b => console.log(b));
-        } else {
-            console.log("No se encontraron botones con data-src directo.");
+        // Extraer parámetros PoW
+        const challengeMatch = html.match(/const\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/);
+        const difficultyMatch = html.match(/const\s+POW_DIFFICULTY\s*=\s*(\d+)/);
+        const saltMatch = html.match(/const\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/);
+        const dataLinkMatch = html.match(/let\s+dataLink\s*=\s*(\[[\s\S]*?\]);/);
+
+        if (!challengeMatch || !dataLinkMatch) {
+            console.log("❌ No se encontraron los datos de PoW en el HTML.");
+            return;
         }
 
-        // 2. Extraer completo el Script con el POW_CHALLENGE
-        console.log("\n[2] Contenido completo del Script de Embed69:");
-        const scripts = html.match(/<script[\s\S]*?<\/script>/gi) || [];
-        const powScript = scripts.find(s => s.includes("POW_CHALLENGE"));
+        const challenge = challengeMatch[1];
+        const difficulty = parseInt(difficultyMatch ? difficultyMatch[1] : "3", 10);
+        const salt = saltMatch ? saltMatch[1] : "";
+        const dataLink = JSON.parse(dataLinkMatch[1]);
 
-        if (powScript) {
-            console.log("-----------------------------------------");
-            console.log(powScript);
-            console.log("-----------------------------------------");
-        } else {
-            console.log("No se encontró el script POW.");
+        console.log(`[2] Resolviendo PoW (Dificultad: ${difficulty})...`);
+        const prefix = "0".repeat(difficulty);
+        let nonce = 0;
+        const startTime = Date.now();
+
+        while (true) {
+            const hash = await sha256Hex(challenge + nonce);
+            if (hash.startsWith(prefix)) {
+                break;
+            }
+            nonce++;
+        }
+
+        console.log(`✅ PoW resuelto en ${Date.now() - startTime}ms (Nonce: ${nonce})`);
+
+        // Calcular clave AES
+        const aesKey = await sha256Bytes(challenge + nonce + salt);
+
+        console.log("\n[3] Descifrando servidores:");
+        for (const file of dataLink) {
+            const lang = file.video_language || "LAT";
+            console.log(`\n--- Idioma: ${lang} ---`);
+
+            if (file.sortedEmbeds) {
+                for (const embed of file.sortedEmbeds) {
+                    const decryptedUrl = await decryptAES(embed.link, aesKey);
+                    console.log(`  ▶ [${embed.servername.toUpperCase()}] -> ${decryptedUrl}`);
+                }
+            }
         }
 
     } catch (e) {
@@ -42,5 +106,5 @@ async function dumpEmbed69Script(imdbId) {
     }
 }
 
-// Analizar con Deadpool & Wolverine
-dumpEmbed69Script("tt6263850");
+// Probar con Deadpool & Wolverine
+getDecryptedEmbeds("tt6263850");
