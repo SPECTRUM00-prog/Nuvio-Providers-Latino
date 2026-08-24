@@ -1,13 +1,14 @@
 /**
- * Plugin de SoloLatino (Embed69 / VidHide / StreamWish / VOE) para Nuvio Media Hub
- * Compatible con Android TV y FireTV (Hermes JS Engine - Zero Dependencies)
+ * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
+ * Soporte para VidHide, StreamWish y VOE en Español Latino, Castellano y Subtitulado.
+ * Compatible con Android TV y FireTV (Hermes Engine - Zero Dependencies).
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const BASE_URL = "https://embed69.org";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-// 1. DECODIFICADOR BASE64 PURO (Hermes Safe)
+// 1. DECODIFICADORES PUROS
 function decodeB64ToBytes(b64) {
     const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
     let str = String(b64).replace(/[=]+$/, "");
@@ -22,9 +23,7 @@ function decodeB64(input) {
     if (!input) return null;
     const bytes = decodeB64ToBytes(input);
     let str = "";
-    for (let i = 0; i < bytes.length; i++) {
-        str += String.fromCharCode(bytes[i]);
-    }
+    for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
     return str;
 }
 
@@ -157,10 +156,11 @@ async function resolveVOE(url, depth = 0) {
     }
 }
 
-// 5. OBTENCIÓN DE DATOS TMDB
+// 5. TMDB METADATA
 async function getMediaData(tmdbId, mediaType) {
     try {
-        const type = mediaType === "movie" ? "movie" : "tv";
+        const isTv = mediaType === "tv" || mediaType === "series";
+        const type = isTv ? "tv" : "movie";
         const url = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=external_ids`;
         const res = await fetch(url);
         const data = await res.json();
@@ -174,7 +174,51 @@ async function getMediaData(tmdbId, mediaType) {
     }
 }
 
-// 6. FUNCIÓN PRINCIPAL DE NUVIO
+// 6. OBTENER Y DESCIFRAR EMBEDS DE EMBED69
+async function fetchAndDecryptEmbed69(targetUrl) {
+    const pageRes = await fetch(targetUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }
+    });
+    const html = await pageRes.text();
+
+    const challengeMatch = html.match(/const\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/);
+    const difficultyMatch = html.match(/const\s+POW_DIFFICULTY\s*=\s*(\d+)/);
+    const saltMatch = html.match(/const\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/);
+    const dataLinkMatch = html.match(/let\s+dataLink\s*=\s*(\[[\s\S]*?\]);/);
+
+    if (!challengeMatch || !dataLinkMatch) return [];
+
+    const challenge = challengeMatch[1];
+    const difficulty = parseInt(difficultyMatch ? difficultyMatch[1] : "3", 10);
+    const salt = saltMatch ? saltMatch[1] : "";
+    const dataLink = JSON.parse(dataLinkMatch[1]);
+
+    const prefix = "0".repeat(difficulty);
+    let nonce = 0;
+    while (true) {
+        const hash = await sha256Hex(challenge + nonce);
+        if (hash.startsWith(prefix)) break;
+        nonce++;
+    }
+
+    const aesKey = await sha256Bytes(challenge + nonce + salt);
+    const embeds = [];
+
+    for (const file of dataLink) {
+        const lang = file.video_language === "LAT" ? "Latino" : file.video_language === "ESP" ? "Castellano" : "Subtitulado";
+        if (file.sortedEmbeds) {
+            for (const embed of file.sortedEmbeds) {
+                const decryptedUrl = await decryptAES(embed.link, aesKey);
+                if (decryptedUrl) {
+                    embeds.push({ url: decryptedUrl, server: embed.servername, lang });
+                }
+            }
+        }
+    }
+    return embeds;
+}
+
+// 7. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return [];
     const streams = [];
@@ -183,59 +227,31 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         const media = await getMediaData(tmdbId, mediaType);
         if (!media || !media.imdbId) return [];
 
-        const isMovie = mediaType === "movie";
-        let targetUrl = `${BASE_URL}/f/${media.imdbId}`;
-        if (!isMovie) {
+        const isTv = mediaType === "tv" || mediaType === "series";
+        let embedsToResolve = [];
+
+        if (!isTv) {
+            // Películas
+            const movieUrl = `${BASE_URL}/f/${media.imdbId}`;
+            embedsToResolve = await fetchAndDecryptEmbed69(movieUrl);
+        } else {
+            // Series: intentamos formatos comunes (ej: tt0903747-1x01 o tt0903747-1x1)
             const s = parseInt(seasonNum || 1, 10);
             const e = parseInt(episodeNum || 1, 10);
-            const epStr = String(e).padStart(2, "0");
-            targetUrl = `${BASE_URL}/f/${media.imdbId}-${s}x${epStr}`;
-        }
+            const epPadded = String(e).padStart(2, "0");
 
-        const pageRes = await fetch(targetUrl, {
-            headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }
-        });
-        const html = await pageRes.text();
+            const urlPadded = `${BASE_URL}/f/${media.imdbId}-${s}x${epPadded}`;
+            embedsToResolve = await fetchAndDecryptEmbed69(urlPadded);
 
-        // Extraer PoW y Datos
-        const challengeMatch = html.match(/const\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/);
-        const difficultyMatch = html.match(/const\s+POW_DIFFICULTY\s*=\s*(\d+)/);
-        const saltMatch = html.match(/const\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/);
-        const dataLinkMatch = html.match(/let\s+dataLink\s*=\s*(\[[\s\S]*?\]);/);
-
-        if (!challengeMatch || !dataLinkMatch) return [];
-
-        const challenge = challengeMatch[1];
-        const difficulty = parseInt(difficultyMatch ? difficultyMatch[1] : "3", 10);
-        const salt = saltMatch ? saltMatch[1] : "";
-        const dataLink = JSON.parse(dataLinkMatch[1]);
-
-        // Resolver PoW
-        const prefix = "0".repeat(difficulty);
-        let nonce = 0;
-        while (true) {
-            const hash = await sha256Hex(challenge + nonce);
-            if (hash.startsWith(prefix)) break;
-            nonce++;
-        }
-
-        // Descifrar enlaces AES
-        const aesKey = await sha256Bytes(challenge + nonce + salt);
-        const embedsToResolve = [];
-
-        for (const file of dataLink) {
-            const lang = file.video_language === "LAT" ? "Latino" : file.video_language === "ESP" ? "Castellano" : "Subtitulado";
-            if (file.sortedEmbeds) {
-                for (const embed of file.sortedEmbeds) {
-                    const decryptedUrl = await decryptAES(embed.link, aesKey);
-                    if (decryptedUrl) {
-                        embedsToResolve.push({ url: decryptedUrl, server: embed.servername, lang });
-                    }
-                }
+            if (embedsToResolve.length === 0) {
+                const urlSimple = `${BASE_URL}/f/${media.imdbId}-${s}x${e}`;
+                embedsToResolve = await fetchAndDecryptEmbed69(urlSimple);
             }
         }
 
-        // Resolver en paralelo
+        if (embedsToResolve.length === 0) return [];
+
+        // Resolver servidores en paralelo
         const resolvePromises = embedsToResolve.map(async (item) => {
             const u = item.url.toLowerCase();
             let res = null;
@@ -271,7 +287,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
 
         return streams;
-    } catch (error) {
+    } catch {
         return [];
     }
 }
