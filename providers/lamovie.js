@@ -27,7 +27,7 @@ async function getTMDBInfo(tmdbId, mediaType) {
 // 2. BUSCADOR DE LA WEB (API DE LAMOVIE)
 async function searchMedia(title) {
     try {
-        const searchUrl = `${SITE_URL}/search?postType=any&q=${encodeURIComponent(title)}&postsPerPage=5`;
+        const searchUrl = `${SITE_URL}/wp-api/v1/search?postType=any&q=${encodeURIComponent(title)}&postsPerPage=5`;
         const res = await fetch(searchUrl, {
             headers: {
                 "User-Agent": USER_AGENT,
@@ -36,8 +36,8 @@ async function searchMedia(title) {
         });
         const data = await res.json();
         
-        // Retorna el primer resultado o el listado de coincidencias
-        return data.posts || data || [];
+        // Retorna los posts encontrados
+        return data.posts || (Array.isArray(data) ? data : []);
     } catch (e) {
         console.error("[Plugin] Error en buscador:", e);
         return [];
