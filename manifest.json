@@ -36,6 +36,17 @@
       "contentLanguage": ["es"]
     },
     {
+      "id": "jkanime",
+      "name": "JKAnime",
+      "description": "Animes del momento en HD",
+      "version": "1.0.0",
+      "author": "SPECTRUM00-prog",
+      "supportedTypes": ["movie", "tv", "series"],
+      "filename": "providers/jkanime.js",
+      "enabled": true,
+      "contentLanguage": ["es"]
+    },
+    {
       "id": "embed69",
       "name": "Embed69",
       "description": "Streams en Latino/Español/Subtitulado desde Embed69. StreamWish, VOE.",
