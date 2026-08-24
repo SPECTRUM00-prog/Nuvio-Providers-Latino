@@ -1,41 +1,35 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-const FAST_API = "https://lamovie.org/wp-api/v1";
 
-async function testSeriesEndpoints() {
-    const seriesId = 6844; // The Last of Us
-    console.log(`=== PROBANDO ENDPOINTS PARA SERIE ID: ${seriesId} ===`);
+async function getWpTypes() {
+    console.log("=== CONSULTANDO TIPOS DE CONTENIDO EN WORDPRESS ===");
 
-    const endpoints = [
-        `${FAST_API}/episodes/tvshows/${seriesId}`,
-        `${FAST_API}/seasons/tvshows/${seriesId}`,
-        `${FAST_API}/tvshows/${seriesId}`,
-        `${FAST_API}/seasons/${seriesId}`,
-        `${FAST_API}/episodes/${seriesId}`,
-        `${FAST_API}/season/${seriesId}/1`,
-        `${FAST_API}/episodes/${seriesId}/1`
-    ];
-
-    for (const url of endpoints) {
-        try {
-            console.log(`\nConsultando: ${url}`);
-            const res = await fetch(url, {
-                headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-            });
-            const json = await res.json();
-
-            if (json && (Array.isArray(json) || json.data || json.seasons || json.episodes)) {
-                console.log("✅ ¡RESPUESTA VÁLIDA ENCONTRADA!");
-                const data = Array.isArray(json) ? json : (json.data || json);
-                console.log("Contenido devuelto:");
-                console.log(JSON.stringify(data, null, 2).substring(0, 500));
-                break;
-            } else {
-                console.log("Respuesta:", JSON.stringify(json).substring(0, 100));
-            }
-        } catch (e) {
-            console.log("Error:", e.message);
+    try {
+        const res = await fetch("https://lamovie.org/wp-json/wp/v2/types", {
+            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
+        });
+        const json = await res.json();
+        
+        console.log("\n✅ Tipos de post registrados en LaMovie:");
+        for (const [key, val] of Object.entries(json)) {
+            console.log(`▶ Tipo: "${key}" -> REST Base: "${val.rest_base}" (${val.rest_namespace || 'wp/v2'})`);
         }
+
+        // Si existe un endpoint para episodios o tvshows, lo probamos con The Last of Us (ID: 6844)
+        if (json.episodes || json.episodios || json.tvshows) {
+            const epBase = json.episodes?.rest_base || "episodes";
+            const testUrl = `https://lamovie.org/wp-json/wp/v2/${epBase}?parent=6844&per_page=20`;
+            console.log(`\nProbando consulta: ${testUrl}`);
+            const epRes = await fetch(testUrl, { headers: { "User-Agent": USER_AGENT } });
+            const epData = await epRes.json();
+            console.log(`Capítulos devueltos: ${epData.length || 0}`);
+            if (epData.length > 0) {
+                console.log("Primer capítulo:", epData[0].id, epData[0].title?.rendered || epData[0].slug);
+            }
+        }
+
+    } catch (e) {
+        console.log("Error:", e.message);
     }
 }
 
-testSeriesEndpoints();
+getWpTypes();
