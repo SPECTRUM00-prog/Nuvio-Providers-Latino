@@ -5,150 +5,58 @@
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const SITE_URL = "https://lamovie.org";
+const FAST_API = "https://lamovie.org/wp-api/v1";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-// 1. TMDB METADATA
-async function getTMDBInfo(tmdbId, mediaType) {
+// 1. DESEMPAQUETADOR UNIVERSAL DEAN EDWARDS (Base 62 / 36)
+function unpackJS(packed) {
     try {
-        const isTv = mediaType === "tv" || mediaType === "series";
-        const type = isTv ? "tv" : "movie";
-        const url = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX`;
-        const res = await fetch(url);
-        const data = await res.json();
-        
-        return {
-            title: isTv ? data.name : data.title,
-            originalTitle: isTv ? data.original_name : data.original_title,
-            year: (data.release_date || data.first_air_date || "").substring(0, 4)
+        const regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
+        const match = packed.match(regex);
+        if (!match) return null;
+
+        let [, p, a, , k] = match;
+        p = p.slice(1, -1);
+        const words = k.split("|");
+        const radix = parseInt(a, 10);
+
+        const unbase = (val, base) => {
+            const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            if (base <= 36) return parseInt(val, base);
+            let res = 0;
+            for (let i = 0; i < val.length; i++) {
+                res = res * base + chars.indexOf(val[i]);
+            }
+            return res;
         };
-    } catch (e) {
-        console.error("[LaMovie] Error TMDB:", e.message);
+
+        return p.replace(/\b[0-9a-zA-Z]+\b/g, (token) => {
+            const idx = unbase(token, radix);
+            return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
+        });
+    } catch {
         return null;
     }
 }
 
-// 2. BUSCADOR REST
-async function searchMedia(query) {
-    try {
-        const searchUrl = `${SITE_URL}/wp-api/v1/search?postType=any&q=${encodeURIComponent(query)}&postsPerPage=5`;
-        const res = await fetch(searchUrl, {
-            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-        });
-        const json = await res.json();
-        return json?.data?.posts || [];
-    } catch (e) {
-        console.error("[LaMovie] Error buscador:", e.message);
-        return [];
-    }
-}
-
-// 3. OBTENER EMBEDS PARA PELÍCULAS O EPISODIOS DE SERIES
-async function getPlayerEmbeds(postItem, seasonNum, episodeNum, isTv) {
-    const postId = postItem._id || postItem.id;
-
-    if (!isTv) {
-        // Película
-        const res = await fetch(`${SITE_URL}/wp-api/v1/player?postId=${postId}&demo=0`, {
-            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-        });
-        const json = await res.json();
-        return json?.data?.embeds || [];
-    }
-
-    // Serie: Intentar obtener la ficha completa con temporadas y episodios
-    console.log(`[LaMovie] Buscando ficha de serie para S${seasonNum}E${episodeNum}...`);
-    try {
-        const detailRes = await fetch(`${SITE_URL}/wp-api/v1/post?id=${postId}`, {
-            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-        });
-        const detailJson = await detailRes.json();
-        const postData = detailJson?.data || {};
-
-        // Buscar en el árbol de seasons / episodes
-        const seasons = postData.seasons || postData.temporadas || [];
-        const sTarget = parseInt(seasonNum || 1, 10);
-        const eTarget = parseInt(episodeNum || 1, 10);
-
-        let episodeId = null;
-
-        for (const season of seasons) {
-            const sNum = parseInt(season.season_number || season.number || season.season || 0, 10);
-            if (sNum === sTarget) {
-                const episodes = season.episodes || season.episodios || [];
-                for (const ep of episodes) {
-                    const epNum = parseInt(ep.episode_number || ep.number || ep.episode || 0, 10);
-                    if (epNum === eTarget) {
-                        episodeId = ep._id || ep.id || ep.ID;
-                        break;
-                    }
-                }
-            }
-        }
-
-        // Si encontramos el ID específico del episodio, pedimos sus reproductores
-        if (episodeId) {
-            console.log(`[LaMovie] Episodio encontrado (ID: ${episodeId})`);
-            const epPlayerRes = await fetch(`${SITE_URL}/wp-api/v1/player?postId=${episodeId}&demo=0`, {
-                headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-            });
-            const epJson = await epPlayerRes.json();
-            if (epJson?.data?.embeds?.length) return epJson.data.embeds;
-        }
-
-        // Fallback: pedir reproductor con parámetros season y episode
-        const fallbackRes = await fetch(`${SITE_URL}/wp-api/v1/player?postId=${postId}&season=${sTarget}&episode=${eTarget}&demo=0`, {
-            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-        });
-        const fallbackJson = await fallbackRes.json();
-        return fallbackJson?.data?.embeds || [];
-
-    } catch (e) {
-        console.error("[LaMovie] Error extrayendo episodio:", e.message);
-        return [];
-    }
-}
-
-// 4. RESOLVER VIMEOS
+// 2. RESOLVERS DE SERVIDORES
 async function resolveVimeos(embedUrl) {
     try {
         const res = await fetch(embedUrl, {
-            headers: {
-                "User-Agent": USER_AGENT,
-                "Referer": "https://vimeos.net/"
-            }
+            headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
         });
         const html = await res.text();
 
-        const match = html.match(/eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (match) {
-            const [_, p, a, c, k] = match;
-            const radix = parseInt(a, 10);
-            const words = k.split("|");
-            const baseAlphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-            const decodeNum = (val) => {
-                let num = 0;
-                for (let char of val) num = num * radix + baseAlphabet.indexOf(char);
-                return num;
-            };
-
-            const unpacked = p.replace(/\b(\w+)\b/g, (token) => {
-                const idx = decodeNum(token);
-                return words[idx] || token;
-            });
-
+        const unpacked = unpackJS(html);
+        if (unpacked) {
             const m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) ||
                               unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
-
             if (m3u8Match) {
                 return {
                     url: m3u8Match[1].replace(/\\/g, ""),
                     quality: "1080p",
                     server: "Vimeos",
-                    headers: {
-                        "User-Agent": USER_AGENT,
-                        "Referer": "https://vimeos.net/"
-                    }
+                    headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
                 };
             }
         }
@@ -158,7 +66,6 @@ async function resolveVimeos(embedUrl) {
     }
 }
 
-// 5. RESOLVER STREAMWISH
 async function resolveStreamWish(embedUrl) {
     try {
         const res = await fetch(embedUrl, {
@@ -175,13 +82,133 @@ async function resolveStreamWish(embedUrl) {
                 headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
             };
         }
+
+        const unpacked = unpackJS(html);
+        if (unpacked) {
+            const m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+            if (m3u8) {
+                return {
+                    url: m3u8[0],
+                    quality: "1080p",
+                    server: "StreamWish",
+                    headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
+                };
+            }
+        }
         return null;
     } catch {
         return null;
     }
 }
 
-// 6. FUNCIÓN PRINCIPAL DE NUVIO
+async function resolveGoodStream(embedUrl) {
+    try {
+        const res = await fetch(embedUrl, {
+            headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
+        });
+        const html = await res.text();
+        const unpacked = unpackJS(html);
+        if (unpacked) {
+            const m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+            if (m3u8) {
+                return {
+                    url: m3u8[0],
+                    quality: "1080p",
+                    server: "GoodStream",
+                    headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
+                };
+            }
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+// 3. TMDB METADATA
+async function getTMDBInfo(tmdbId, mediaType) {
+    try {
+        const isTv = mediaType === "tv" || mediaType === "series";
+        const type = isTv ? "tv" : "movie";
+        const url = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX`;
+        const res = await fetch(url);
+        const data = await res.json();
+        
+        return {
+            title: isTv ? data.name : data.title,
+            originalTitle: isTv ? data.original_name : data.original_title,
+            year: (data.release_date || data.first_air_date || "").substring(0, 4)
+        };
+    } catch {
+        return null;
+    }
+}
+
+// 4. BUSCADOR REST
+async function searchMedia(query) {
+    try {
+        const searchUrl = `${FAST_API}/search?postType=any&q=${encodeURIComponent(query)}&postsPerPage=5`;
+        const res = await fetch(searchUrl, {
+            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
+        });
+        const json = await res.json();
+        return json?.data?.posts || [];
+    } catch {
+        return [];
+    }
+}
+
+// 5. OBTENER EMBEDS PARA PELÍCULAS O EPISODIOS
+async function getPlayerEmbeds(postItem, seasonNum, episodeNum, isTv) {
+    if (!isTv) {
+        // Película: Consulta directa por Post ID
+        const postId = postItem._id || postItem.id;
+        const res = await fetch(`${FAST_API}/player?postId=${postId}&demo=0`, {
+            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
+        });
+        const json = await res.json();
+        return json?.data?.embeds || [];
+    }
+
+    // Serie: Construir URL del episodio
+    const s = parseInt(seasonNum || 1, 10);
+    const e = parseInt(episodeNum || 1, 10);
+    const slug = postItem.slug || postItem.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+
+    const episodeUrls = [
+        `${SITE_URL}/episodio/${slug}-temporada-${s}-episodio-${e}/`,
+        `${SITE_URL}/episodio/${slug}-temporada-${s}-capitulo-${e}/`,
+        `${SITE_URL}/episodio/${slug}-${s}x${e}/`
+    ];
+
+    for (const epUrl of episodeUrls) {
+        try {
+            const pageRes = await fetch(epUrl, { headers: { "User-Agent": USER_AGENT } });
+            if (pageRes.status === 200) {
+                const html = await pageRes.text();
+                // Extraer posibles IDs numéricos del HTML del episodio
+                const numericIds = (html.match(/["'](\d{4,6})["']/g) || []).map(id => id.replace(/["']/g, ''));
+                const uniqueIds = [...new Set(numericIds)];
+
+                for (const id of uniqueIds) {
+                    const pUrl = `${FAST_API}/player?postId=${id}&demo=0`;
+                    const pRes = await fetch(pUrl, { headers: { "User-Agent": USER_AGENT, "Accept": "application/json" } });
+                    const pJson = await pRes.json();
+                    const embeds = pJson?.data?.embeds || [];
+                    
+                    // Si tiene servidores reales (que no sea embed.html en blanco)
+                    if (embeds.length > 0 && !embeds[0].url.includes("embed.html")) {
+                        return embeds;
+                    }
+                }
+            }
+        } catch {}
+    }
+
+    return [];
+}
+
+// 6. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     const isTv = mediaType === "tv" || mediaType === "series";
     console.log(`[LaMovie] Buscando TMDB: ${tmdbId} (${isTv ? `Serie S${seasonNum || 1}E${episodeNum || 1}` : "Película"})`);
@@ -204,39 +231,46 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
 
         const item = posts[0];
-        console.log(`[LaMovie] Post encontrado: "${item.title}" (ID: ${item._id || item.id})`);
+        console.log(`[LaMovie] Post encontrado: "${item.title}"`);
 
         const embeds = await getPlayerEmbeds(item, seasonNum, episodeNum, isTv);
         console.log(`[LaMovie] Embeds encontrados: ${embeds.length}`);
 
-        // Resolver todos los embeds
-        for (const embed of embeds) {
-            // Extraer la URL venga en la propiedad que venga
+        // Resolver servidores en paralelo
+        const resolvePromises = embeds.map(async (embed) => {
             let rawUrl = embed.url || embed.link || embed.embed || embed.code || embed.src || "";
+            if (!rawUrl) return null;
 
-            // Si viene en formato iframe HTML (<iframe src="...">)
             if (rawUrl.includes("<iframe")) {
                 const srcMatch = rawUrl.match(/src=["']([^"']+)["']/i);
                 if (srcMatch) rawUrl = srcMatch[1];
             }
-
-            console.log(`[LaMovie] Procesando embed: ${rawUrl}`);
 
             let streamData = null;
             if (rawUrl.includes("vimeos")) {
                 streamData = await resolveVimeos(rawUrl);
             } else if (rawUrl.includes("streamwish") || rawUrl.includes("hglink") || rawUrl.includes("hlswish")) {
                 streamData = await resolveStreamWish(rawUrl);
+            } else if (rawUrl.includes("goodstream")) {
+                streamData = await resolveGoodStream(rawUrl);
             }
 
             if (streamData && streamData.url) {
-                streams.push({
+                return {
                     name: "LaMovie",
                     title: `${streamData.quality} · ${streamData.server} (Latino)`,
                     url: streamData.url,
                     quality: streamData.quality,
                     headers: streamData.headers
-                });
+                };
+            }
+            return null;
+        });
+
+        const results = await Promise.allSettled(resolvePromises);
+        for (const r of results) {
+            if (r.status === "fulfilled" && r.value) {
+                streams.push(r.value);
             }
         }
 
