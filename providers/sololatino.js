@@ -1,6 +1,6 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
- * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains / No async-await)
+ * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -8,7 +8,7 @@ var BASE_URL = "https://embed69.org";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 // ==========================================
-// 1. HELPERS PUROS: BASE64 & UTF-8 (HERMES)
+// 1. HELPERS BASE64 & STRINGS (HERMES SAFE)
 // ==========================================
 function decodeB64ToBytes(b64) {
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
@@ -74,7 +74,7 @@ function utf8BytesToString(bytes) {
 }
 
 // ==========================================
-// 2. MOTOR SHA-256 PURO (Síncrono y Nativo)
+// 2. MOTOR SHA-256 PURO (Síncrono)
 // ==========================================
 function sha256(input) {
     var bytes = typeof input === "string" ? stringToUtf8Bytes(input) : input;
@@ -90,7 +90,6 @@ function sha256(input) {
     ];
 
     var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
-    
     var bitLen = bytes.length * 8;
     var newLen = (((bytes.length + 8) >> 6) + 1) << 6;
     var padded = new Uint8Array(newLen);
@@ -326,7 +325,7 @@ function resolveVidHide(url) {
 
         var unpacked = unpackJS(html);
         if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i);
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
             if (m3u8) return { url: m3u8[0].replace(/\\/g, ""), quality: "1080p", server: "VidHide" };
         }
         return null;
@@ -335,46 +334,27 @@ function resolveVidHide(url) {
 }
 
 function resolveStreamWish(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": url }
+    // Extraer el ID del video para saltar la página puente
+    var id = url.replace(/\/$/, "").split("/").pop();
+    var targetUrl = "https://hlswish.com/e/" + id;
+
+    return fetch(targetUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var fileMatch = html.match(/(?:file|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-        if (fileMatch) return { url: fileMatch[1], quality: "1080p", server: "StreamWish" };
+        var directMatch = html.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
+                          html.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+        if (directMatch) return { url: directMatch[1], quality: "1080p", server: "StreamWish" };
 
         var unpacked = unpackJS(html);
         if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
-            if (m3u8) return { url: m3u8[0], quality: "1080p", server: "StreamWish" };
-        }
-        return null;
-    })
-    .catch(function() { return null; });
-}
-
-function resolveVOE(url, depth) {
-    if (depth === undefined) depth = 0;
-    if (depth > 3) return Promise.resolve(null);
-
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" }
-    })
-    .then(function(res) { return res.text(); })
-    .then(function(html) {
-        var jsRedirect = html.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/i) ||
-                         html.match(/location\.replace\(['"]([^'"]+)['"]\)/i);
-        if (jsRedirect && jsRedirect[1] && jsRedirect[1] !== url) {
-            var nextUrl = jsRedirect[1];
-            if (nextUrl.startsWith("/")) nextUrl = new URL(url).origin + nextUrl;
-            return resolveVOE(nextUrl, depth + 1);
-        }
-
-        var direct = html.match(/'hls'\s*:\s*['"]([^'"]+)['"]/i) || html.match(/"hls"\s*:\s*['"]([^'"]+)['"]/i);
-        if (direct) {
-            var streamUrl = direct[1];
-            if (streamUrl.startsWith("aHR0")) streamUrl = decodeB64(streamUrl);
-            return { url: streamUrl, quality: "1080p", server: "VOE" };
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i) ||
+                       unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+            if (m3u8) {
+                var streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
+                return { url: streamUrl, quality: "1080p", server: "StreamWish" };
+            }
         }
         return null;
     })
@@ -422,7 +402,6 @@ function fetchAndDecryptEmbed69(targetUrl) {
         var salt = saltMatch ? saltMatch[1] : "";
         var dataLink = JSON.parse(dataLinkMatch[1]);
 
-        // Resolver PoW de forma síncrona (<5ms)
         var prefix = "0".repeat(difficulty);
         var nonce = 0;
         while (true) {
@@ -490,10 +469,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
                 if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1) {
                     promise = resolveVidHide(item.url);
-                } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1) {
+                } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1) {
                     promise = resolveStreamWish(item.url);
-                } else if (u.indexOf("voe") !== -1) {
-                    promise = resolveVOE(item.url);
                 } else {
                     promise = Promise.resolve(null);
                 }
