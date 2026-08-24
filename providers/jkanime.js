@@ -14,7 +14,7 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DECODIFICACIÓN BASE64 PURA
+// DECODIFICADOR BASE64 PURO (HERMES SAFE)
 // ==========================================
 
 function decodeBase64Safe(input) {
@@ -75,7 +75,7 @@ function isSlugSimilar(query, slug) {
     var sWords = cleanS.split(/\s+/).filter(function(w) { return w.length > 2; });
 
     for (var i = 0; i < qWords.length; i++) {
-        if (sWords.indexOf(qWords[i]) !== -1) return true;
+        if (cleanS.includes(qWords[i])) return true;
     }
     return false;
 }
@@ -391,7 +391,6 @@ function searchJkanime(queries) {
                 while ((match = regex.exec(html)) !== null) {
                     var slug = match[1];
                     if (slug && slug !== "buscar" && slug !== "horario" && slug !== "top" && slug !== "directorio" && matches.indexOf(slug) === -1) {
-                        // Validar similitud para evitar falsos positivos
                         if (isSlugSimilar(q, slug)) {
                             matches.push(slug);
                         }
@@ -420,16 +419,33 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(html) {
             var rawEmbeds = [];
 
-            // 1. Extraer tokens Base64 con prefijo "aHR0cHM6" (https:)
+            // 1. Extraer del objeto var servers = [...]
+            var serversMatch = html.match(/var\s+servers\s*=\s*(\[[^\]]+\]);/i);
+            if (serversMatch) {
+                try {
+                    var sArr = JSON.parse(serversMatch[1]);
+                    for (var i = 0; i < sArr.length; i++) {
+                        var item = sArr[i];
+                        if (item && item.remote) {
+                            var decodedUrl = decodeBase64Safe(item.remote);
+                            if (decodedUrl && decodedUrl.startsWith("http")) {
+                                rawEmbeds.push(decodedUrl);
+                            }
+                        }
+                    }
+                } catch (e) {}
+            }
+
+            // 2. Extraer tokens Base64 con prefijo "aHR0cHM6" (https:)
             var b64Tokens = html.match(/aHR0cHM6[a-zA-Z0-9+/=_-]+/gi) || [];
-            for (var i = 0; i < b64Tokens.length; i++) {
-                var decoded = decodeBase64Safe(b64Tokens[i]);
+            for (var j = 0; j < b64Tokens.length; j++) {
+                var decoded = decodeBase64Safe(b64Tokens[j]);
                 if (decoded && decoded.startsWith("http")) {
                     rawEmbeds.push(decoded);
                 }
             }
 
-            // 2. Extraer reproductores Desu / Magi (/jkplayer/um?e=...)
+            // 3. Extraer reproductores Desu / Magi (/jkplayer/um?e=...)
             var umRegex = /https?:\/\/jkanime\.net\/jkplayer\/um[^\s"'<>]+/gi;
             var umMatch;
             while ((umMatch = umRegex.exec(html)) !== null) {
@@ -472,7 +488,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
 }
 
 // ==========================================
-// CÁLCULO DE EPISODIO ABSOLUTO
+// CÁLCULO DE EPISODIOS CONTINUOS / POR TEMPORADA
 // ==========================================
 
 function getAbsoluteEpisodeNumber(meta, season, episode) {
@@ -498,6 +514,8 @@ function getAbsoluteEpisodeNumber(meta, season, episode) {
 function getStreams(tmdbId, mediaType, season, episode) {
     console.log(`[JKAnime] Buscando TMDB ID ${tmdbId} (${mediaType})`);
     var isMovie = mediaType === "movie";
+    var sNum = parseInt(season, 10) || 1;
+    var eNum = parseInt(episode, 10) || 1;
     var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX`;
 
     return fetch(tmdbUrl)
@@ -509,14 +527,22 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            // Calcular número de episodio absoluto para series largas
-            var sNum = parseInt(season, 10) || 1;
-            var eNum = parseInt(episode, 10) || 1;
+            // Calcular número continuo para series largas y mantener número normal para temporadas
             var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
 
-            console.log(`[JKAnime] Título: "${title}" | Episodio Absoluto: ${absoluteEp}`);
-
+            // Construir lista de búsqueda incluyendo temporada si es > 1
             var searchQueries = [];
+
+            if (sNum > 1 && !isMovie) {
+                if (title && !hasJapaneseChars(title)) {
+                    searchQueries.push(`${title} ${sNum}`);
+                    searchQueries.push(`${title} Season ${sNum}`);
+                }
+                if (origTitle && origTitle !== title && !hasJapaneseChars(origTitle)) {
+                    searchQueries.push(`${origTitle} ${sNum}`);
+                }
+            }
+
             if (title && !hasJapaneseChars(title)) {
                 searchQueries.push(title);
                 var wordsT = title.split(/\s+/);
@@ -533,12 +559,16 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             return searchJkanime(searchQueries).then(function(slugs) {
                 var candidateSlugs = slugs.slice();
+
+                if (sNum > 1 && !isMovie) {
+                    if (cleanT) candidateSlugs.push(`${cleanT}-${sNum}`);
+                    if (cleanOrig) candidateSlugs.push(`${cleanOrig}-${sNum}`);
+                }
+
                 if (cleanT && candidateSlugs.indexOf(cleanT) === -1 && isSlugSimilar(title, cleanT)) candidateSlugs.push(cleanT);
                 if (cleanOrig && candidateSlugs.indexOf(cleanOrig) === -1 && isSlugSimilar(origTitle, cleanOrig)) candidateSlugs.push(cleanOrig);
 
-                // Si no hay candidatos con similitud, abortar limpiamente (evita The Big Bang Theory)
                 if (candidateSlugs.length === 0) {
-                    console.log("[JKAnime] No es un anime o no está en el catálogo");
                     return [];
                 }
 
@@ -546,12 +576,25 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     if (index >= candidateSlugs.length) return Promise.resolve([]);
                     var s = candidateSlugs[index];
 
+                    // Si el slug incluye la temporada (ej: konosuba-3), usa el episodio de la temporada (eNum)
+                    // Si es el slug base (ej: one-piece), prueba con el episodio absoluto continuo
+                    var targetEp = (s.endsWith("-" + sNum) || s.includes("season")) ? eNum : absoluteEp;
+
                     var pageUrl = isMovie
                         ? `${BASE_URL}/${s}/pelicula/`
-                        : `${BASE_URL}/${s}/${absoluteEp}/`;
+                        : `${BASE_URL}/${s}/${targetEp}/`;
 
                     return extractStreamsFromEpisodePage(pageUrl).then(function(streams) {
                         if (streams && streams.length > 0) return streams;
+
+                        // Fallback alternativo: probar el episodio relativo
+                        if (!isMovie && targetEp !== eNum) {
+                            var altUrl = `${BASE_URL}/${s}/${eNum}/`;
+                            return extractStreamsFromEpisodePage(altUrl).then(function(altStreams) {
+                                if (altStreams && altStreams.length > 0) return altStreams;
+                                return tryNextSlug(index + 1);
+                            });
+                        }
 
                         if (isMovie) {
                             var altMovieUrl = `${BASE_URL}/${s}/1/`;
