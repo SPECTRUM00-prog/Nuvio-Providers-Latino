@@ -80,7 +80,7 @@ function detectQualityFromUrl(url) {
     if (u.includes("goodstream")) qMap = QUALITY_MAPS.goodstream;
     else if (u.includes("vimeos")) qMap = QUALITY_MAPS.vimeos;
     else if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) qMap = QUALITY_MAPS.vidhide;
-    else if (u.includes("streamwish") || u.includes("hlswish") || u.includes("turbovid")) qMap = QUALITY_MAPS.streamwish;
+    else if (u.includes("streamwish") || u.includes("hlswish") || u.includes("turbovid") || u.includes("turboviplay")) qMap = QUALITY_MAPS.streamwish;
     
     if (qMap) {
         var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
@@ -108,7 +108,7 @@ function getServerLabel(url) {
     if (!url) return "Online";
     var u = url.toLowerCase();
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) return "VidHide";
-    if (u.includes("turbovid") || u.includes("emturbovid")) return "Turbovid";
+    if (u.includes("turbovid") || u.includes("emturbovid") || u.includes("turboviplay") || u.includes("turbovidhls")) return "Turbovid";
     if (u.includes("goodstream")) return "GoodStream";
     if (u.includes("vimeos")) return "Vimeos";
     if (u.includes("streamwish") || u.includes("hlswish")) return "StreamWish";
@@ -127,13 +127,20 @@ function resolveVidHide(url) {
         targetUrl = targetUrl.replace("vidhideplus.com/", "vidhideplus.com/v/");
     }
 
+    var hostMatch = targetUrl.match(/^(https?:\/\/[^/]+)/i);
+    var hostOrigin = hostMatch ? hostMatch[1] : "https://callistanise.com";
+
     console.log(`[PelisPlus] Fetching VidHide: ${targetUrl}`);
 
     return fetch(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
         redirect: "follow"
     })
-    .then(function(res) { return res.text(); })
+    .then(function(res) {
+        var finalHostMatch = (res.url || "").match(/^(https?:\/\/[^/]+)/i);
+        if (finalHostMatch) hostOrigin = finalHostMatch[1];
+        return res.text();
+    })
     .then(function(html) {
         var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (packMatch) {
@@ -141,9 +148,11 @@ function resolveVidHide(url) {
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8Match) {
                 var streamUrl = m3u8Match[1];
+                if (streamUrl.startsWith("/")) streamUrl = hostOrigin + streamUrl;
                 console.log(`[PelisPlus] ✓ VidHide M3U8 encontrado: ${streamUrl.substring(0, 60)}...`);
                 return {
                     url: streamUrl,
+                    serverName: "VidHide",
                     quality: detectQualityFromUrl(streamUrl),
                     headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
                 };
@@ -151,14 +160,16 @@ function resolveVidHide(url) {
         }
         var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
         if (directMatch) {
+            var dUrl = directMatch[0];
+            if (dUrl.startsWith("/")) dUrl = hostOrigin + dUrl;
             console.log(`[PelisPlus] ✓ VidHide M3U8 directo encontrado`);
             return {
-                url: directMatch[0],
-                quality: detectQualityFromUrl(directMatch[0]),
+                url: dUrl,
+                serverName: "VidHide",
+                quality: detectQualityFromUrl(dUrl),
                 headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
             };
         }
-        console.log("[PelisPlus] VidHide no contenía stream M3U8");
         return null;
     })
     .catch(function(err) {
@@ -186,6 +197,7 @@ function resolveTurbovid(url) {
                 console.log(`[PelisPlus] ✓ Turbovid M3U8 encontrado: ${streamUrl.substring(0, 60)}...`);
                 return {
                     url: streamUrl,
+                    serverName: "Turbovid",
                     quality: detectQualityFromUrl(streamUrl),
                     headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
                 };
@@ -196,11 +208,11 @@ function resolveTurbovid(url) {
             console.log(`[PelisPlus] ✓ Turbovid M3U8 directo encontrado`);
             return {
                 url: directMatch[0],
+                serverName: "Turbovid",
                 quality: detectQualityFromUrl(directMatch[0]),
                 headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
             };
         }
-        console.log("[PelisPlus] Turbovid no contenía stream M3U8");
         return null;
     })
     .catch(function(err) {
@@ -227,27 +239,22 @@ function resolvePlayerEndpoint(playerUrl) {
     return fetch(playerUrl, { headers: DEFAULT_HEADERS, redirect: "follow" })
         .then(function(res) {
             var targetUrl = res.url || "";
-            console.log(`[PelisPlus] Endpoint status ${res.status} -> Redirigido a: ${targetUrl}`);
 
             if (targetUrl && !targetUrl.includes("tioplus.app/player/")) {
                 return dispatchResolver(targetUrl);
             }
 
             return res.text().then(function(html) {
-                console.log(`[PelisPlus] HTML recibido en endpoint (${html.length} chars): ${html.substring(0, 150)}...`);
-
                 var ifrMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
                 if (ifrMatch) {
                     var innerUrl = ifrMatch[1];
                     if (innerUrl.startsWith("/")) innerUrl = BASE_URL + innerUrl;
-                    console.log(`[PelisPlus] Iframe interno encontrado: ${innerUrl}`);
                     return dispatchResolver(innerUrl);
                 }
 
                 var locMatch = html.match(/window\.location\.href\s*=\s*["']([^"']+)["']/i) ||
                                html.match(/location\.replace\(["']([^"']+)["']\)/i);
                 if (locMatch) {
-                    console.log(`[PelisPlus] JS Redirect encontrado: ${locMatch[1]}`);
                     return dispatchResolver(locMatch[1]);
                 }
 
@@ -255,6 +262,7 @@ function resolvePlayerEndpoint(playerUrl) {
                 if (directM3u8) {
                     return {
                         url: directM3u8[0],
+                        serverName: "PelisPlus",
                         quality: detectQualityFromUrl(directM3u8[0]),
                         headers: { "User-Agent": USER_AGENT, "Referer": playerUrl }
                     };
@@ -263,8 +271,7 @@ function resolvePlayerEndpoint(playerUrl) {
                 return null;
             });
         })
-        .catch(function(err) {
-            console.log(`[PelisPlus] Error en player endpoint: ${err.message}`);
+        .catch(function() {
             return null;
         });
 }
@@ -303,7 +310,6 @@ function searchPelisplus(query, isMovie) {
         }
 
         if (matches.length > 0) {
-            console.log(`[PelisPlus] Slugs encontrados: ${matches.length}`);
             return matches;
         }
 
@@ -365,7 +371,7 @@ function extractStreamsFromUrl(pageUrl) {
                 return resolvePlayerEndpoint(playerUrl)
                     .then(function(res) {
                         if (!res || !res.url) return null;
-                        var sName = getServerLabel(res.url);
+                        var sName = res.serverName || getServerLabel(res.url);
                         var q = res.quality || "1080p";
                         return {
                             name: "PelisPlus",
