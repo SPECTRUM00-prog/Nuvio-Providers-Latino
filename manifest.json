@@ -30,7 +30,7 @@
       "description": "Películas y Series en Español Latino desde SoloLatino.",
       "version": "1.0.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/sololatino.js",
       "enabled": true,
       "contentLanguage": ["es"]
