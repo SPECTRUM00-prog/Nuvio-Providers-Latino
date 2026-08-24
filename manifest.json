@@ -93,9 +93,9 @@
     {
       "id": "lamovie",
       "name": "LaMovie",
-      "description": "Streams en Latino desde LaMovie.",
-      "version": "2.0.0",
-      "author": "KennethJYS",
+      "description": "Películas y Series en Español Latino",
+      "version": "1.0.0",
+      "author": "SPECTRUM00",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/lamovie.js",
       "enabled": true,
