@@ -13,15 +13,6 @@ const HEADERS = {
     "Referer": `${SITE_URL}/`
 };
 
-// Decodificador Base64 universal
-function decodeB64(str) {
-    try {
-        return typeof atob !== "undefined" ? atob(str) : Buffer.from(str, "base64").toString("utf8");
-    } catch {
-        return null;
-    }
-}
-
 // 1. OBTENER INFORMACIÓN DE TMDB
 async function getTMDBInfo(tmdbId, mediaType) {
     try {
@@ -100,7 +91,9 @@ async function resolveVOE(url) {
         const directMatch = html.match(/(?:mp4|hls)'\s*:\s*'([^']+)'/i) || html.match(/(?:mp4|hls)"\s*:\s*"([^"]+)"/i);
         if (directMatch) {
             let streamUrl = directMatch[1];
-            if (streamUrl.startsWith("aHR0")) streamUrl = decodeB64(streamUrl);
+            if (streamUrl.startsWith("aHR0")) {
+                streamUrl = typeof atob !== "undefined" ? atob(streamUrl) : Buffer.from(streamUrl, "base64").toString("utf8");
+            }
             return { url: streamUrl, quality: "1080p", server: "VOE" };
         }
         return null;
@@ -116,7 +109,7 @@ async function resolveStreamWish(url) {
         const html = await res.text();
         const fileMatch = html.match(/file\s*:\s*["']([^"']+)["']/i);
         if (fileMatch) {
-            return { url: fileMatch[1], quality: "1080p", server: "StreamWish" };
+            return { url: fileMatch[1], quality: "1080p", server: "HLSWish" };
         }
         return null;
     } catch {
@@ -139,22 +132,29 @@ async function resolveGoodStream(url) {
     }
 }
 
-// 4. EXTRAER REPRODUCTORES DEL ATRIBUTO ZOPASS
-function extractEmbedUrls(html) {
-    const embeds = [];
-    
-    // Captura el parámetro zopass= en Base64
-    const regex = /zopass=([A-Za-z0-9+/=]{15,})/g;
-    let match;
-    while ((match = regex.exec(html)) !== null) {
-        const cleanB64 = match[1].split("&")[0]; // limpia cualquier parámetro extra
-        const decoded = decodeB64(cleanB64);
-        if (decoded && decoded.startsWith("http")) {
-            embeds.push(decoded);
-        }
-    }
+// 4. RESOLVER REDIRECCIONES DE ZOPASS
+async function resolveZopassUrl(zopassPath) {
+    try {
+        const fullUrl = zopassPath.startsWith("http") ? zopassPath : `${SITE_URL}${zopassPath}`;
+        const res = await fetch(fullUrl, {
+            headers: HEADERS,
+            redirect: "follow"
+        });
 
-    return [...new Set(embeds)];
+        // La URL final a la que redirigió
+        let finalUrl = res.url;
+        
+        // Si no redirigió en headers, buscar iframe en su HTML
+        if (finalUrl.includes("zopass")) {
+            const html = await res.text();
+            const iframeMatch = html.match(/<iframe[^>]+src="([^"]+)"/i);
+            if (iframeMatch) finalUrl = iframeMatch[1];
+        }
+
+        return finalUrl;
+    } catch {
+        return null;
+    }
 }
 
 // 5. FUNCIÓN PRINCIPAL PARA NUVIO
@@ -191,11 +191,21 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         const pageRes = await fetch(targetUrl, { headers: HEADERS });
         const movieHtml = await pageRes.text();
 
-        // 3. Extraer embeds desde zopass
-        const embedUrls = extractEmbedUrls(movieHtml);
-        console.log(`[CineCalidad] Embeds encontrados (${embedUrls.length}):`, embedUrls);
+        // 3. Extraer todos los data-option de los botones
+        const zopassPaths = [];
+        const regex = /data-option="([^"]+)"/g;
+        let match;
+        while ((match = regex.exec(movieHtml)) !== null) {
+            zopassPaths.push(match[1]);
+        }
 
-        // 4. Resolver todos los servidores en paralelo
+        console.log(`[CineCalidad] Opciones de reproductor encontradas: ${zopassPaths.length}`);
+
+        // 4. Seguir las redirecciones de zopass en paralelo
+        const embedUrls = (await Promise.all(zopassPaths.map(resolveZopassUrl))).filter(Boolean);
+        console.log(`[CineCalidad] Embeds resueltos:`, embedUrls);
+
+        // 5. Resolver cada servidor de video
         const resolvePromises = embedUrls.map(async (url) => {
             if (url.includes("vimeos")) return await resolveVimeos(url);
             if (url.includes("voe.sx")) return await resolveVOE(url);
