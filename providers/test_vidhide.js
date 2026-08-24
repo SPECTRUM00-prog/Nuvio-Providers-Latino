@@ -19,19 +19,23 @@ async function testVidHide() {
 
         const [, p, a, , k] = match;
         const words = k.split("|");
-        const radix = parseInt(a);
-        const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        const radix = parseInt(a, 10);
 
-        const unbase = (s) => s.split("").reduce((acc, c) => acc * radix + chars.indexOf(c), 0);
-        const unpacked = p.replace(/\b([0-9a-zA-Z]+)\b/g, (m) => words[unbase(m)] || m);
+        // Desempaquetador nativo en Base 36
+        const unpacked = p.replace(/\b[0-9a-zA-Z]+\b/g, (token) => {
+            const idx = parseInt(token, radix);
+            return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
+        });
 
-        const m3u8 = unpacked.match(/https?:\/\/[^"'\\s]+\.m3u8[^"'\\s]*/);
+        // Buscar enlaces HLS .m3u8
+        const m3u8Match = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
+                          unpacked.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)['"]/i);
 
-        if (m3u8) {
-            console.log("\n✅ Stream extraído con éxito:");
-            console.log("URL:", m3u8[0]);
+        if (m3u8Match) {
+            console.log("\n✅ ¡Stream HLS extraído con éxito!");
+            console.log("URL:", m3u8Match[0].replace(/\\/g, ""));
         } else {
-            console.log("❌ No se encontró la URL .m3u8 en el código desempaquetado");
+            console.log("❌ Código desempaquetado:\n", unpacked.substring(0, 300));
         }
     } catch (e) {
         console.error("Error:", e.message);
