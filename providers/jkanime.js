@@ -14,13 +14,11 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DECODIFICACIÓN PURA
+// UTILIDADES Y DECODIFICACIÓN BASE64 SEGURA
 // ==========================================
 
 function pureAtob(input) {
-    if (typeof atob === "function") {
-        try { return atob(input); } catch (e) {}
-    }
+    if (!input) return "";
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
     var str = String(input).replace(/=+$/, "");
     var output = "";
@@ -32,6 +30,18 @@ function pureAtob(input) {
         buffer = chars.indexOf(buffer);
     }
     return output;
+}
+
+function decodeBase64Safe(input) {
+    if (!input) return "";
+    var str = String(input).replace(/-/g, "+").replace(/_/g, "/");
+    while (str.length % 4 !== 0) {
+        str += "=";
+    }
+    if (typeof atob === "function") {
+        try { return atob(str); } catch (e) {}
+    }
+    return pureAtob(str);
 }
 
 function normalizeText(text) {
@@ -48,6 +58,10 @@ function normalizeText(text) {
 
 function cleanSlug(text) {
     return normalizeText(text);
+}
+
+function hasJapaneseChars(str) {
+    return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -109,7 +123,7 @@ function probeM3u8Quality(m3u8Url, headers) {
 function getServerLabel(url) {
     if (!url) return "Online";
     var u = url.toLowerCase();
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return "StreamWish";
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return "StreamWish";
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) return "VidHide";
     if (u.includes("filemoon")) return "Filemoon";
     if (u.includes("streamtape")) return "Streamtape";
@@ -330,7 +344,7 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
 
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) {
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) {
         return resolveStreamWish(url);
     }
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) {
@@ -398,7 +412,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
             var uRegex = /[?&]u=([a-zA-Z0-9+/=_-]+)/gi;
             var uMatch;
             while ((uMatch = uRegex.exec(html)) !== null) {
-                var decoded = pureAtob(uMatch[1]);
+                var decoded = decodeBase64Safe(uMatch[1]);
                 if (decoded && decoded.startsWith("http")) {
                     rawEmbeds.push(decoded);
                 }
@@ -411,7 +425,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 var vSrc = vMatch[1];
                 var vParam = vSrc.match(/[?&]u=([a-zA-Z0-9+/=_-]+)/);
                 if (vParam) {
-                    var d = pureAtob(vParam[1]);
+                    var d = decodeBase64Safe(vParam[1]);
                     if (d && d.startsWith("http")) rawEmbeds.push(d);
                 }
             }
@@ -474,13 +488,20 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(meta) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
-            var cleanT = cleanSlug(title);
-            var cleanOrig = cleanSlug(origTitle);
 
-            return searchJkanime(origTitle || title).then(function(slugs) {
+            // Priorizar título en caracteres latinos para buscar en JKAnime
+            var primarySearch = (!hasJapaneseChars(title) && title) ? title : origTitle;
+            if (hasJapaneseChars(primarySearch)) {
+                primarySearch = title;
+            }
+
+            var cleanT = cleanSlug(title);
+            var cleanOrig = hasJapaneseChars(origTitle) ? "" : cleanSlug(origTitle);
+
+            return searchJkanime(primarySearch).then(function(slugs) {
                 var candidateSlugs = slugs.slice();
-                if (cleanOrig && candidateSlugs.indexOf(cleanOrig) === -1) candidateSlugs.push(cleanOrig);
                 if (cleanT && candidateSlugs.indexOf(cleanT) === -1) candidateSlugs.push(cleanT);
+                if (cleanOrig && candidateSlugs.indexOf(cleanOrig) === -1) candidateSlugs.push(cleanOrig);
 
                 function tryNextSlug(index) {
                     if (index >= candidateSlugs.length) return Promise.resolve([]);
