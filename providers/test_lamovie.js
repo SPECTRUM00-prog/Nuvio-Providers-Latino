@@ -1,26 +1,47 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const BASE_URL = "https://lamovie.org";
 
-async function findExactApiCall() {
-    console.log("=== LEYENDO LLAMADA EXACTA EN APP.JS ===");
+async function findApiRoutesInBundle() {
+    console.log("=== BUSCANDO SCRIPTS REALES DE LAMOVIE ===");
 
     try {
-        const res = await fetch("https://lamovie.org/app.js", {
+        const pageRes = await fetch(`${BASE_URL}/series/the-last-of-us-2023/`, {
             headers: { "User-Agent": USER_AGENT }
         });
-        const code = await res.text();
+        const html = await pageRes.text();
 
-        // 1. Buscar alrededor de "cast/tvshows"
-        const castIdx = code.indexOf("cast/tvshows");
-        if (castIdx !== -1) {
-            console.log("\n[1] Código alrededor de 'cast/tvshows':");
-            console.log(code.substring(castIdx - 250, castIdx + 300));
-        }
+        // 1. Extraer todas las etiquetas <script src="...">
+        const scriptSrcs = (html.match(/<script[^>]+src=["']([^"']+)["']/gi) || [])
+            .map(s => s.match(/src=["']([^"']+)["']/i)[1])
+            .filter(src => src.includes("app") || src.includes("bundle") || src.includes("main") || src.includes(".js"));
 
-        // 2. Buscar alrededor de "player?postId="
-        const playerIdx = code.indexOf("player?postId=");
-        if (playerIdx !== -1) {
-            console.log("\n[2] Código alrededor de 'player?postId=':");
-            console.log(code.substring(playerIdx - 250, playerIdx + 300));
+        console.log("Scripts encontrados en la web:", scriptSrcs);
+
+        for (let src of scriptSrcs) {
+            if (!src.startsWith("http")) {
+                src = src.startsWith("/") ? BASE_URL + src : `${BASE_URL}/${src}`;
+            }
+
+            console.log(`\nDescargando e inspeccionando: ${src}`);
+            const jsRes = await fetch(src, { headers: { "User-Agent": USER_AGENT } });
+            const jsCode = await jsRes.text();
+            console.log(`Tamaño del script: ${jsCode.length} caracteres`);
+
+            // Buscar cualquier llamada a wp-api o wpf
+            const apiCalls = jsCode.match(/(?:wp-api|wp-json|wpf)\/v1\/[a-zA-Z0-9_\-\/]+/g) || [];
+            const uniqueCalls = [...new Set(apiCalls)];
+
+            if (uniqueCalls.length > 0) {
+                console.log("✅ Rutas de API encontradas dentro de este JS:");
+                uniqueCalls.forEach(call => console.log(`  ▶ /${call}`));
+            }
+
+            // Buscar funciones de temporadas o episodios
+            const episodeFunctions = jsCode.match(/.{0,50}(?:seasons|episodes|temporadas|capitulos).{0,50}/gi) || [];
+            if (episodeFunctions.length > 0) {
+                console.log(`\nMuestra de referencias a episodios (${episodeFunctions.length} encontradas):`);
+                episodeFunctions.slice(0, 5).forEach((f, i) => console.log(`  [${i+1}] ...${f}...`));
+            }
         }
 
     } catch (e) {
@@ -28,4 +49,4 @@ async function findExactApiCall() {
     }
 }
 
-findExactApiCall();
+findApiRoutesInBundle();
