@@ -14,36 +14,37 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DECODIFICACIÓN BASE64 PURA
+// DECODIFICADOR BASE64 PURO (100% HERMES)
 // ==========================================
-
-function pureAtob(input) {
-    if (typeof atob === "function") {
-        try { return atob(input); } catch (e) {}
-    }
-    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    var str = String(input).replace(/=+$/, "");
-    var output = "";
-    if (str.length % 4 === 1) return "";
-    for (var bc = 0, bs, buffer, idx = 0;
-         (buffer = str.charAt(idx++));
-         ~buffer && ((bs = bc % 4 ? bs * 64 + buffer : buffer),
-         bc++ % 4) ? (output += String.fromCharCode(255 & (bs >> ((-2 * bc) & 6)))) : 0) {
-        buffer = chars.indexOf(buffer);
-    }
-    return output;
-}
 
 function decodeBase64Safe(input) {
     if (!input) return "";
+    var b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
     var str = String(input).replace(/-/g, "+").replace(/_/g, "/");
-    while (str.length % 4 !== 0) {
-        str += "=";
+    while (str.length % 4 !== 0) str += "=";
+    
+    var output = "";
+    var chr1, chr2, chr3;
+    var enc1, enc2, enc3, enc4;
+    var i = 0;
+
+    str = str.replace(/[^A-Za-z0-9+/=]/g, "");
+
+    while (i < str.length) {
+        enc1 = b64.indexOf(str.charAt(i++));
+        enc2 = b64.indexOf(str.charAt(i++));
+        enc3 = b64.indexOf(str.charAt(i++));
+        enc4 = b64.indexOf(str.charAt(i++));
+
+        chr1 = (enc1 << 2) | (enc2 >> 4);
+        chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+        chr3 = ((enc3 & 3) << 6) | enc4;
+
+        output += String.fromCharCode(chr1);
+        if (enc3 !== 64 && enc3 !== -1) output += String.fromCharCode(chr2);
+        if (enc4 !== 64 && enc4 !== -1) output += String.fromCharCode(chr3);
     }
-    if (typeof atob === "function") {
-        try { return atob(str); } catch (e) {}
-    }
-    return pureAtob(str);
+    return output;
 }
 
 function normalizeText(text) {
@@ -125,13 +126,12 @@ function probeM3u8Quality(m3u8Url, headers) {
 function getServerLabel(url) {
     if (!url) return "Online";
     var u = url.toLowerCase();
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("fasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return "StreamWish";
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("flaswish") || u.includes("fasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return "StreamWish";
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) return "VidHide";
-    if (u.includes("filemoon")) return "Filemoon";
+    if (u.includes("filemoon") || u.includes("bysekoze")) return "Filemoon";
     if (u.includes("streamtape")) return "Streamtape";
     if (u.includes("mp4upload")) return "Mp4upload";
-    if (u.includes("goodstream")) return "GoodStream";
-    if (u.includes("vimeos")) return "Vimeos";
+    if (u.includes("playmudos") || u.includes("/jkplayer/um")) return "Desu / Magi";
     return "JKAnime";
 }
 
@@ -141,110 +141,93 @@ function getServerLabel(url) {
 
 function resolveStreamWish(url) {
     var targetUrl = url;
-    var idMatch = targetUrl.match(/\/(?:e|f|v|embed)\/([a-zA-Z0-9_-]+)/);
-    if (idMatch) {
-        targetUrl = "https://hlswish.com/e/" + idMatch[1];
-    }
-
-    console.log(`[JKAnime] Resolviendo StreamWish: ${targetUrl}`);
-
     return fetch(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" },
+        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
         redirect: "follow"
     })
-    .then(function(res) { return res.text(); })
-    .then(function(html) {
-        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
-            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
-            if (m3u8Match) {
-                var streamUrl = m3u8Match[1];
-                return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
-                    console.log(`[JKAnime] ✓ StreamWish (${q})`);
-                    return {
-                        url: streamUrl,
-                        serverName: "StreamWish",
-                        quality: q,
-                        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
-                    };
-                });
+    .then(function(res) {
+        var hostMatch = (res.url || targetUrl).match(/^(https?:\/\/[^/]+)/i);
+        var host = hostMatch ? hostMatch[1] : "https://flaswish.com";
+
+        return res.text().then(function(html) {
+            var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+            if (packMatch) {
+                var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
+                var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
+                if (m3u8Match) {
+                    var streamUrl = m3u8Match[1];
+                    if (streamUrl.startsWith("/")) streamUrl = host + streamUrl;
+                    return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
+                        return {
+                            url: streamUrl,
+                            serverName: "StreamWish",
+                            quality: q,
+                            headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
+                        };
+                    });
+                }
             }
-        }
-        var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
-        if (directMatch) {
-            return {
-                url: directMatch[0],
-                serverName: "StreamWish",
-                quality: "720p",
-                headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
-            };
-        }
-        return null;
+
+            var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
+            if (directMatch) {
+                return {
+                    url: directMatch[0],
+                    serverName: "StreamWish",
+                    quality: "720p",
+                    headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
+                };
+            }
+
+            return null;
+        });
     })
     .catch(function() { return null; });
 }
 
 function resolveVidHide(url) {
     var targetUrl = url;
-    var idMatch = targetUrl.match(/\/(?:e|f|v|embed)\/([a-zA-Z0-9_-]+)/);
-    if (idMatch) {
-        targetUrl = "https://vidhidepro.com/v/" + idMatch[1];
-    }
-
-    var hostMatch = targetUrl.match(/^(https?:\/\/[^/]+)/i);
-    var hostOrigin = hostMatch ? hostMatch[1] : "https://vidhidepro.com";
-
-    console.log(`[JKAnime] Resolviendo VidHide: ${targetUrl}`);
-
     return fetch(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" },
+        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
         redirect: "follow"
     })
     .then(function(res) {
-        var finalHost = (res.url || "").match(/^(https?:\/\/[^/]+)/i);
-        if (finalHost) hostOrigin = finalHost[1];
-        return res.text();
-    })
-    .then(function(html) {
-        var streamUrl = null;
-        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
-            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
-            if (m3u8Match) streamUrl = m3u8Match[1];
-        }
-        if (!streamUrl) {
-            var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
-            if (directMatch) streamUrl = directMatch[0];
-        }
+        var finalUrl = res.url || targetUrl;
+        var hostMatch = finalUrl.match(/^(https?:\/\/[^/]+)/i);
+        var host = hostMatch ? hostMatch[1] : "https://callistanise.com";
 
-        if (streamUrl) {
-            if (streamUrl.startsWith("/")) streamUrl = hostOrigin + streamUrl;
-            return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
-                console.log(`[JKAnime] ✓ VidHide (${q})`);
-                return {
-                    url: streamUrl,
-                    serverName: "VidHide",
-                    quality: q,
-                    headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
-                };
-            });
-        }
-        return null;
+        return res.text().then(function(html) {
+            var streamUrl = null;
+            var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+            if (packMatch) {
+                var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
+                var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
+                if (m3u8Match) streamUrl = m3u8Match[1];
+            }
+            if (!streamUrl) {
+                var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
+                if (directMatch) streamUrl = directMatch[0];
+            }
+
+            if (streamUrl) {
+                if (streamUrl.startsWith("/")) streamUrl = host + streamUrl;
+                return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": finalUrl }).then(function(q) {
+                    return {
+                        url: streamUrl,
+                        serverName: "VidHide",
+                        quality: q,
+                        headers: { "User-Agent": USER_AGENT, "Referer": finalUrl }
+                    };
+                });
+            }
+
+            return null;
+        });
     })
     .catch(function() { return null; });
 }
 
 function resolveMp4upload(url) {
     var targetUrl = url;
-    if (!targetUrl.includes("/embed-")) {
-        var idMatch = targetUrl.match(/\.com\/(?:embed-)?([a-zA-Z0-9]+)/);
-        if (idMatch) targetUrl = "https://www.mp4upload.com/embed-" + idMatch[1] + ".html";
-    }
-
-    console.log(`[JKAnime] Resolviendo Mp4upload: ${targetUrl}`);
-
     return fetch(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" },
         redirect: "follow"
@@ -257,7 +240,6 @@ function resolveMp4upload(url) {
             var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4[^"']*)["']/i) ||
                            unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*)["']/i);
             if (srcMatch) {
-                console.log(`[JKAnime] ✓ Mp4upload (720p)`);
                 return {
                     url: srcMatch[1],
                     serverName: "Mp4upload",
@@ -284,8 +266,6 @@ function resolveStreamtape(url) {
     var targetUrl = url.replace("/v/", "/e/");
     if (!targetUrl.startsWith("http")) targetUrl = "https://" + targetUrl.replace(/^\/\//, "");
 
-    console.log(`[JKAnime] Resolviendo Streamtape: ${targetUrl}`);
-
     return fetch(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
@@ -302,7 +282,6 @@ function resolveStreamtape(url) {
             else if (match[4]) part2 = match[4];
 
             var sUrl = "https:" + part1 + part2;
-            console.log(`[JKAnime] ✓ Streamtape (720p)`);
             return {
                 url: sUrl,
                 serverName: "Streamtape",
@@ -326,11 +305,34 @@ function resolveStreamtape(url) {
     .catch(function() { return null; });
 }
 
+function resolveDesuMagi(url) {
+    return fetch(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
+        redirect: "follow"
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var m3u8Match = html.match(/https?:\/\/[^"'\s\\]+playmudos\.com\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i) ||
+                        html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
+        if (m3u8Match) {
+            var streamUrl = m3u8Match[0];
+            return {
+                url: streamUrl,
+                serverName: "Desu",
+                quality: "1080p",
+                headers: { "User-Agent": USER_AGENT, "Referer": url }
+            };
+        }
+        return null;
+    })
+    .catch(function() { return null; });
+}
+
 function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
 
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("fasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) {
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("flaswish") || u.includes("fasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) {
         return resolveStreamWish(url);
     }
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) {
@@ -341,6 +343,9 @@ function dispatchResolver(url) {
     }
     if (u.includes("streamtape")) {
         return resolveStreamtape(url);
+    }
+    if (u.includes("/jkplayer/um") || u.includes("playmudos")) {
+        return resolveDesuMagi(url);
     }
 
     return Promise.resolve(null);
@@ -403,7 +408,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(html) {
             var rawEmbeds = [];
 
-            // 1. Extraer todos los tokens ?u=BASE64 del HTML completo
+            // 1. Extraer los tokens ?u=BASE64 de todo el HTML
             var uRegex = /[?&]u=([a-zA-Z0-9+/=_-]+)/gi;
             var uMatch;
             while ((uMatch = uRegex.exec(html)) !== null) {
@@ -413,11 +418,11 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 }
             }
 
-            // 2. Extraer enlaces directos de scripts o iframes
-            var directRegex = /["'](https?:\/\/(?:sfasthwish|streamwish|vidhide|mp4upload|streamtape)[^"'\s\\]+)["']/gi;
-            var dMatch;
-            while ((dMatch = directRegex.exec(html)) !== null) {
-                rawEmbeds.push(dMatch[1]);
+            // 2. Extraer reproductores Desu / Magi (/jkplayer/um?e=...)
+            var umRegex = /https?:\/\/jkanime\.net\/jkplayer\/um[^\s"'<>]+/gi;
+            var umMatch;
+            while ((umMatch = umRegex.exec(html)) !== null) {
+                rawEmbeds.push(umMatch[0].replace(/&amp;/g, "&"));
             }
 
             // Deduplicar URLs
@@ -479,7 +484,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            // Construir lista de búsqueda con ambos nombres y palabras clave
             var searchQueries = [];
             if (title && !hasJapaneseChars(title)) {
                 searchQueries.push(title);
