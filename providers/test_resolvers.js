@@ -1,26 +1,26 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-async function inspectHgLink() {
-    const url = "https://hglink.to/e/hzf2gnqi94cn";
-    console.log(`=== INSPECCIONANDO PÁGINA PUENTE: ${url} ===`);
+async function inspectMainJs() {
+    const mainJsUrl = "https://hglink.to/main.js?v=1.1.9";
+    console.log(`=== DESCARGANDO: ${mainJsUrl} ===`);
 
     try {
-        const res = await fetch(url, {
+        const res = await fetch(mainJsUrl, {
             headers: {
                 "User-Agent": USER_AGENT,
-                "Referer": "https://embed69.org/"
+                "Referer": "https://hglink.to/"
             }
         });
 
-        const html = await res.text();
-        console.log(`Tamaño HTML: ${html.length} caracteres`);
-        console.log("\n--- CONTENIDO HTML COMPLETO ---");
-        console.log(html);
-        console.log("--------------------------------\n");
+        const code = await res.text();
+        console.log(`Tamaño del JS: ${code.length} caracteres`);
+        console.log("\n--- CÓDIGO JS DE HGLINK ---");
+        console.log(code);
+        console.log("---------------------------\n");
 
     } catch (e) {
         console.error("Error:", e.message);
     }
 }
 
-inspectHgLink();
+inspectMainJs();
