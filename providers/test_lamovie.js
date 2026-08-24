@@ -1,35 +1,32 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const FAST_API = "https://lamovie.org/wp-api/v1";
 
-async function getWpTypes() {
-    console.log("=== CONSULTANDO TIPOS DE CONTENIDO EN WORDPRESS ===");
+async function probeEpisodeSequence() {
+    console.log("=== PROBANDO SECUENCIA DE IDs DE EPISODIOS ===");
+    const seriesId = 6844;
 
-    try {
-        const res = await fetch("https://lamovie.org/wp-json/wp/v2/types", {
-            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-        });
-        const json = await res.json();
-        
-        console.log("\n✅ Tipos de post registrados en LaMovie:");
-        for (const [key, val] of Object.entries(json)) {
-            console.log(`▶ Tipo: "${key}" -> REST Base: "${val.rest_base}" (${val.rest_namespace || 'wp/v2'})`);
-        }
-
-        // Si existe un endpoint para episodios o tvshows, lo probamos con The Last of Us (ID: 6844)
-        if (json.episodes || json.episodios || json.tvshows) {
-            const epBase = json.episodes?.rest_base || "episodes";
-            const testUrl = `https://lamovie.org/wp-json/wp/v2/${epBase}?parent=6844&per_page=20`;
-            console.log(`\nProbando consulta: ${testUrl}`);
-            const epRes = await fetch(testUrl, { headers: { "User-Agent": USER_AGENT } });
-            const epData = await epRes.json();
-            console.log(`Capítulos devueltos: ${epData.length || 0}`);
-            if (epData.length > 0) {
-                console.log("Primer capítulo:", epData[0].id, epData[0].title?.rendered || epData[0].slug);
+    // Probar del 6844 al 6865 para ver cuáles son episodios reales
+    for (let id = 6844; id <= 6865; id++) {
+        try {
+            const res = await fetch(`${FAST_API}/player?postId=${id}&demo=0`, {
+                headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
+            });
+            const json = await res.json();
+            
+            if (json && json.data && json.data.embeds && json.data.embeds.length > 0) {
+                const firstUrl = json.data.embeds[0].url || "";
+                if (!firstUrl.includes("embed.html")) {
+                    console.log(`✅ Post ID [${id}] -> ¡ES UN CAPÍTULO! (${json.data.embeds.length} servidores: ${json.data.embeds[0].server || 'OK'})`);
+                } else {
+                    console.log(`ℹ️ Post ID [${id}] -> Tráiler / Ficha general de serie`);
+                }
+            } else if (json && json.message === "Invalid post type") {
+                console.log(`❌ Post ID [${id}] -> Invalid post type`);
             }
+        } catch (e) {
+            console.log(`Error en ID ${id}:`, e.message);
         }
-
-    } catch (e) {
-        console.log("Error:", e.message);
     }
 }
 
-getWpTypes();
+probeEpisodeSequence();
