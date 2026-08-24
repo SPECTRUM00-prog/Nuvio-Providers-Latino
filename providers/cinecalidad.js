@@ -205,12 +205,14 @@ function searchCinecalidad(query, isTv) {
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var pattern = isTv ? /href=["'](https?:\/\/[^"']*cinecalidad[^"']*\/(?:ver-serie|serie)\/[^"']+)["']/gi
-                           : /href=["'](https?:\/\/[^"']*cinecalidad[^"']*\/(?:ver-pelicula|pelicula)\/[^"']+)["']/gi;
+        var pattern = isTv ? /href=["']((?:https?:\/\/[^"']*)?\/(?:ver-serie|serie)\/[^"']+)["']/gi
+                           : /href=["']((?:https?:\/\/[^"']*)?\/(?:ver-pelicula|pelicula)\/[^"']+)["']/gi;
         var matches = [];
         var m;
         while ((m = pattern.exec(html)) !== null) {
-            if (matches.indexOf(m[1]) === -1) matches.push(m[1]);
+            var full = m[1];
+            if (!full.startsWith("http")) full = BASE_URL + (full.startsWith("/") ? full : "/" + full);
+            if (matches.indexOf(full) === -1) matches.push(full);
         }
         return matches;
     })
@@ -232,17 +234,7 @@ function extractEmbedsFromPage(pageUrl) {
         if (!html) return [];
         var embeds = [];
 
-        // 1. Extraer URLs codificadas en zopass (?zopass=...)
-        var zopassRegex = /zopass=([a-zA-Z0-9+\/=_~-]+)/gi;
-        var zMatch;
-        while ((zMatch = zopassRegex.exec(html)) !== null) {
-            var decoded = decodeB64(zMatch[1]);
-            if (decoded && decoded.startsWith("http")) {
-                embeds.push(decoded);
-            }
-        }
-
-        // 2. Extraer data-option / data-url directos
+        // 1. Extraer data-option / data-url / data-src
         var optRegex = /(?:data-option|data-url|data-src)=["']([^"']+)["']/gi;
         var optMatch;
         while ((optMatch = optRegex.exec(html)) !== null) {
@@ -251,12 +243,21 @@ function extractEmbedsFromPage(pageUrl) {
                 var param = val.split("zopass=")[1].split("&")[0];
                 var dec = decodeB64(param);
                 if (dec && dec.startsWith("http")) embeds.push(dec);
-            } else if (val.startsWith("http")) {
+            } else if (val.startsWith("http") && !val.includes("youtube.com")) {
                 embeds.push(val);
             }
         }
 
-        // Quitar duplicados
+        // 2. Extraer zopass= directo si estuviera en otros atributos
+        var zopassRegex = /zopass=([a-zA-Z0-9+\/=_~-]+)/gi;
+        var zMatch;
+        while ((zMatch = zopassRegex.exec(html)) !== null) {
+            var decoded = decodeB64(zMatch[1]);
+            if (decoded && decoded.startsWith("http") && embeds.indexOf(decoded) === -1) {
+                embeds.push(decoded);
+            }
+        }
+
         return embeds.filter(function(item, pos, self) {
             return self.indexOf(item) === pos;
         });
@@ -275,10 +276,16 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     return getMediaData(tmdbId, mediaType).then(function(media) {
         if (!media) return [];
 
-        var query = media.title || media.originalTitle;
-        if (!query) return [];
+        var rawTitle = media.title || media.originalTitle || "";
+        var shortTitle = rawTitle.split(/[:\-\(]/)[0].trim(); // "Pablo Escobar: El Patrón..." -> "Pablo Escobar"
 
-        return searchCinecalidad(cleanTitle(query), isTv).then(function(urls) {
+        // Buscar con título simplificado o completo
+        return searchCinecalidad(cleanTitle(shortTitle), isTv).then(function(urls) {
+            if (urls.length === 0 && rawTitle !== shortTitle) {
+                return searchCinecalidad(cleanTitle(rawTitle), isTv);
+            }
+            return urls;
+        }).then(function(urls) {
             if (urls.length === 0 && media.originalTitle) {
                 return searchCinecalidad(cleanTitle(media.originalTitle), isTv);
             }
@@ -288,20 +295,16 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
             var targetPage = urls[0];
 
-            // Si es serie, transformar la URL de la serie a la del capítulo
+            // Si es serie, transformar a la URL del capítulo
             if (isTv) {
                 var s = parseInt(seasonNum || 1, 10);
                 var e = parseInt(episodeNum || 1, 10);
-                var epPadded = String(e).padStart(2, "0");
-
-                // De: https://www.cinecalidad.am/ver-serie/slug/
-                // A:  https://www.cinecalidad.am/ver-el-episodio/slug-1x1/
                 var slug = targetPage.replace(/\/$/, "").split("/").pop();
                 targetPage = BASE_URL + "/ver-el-episodio/" + slug + "-" + s + "x" + e + "/";
             }
 
             return extractEmbedsFromPage(targetPage).then(function(embeds) {
-                // Fallback con padding (ej: 1x01) si no devolvió nada
+                // Fallback con padding si fuera necesario (ej: 1x01)
                 if (embeds.length === 0 && isTv) {
                     var s = parseInt(seasonNum || 1, 10);
                     var e = parseInt(episodeNum || 1, 10);
