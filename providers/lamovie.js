@@ -2,11 +2,11 @@
  * Plugin de LaMovie para Nuvio
  */
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c"; // Clave pública de TMDB
+const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const SITE_URL = "https://lamovie.org";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-// 1. OBTENER INFORMACIÓN DESDE TMDB
+// 1. OBTENER INFORMACIÓN DE TMDB
 async function getTMDBInfo(tmdbId, mediaType) {
     try {
         const url = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX`;
@@ -19,32 +19,30 @@ async function getTMDBInfo(tmdbId, mediaType) {
             year: (data.release_date || data.first_air_date || "").substring(0, 4)
         };
     } catch (e) {
-        console.error("[Plugin] Error obteniendo TMDB:", e);
+        console.error("[Plugin] Error obteniendo TMDB:", e.message);
         return null;
     }
 }
 
-// 2. BUSCADOR DE LA WEB (API DE LAMOVIE)
-async function searchMedia(title) {
+// 2. BUSCADOR EN LA API DE LAMOVIE
+async function searchMedia(query) {
     try {
-        const searchUrl = `${SITE_URL}/wp-api/v1/search?postType=any&q=${encodeURIComponent(title)}&postsPerPage=5`;
+        const searchUrl = `${SITE_URL}/wp-api/v1/search?postType=any&q=${encodeURIComponent(query)}&postsPerPage=5`;
         const res = await fetch(searchUrl, {
             headers: {
                 "User-Agent": USER_AGENT,
                 "Accept": "application/json"
             }
         });
-        const data = await res.json();
-        
-        // Retorna los posts encontrados
-        return data.posts || (Array.isArray(data) ? data : []);
+        const json = await res.json();
+        return json?.data?.posts || [];
     } catch (e) {
-        console.error("[Plugin] Error en buscador:", e);
+        console.error("[Plugin] Error en buscador:", e.message);
         return [];
     }
 }
 
-// 3. EXTRACTOR / RESOLVER DE VIMEOS (Obtiene el .m3u8)
+// 3. EXTRACTOR / RESOLVER DE VIMEOS (HLS .m3u8)
 async function resolveVimeos(embedUrl) {
     try {
         const res = await fetch(embedUrl, {
@@ -55,7 +53,7 @@ async function resolveVimeos(embedUrl) {
         });
         const html = await res.text();
 
-        // Desempaquetador del script eval(...)
+        // Desempaquetador de la función eval(...) de Vimeos
         const match = html.match(/eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (match) {
             const [_, p, a, c, k] = match;
@@ -74,7 +72,7 @@ async function resolveVimeos(embedUrl) {
                 return words[idx] || token;
             });
 
-            // Extraer URL .m3u8 del script desempaquetado
+            // Extraer la URL .m3u8 del script desempaquetado
             const m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8Match) {
                 return {
@@ -89,41 +87,53 @@ async function resolveVimeos(embedUrl) {
         }
         return null;
     } catch (e) {
-        console.error("[Plugin] Error resolviendo Vimeos:", e);
+        console.error("[Plugin] Error resolviendo Vimeos:", e.message);
         return null;
     }
 }
 
-// 4. FUNCIÓN PRINCIPAL EXPORTADA PARA NUVIO
+// 4. FUNCIÓN PRINCIPAL PARA NUVIO
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-    console.log(`[Plugin] Iniciando búsqueda para TMDB: ${tmdbId} (${mediaType})`);
+    console.log(`[Plugin] Buscando en LaMovie para TMDB: ${tmdbId} (${mediaType})`);
     const streams = [];
 
     try {
-        // A. Obtener título desde TMDB
         const tmdbData = await getTMDBInfo(tmdbId, mediaType);
         if (!tmdbData) return [];
 
-        // B. Buscar el contenido en la web
-        const searchResults = await searchMedia(tmdbData.title);
-        if (!searchResults.length) {
-            console.log("[Plugin] No se encontraron resultados en la web");
+        console.log(`[Plugin] TMDB: "${tmdbData.title}" (${tmdbData.year})`);
+
+        // Buscar primero por el título en español latino, si no por el original
+        let posts = await searchMedia(tmdbData.title);
+        if (!posts.length && tmdbData.originalTitle) {
+            posts = await searchMedia(tmdbData.originalTitle);
+        }
+
+        if (!posts.length) {
+            console.log("[Plugin] No se encontraron resultados en LaMovie");
             return [];
         }
 
-        const item = searchResults[0]; // Tomamos la primera coincidencia
-        const postId = item.id || item._id;
+        const item = posts[0];
+        const postId = item._id || item.id;
+        console.log(`[Plugin] Post encontrado: "${item.title}" (ID: ${postId})`);
 
-        // C. Obtener los enlaces del reproductor
+        // Obtener los servidores del reproductor
         const playerRes = await fetch(`${SITE_URL}/wp-api/v1/player?postId=${postId}&demo=0`, {
-            headers: { "User-Agent": USER_AGENT }
+            headers: {
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json"
+            }
         });
         const playerData = await playerRes.json();
         const embeds = playerData?.data?.embeds || [];
 
-        // D. Resolver cada servidor de video encontrado
+        console.log(`[Plugin] Embeds encontrados: ${embeds.length}`);
+
+        // Procesar y resolver cada embed
         for (const embed of embeds) {
-            if (embed.url && embed.url.includes("vimeos.net")) {
+            if (embed.url && embed.url.includes("vimeos")) {
+                console.log(`[Plugin] Resolviendo servidor: ${embed.url}`);
                 const streamData = await resolveVimeos(embed.url);
                 if (streamData) {
                     streams.push({
@@ -139,12 +149,11 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         return streams;
     } catch (error) {
-        console.error("[Plugin] Error general:", error);
+        console.error("[Plugin] Error general:", error.message);
         return [];
     }
 }
 
-// Exportar la función para el motor de Nuvio
 if (typeof module !== "undefined") {
     module.exports = { getStreams };
 }
