@@ -49,14 +49,44 @@ function unpackDeanEdwards(p, a, c, k) {
     });
 }
 
+var QUALITY_MAPS = {
+    vimeos:     { x: "1080p", o: "1080p", h: "720p", n: "480p", l: "360p" },
+    goodstream: { x: "1080p", o: "1080p", h: "720p", n: "480p", l: "360p" },
+    vidhide:    { x: "1080p", o: "1080p", h: "1080p", n: "720p", l: "480p" },
+    streamwish: { x: "1080p", o: "1080p", h: "1080p", n: "720p", l: "480p" }
+};
+
+var QUALITY_ORDER = ["x", "o", "h", "n", "l"];
+
 function detectQualityFromUrl(url) {
-    if (!url) return "Unknown";
-    var match = url.match(/[_\-\/](\d{3,4})p/i);
-    if (match) return match[1] + "p";
-    if (url.includes("1080")) return "1080p";
-    if (url.includes("720")) return "720p";
-    if (url.includes("480")) return "480p";
-    if (url.includes("360")) return "360p";
+    if (!url) return "1080p";
+    var u = url.toLowerCase();
+    
+    var qMap = null;
+    if (u.includes("goodstream")) qMap = QUALITY_MAPS.goodstream;
+    else if (u.includes("vimeos")) qMap = QUALITY_MAPS.vimeos;
+    else if (u.includes("vidhide") || u.includes("minochinos")) qMap = QUALITY_MAPS.vidhide;
+    else if (u.includes("streamwish") || u.includes("hlswish") || u.includes("vibuxer")) qMap = QUALITY_MAPS.streamwish;
+    
+    if (qMap) {
+        var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
+        if (urlsetMatch) {
+            var tags = urlsetMatch[1].split(",");
+            for (var i = 0; i < QUALITY_ORDER.length; i++) {
+                var tag = QUALITY_ORDER[i];
+                if (tags.indexOf(tag) !== -1 && qMap[tag]) {
+                    return qMap[tag];
+                }
+            }
+        }
+    }
+
+    if (/4k|2160p?/i.test(u)) return "4K";
+    if (/1080p?/i.test(u)) return "1080p";
+    if (/720p?/i.test(u)) return "720p";
+    if (/480p?/i.test(u)) return "480p";
+    if (/360p?/i.test(u)) return "360p";
+
     return "1080p";
 }
 
@@ -256,7 +286,6 @@ function dispatchResolver(url) {
     if (u.includes("filemoon")) return resolveFilemoon(url);
     if (u.includes("videoapp")) return resolveVideoApp(url);
 
-    // VOE y Doodstream retornan seguro null
     return Promise.resolve(null);
 }
 
@@ -330,7 +359,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var candidateSlugs = [];
 
             if (isMovie) {
-                // Variantes de slugs para películas
                 candidateSlugs.push(slugClean);
                 if (year) candidateSlugs.push(`${slugClean}-${year}`);
                 if (origSlugClean && origSlugClean !== slugClean) {
@@ -339,7 +367,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
                 return getPostId(candidateSlugs, "movies");
             } else {
-                // Variantes de slugs para episodios
                 candidateSlugs.push(`${slugClean}-temporada-${season}-episodio-${episode}`);
                 candidateSlugs.push(`${slugClean}-temporada-${season}-capitulo-${episode}`);
                 candidateSlugs.push(`${slugClean}-${season}x${episode}`);
@@ -364,7 +391,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
             console.log(`[Hackstore] Embeds encontrados: ${embeds.length}`);
 
-            // Resolución concurrente con Promise.all
             var promises = embeds.map(function(embed) {
                 var url = embed.url || embed.link || "";
                 var lang = embed.lang || embed.language || "LAT";
