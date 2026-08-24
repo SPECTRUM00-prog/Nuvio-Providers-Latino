@@ -18,7 +18,9 @@ const DEFAULT_HEADERS = {
 // ==========================================
 
 function pureAtob(input) {
-    if (!input) return "";
+    if (typeof atob === "function") {
+        try { return atob(input); } catch (e) {}
+    }
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
     var str = String(input).replace(/=+$/, "");
     var output = "";
@@ -139,13 +141,15 @@ function getServerLabel(url) {
 
 function resolveStreamWish(url) {
     var targetUrl = url;
-    if (targetUrl.includes("hglink.to") || targetUrl.includes("hanerix.com")) {
-        var idMatch = targetUrl.match(/\/(?:e|f|v)\/([a-zA-Z0-9]+)/);
-        if (idMatch) targetUrl = "https://hlswish.com/e/" + idMatch[1];
+    var idMatch = targetUrl.match(/\/(?:e|f|v|embed)\/([a-zA-Z0-9_-]+)/);
+    if (idMatch) {
+        targetUrl = "https://hlswish.com/e/" + idMatch[1];
     }
 
+    console.log(`[JKAnime] Resolviendo StreamWish: ${targetUrl}`);
+
     return fetch(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" },
         redirect: "follow"
     })
     .then(function(res) { return res.text(); })
@@ -157,6 +161,7 @@ function resolveStreamWish(url) {
             if (m3u8Match) {
                 var streamUrl = m3u8Match[1];
                 return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
+                    console.log(`[JKAnime] ✓ StreamWish (${q})`);
                     return {
                         url: streamUrl,
                         serverName: "StreamWish",
@@ -182,17 +187,18 @@ function resolveStreamWish(url) {
 
 function resolveVidHide(url) {
     var targetUrl = url;
-    if (targetUrl.includes("callistanise.com/") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/")) {
-        targetUrl = targetUrl.replace("callistanise.com/", "callistanise.com/v/");
-    } else if (targetUrl.includes("vidhide") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/") && !targetUrl.includes("/embed/")) {
-        targetUrl = targetUrl.replace(/\.com\//, ".com/v/").replace(/\.pro\//, ".pro/v/").replace(/\.vip\//, ".vip/v/");
+    var idMatch = targetUrl.match(/\/(?:e|f|v|embed)\/([a-zA-Z0-9_-]+)/);
+    if (idMatch) {
+        targetUrl = "https://vidhidepro.com/v/" + idMatch[1];
     }
 
     var hostMatch = targetUrl.match(/^(https?:\/\/[^/]+)/i);
     var hostOrigin = hostMatch ? hostMatch[1] : "https://vidhidepro.com";
 
+    console.log(`[JKAnime] Resolviendo VidHide: ${targetUrl}`);
+
     return fetch(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" },
         redirect: "follow"
     })
     .then(function(res) {
@@ -216,6 +222,7 @@ function resolveVidHide(url) {
         if (streamUrl) {
             if (streamUrl.startsWith("/")) streamUrl = hostOrigin + streamUrl;
             return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
+                console.log(`[JKAnime] ✓ VidHide (${q})`);
                 return {
                     url: streamUrl,
                     serverName: "VidHide",
@@ -229,40 +236,14 @@ function resolveVidHide(url) {
     .catch(function() { return null; });
 }
 
-function resolveFilemoon(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
-        redirect: "follow"
-    })
-    .then(function(res) { return res.text(); })
-    .then(function(html) {
-        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
-            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
-            if (m3u8Match) {
-                var streamUrl = m3u8Match[1];
-                return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
-                    return {
-                        url: streamUrl,
-                        serverName: "Filemoon",
-                        quality: q,
-                        headers: { "User-Agent": USER_AGENT, "Referer": url }
-                    };
-                });
-            }
-        }
-        return null;
-    })
-    .catch(function() { return null; });
-}
-
 function resolveMp4upload(url) {
     var targetUrl = url;
     if (!targetUrl.includes("/embed-")) {
-        var idMatch = targetUrl.match(/\.com\/([a-zA-Z0-9]+)/);
+        var idMatch = targetUrl.match(/\.com\/(?:embed-)?([a-zA-Z0-9]+)/);
         if (idMatch) targetUrl = "https://www.mp4upload.com/embed-" + idMatch[1] + ".html";
     }
+
+    console.log(`[JKAnime] Resolviendo Mp4upload: ${targetUrl}`);
 
     return fetch(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" },
@@ -276,6 +257,7 @@ function resolveMp4upload(url) {
             var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4[^"']*)["']/i) ||
                            unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*)["']/i);
             if (srcMatch) {
+                console.log(`[JKAnime] ✓ Mp4upload (720p)`);
                 return {
                     url: srcMatch[1],
                     serverName: "Mp4upload",
@@ -302,6 +284,8 @@ function resolveStreamtape(url) {
     var targetUrl = url.replace("/v/", "/e/");
     if (!targetUrl.startsWith("http")) targetUrl = "https://" + targetUrl.replace(/^\/\//, "");
 
+    console.log(`[JKAnime] Resolviendo Streamtape: ${targetUrl}`);
+
     return fetch(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
@@ -317,8 +301,10 @@ function resolveStreamtape(url) {
             if (match[2] && match[3]) part2 = match[2].substring(parseInt(match[3]));
             else if (match[4]) part2 = match[4];
 
+            var sUrl = "https:" + part1 + part2;
+            console.log(`[JKAnime] ✓ Streamtape (720p)`);
             return {
-                url: "https:" + part1 + part2,
+                url: sUrl,
                 serverName: "Streamtape",
                 quality: "720p",
                 headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
@@ -349,9 +335,6 @@ function dispatchResolver(url) {
     }
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) {
         return resolveVidHide(url);
-    }
-    if (u.includes("filemoon")) {
-        return resolveFilemoon(url);
     }
     if (u.includes("mp4upload")) {
         return resolveMp4upload(url);
@@ -420,7 +403,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(html) {
             var rawEmbeds = [];
 
-            // 1. Extraer parámetro ?u=BASE64
+            // 1. Extraer todos los tokens ?u=BASE64 del HTML completo
             var uRegex = /[?&]u=([a-zA-Z0-9+/=_-]+)/gi;
             var uMatch;
             while ((uMatch = uRegex.exec(html)) !== null) {
@@ -430,18 +413,11 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 }
             }
 
-            // 2. Extraer del arreglo video[...]
-            var videoRegex = /video\[\d+\]\s*=\s*['"]<iframe[^>]+src=["']([^"']+)["']/gi;
-            var vMatch;
-            while ((vMatch = videoRegex.exec(html)) !== null) {
-                var vSrc = vMatch[1];
-                var vParam = vSrc.match(/[?&]u=([a-zA-Z0-9+/=_-]+)/);
-                if (vParam) {
-                    var d = decodeBase64Safe(vParam[1]);
-                    if (d && d.startsWith("http")) rawEmbeds.push(d);
-                } else if (vSrc.startsWith("http")) {
-                    rawEmbeds.push(vSrc);
-                }
+            // 2. Extraer enlaces directos de scripts o iframes
+            var directRegex = /["'](https?:\/\/(?:sfasthwish|streamwish|vidhide|mp4upload|streamtape)[^"'\s\\]+)["']/gi;
+            var dMatch;
+            while ((dMatch = directRegex.exec(html)) !== null) {
+                rawEmbeds.push(dMatch[1]);
             }
 
             // Deduplicar URLs
@@ -454,7 +430,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 return [];
             }
 
-            console.log(`[JKAnime] Servidores extraídos: ${uniqueEmbeds.length}`);
+            console.log(`[JKAnime] Servidores encontrados: ${uniqueEmbeds.length}`);
 
             var promises = uniqueEmbeds.map(function(embedUrl) {
                 return dispatchResolver(embedUrl)
