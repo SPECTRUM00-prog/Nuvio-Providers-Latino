@@ -1,47 +1,41 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-const BASE_URL = "https://lamovie.org";
+const FAST_API = "https://lamovie.org/wp-api/v1";
 
-async function findApiRoutesInBundle() {
-    console.log("=== BUSCANDO SCRIPTS REALES DE LAMOVIE ===");
+async function testEpisodeList() {
+    const seriesId = 6844; // The Last of Us
+    const season = 1;
+
+    console.log(`=== CONSULTANDO LISTA DE EPISODIOS ===`);
+    const url = `${FAST_API}/single/episodes/list?_id=${seriesId}&season=${season}&page=1&postsPerPage=50`;
+    console.log(`URL: ${url}`);
 
     try {
-        const pageRes = await fetch(`${BASE_URL}/series/the-last-of-us-2023/`, {
-            headers: { "User-Agent": USER_AGENT }
+        const res = await fetch(url, {
+            headers: {
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json"
+            }
         });
-        const html = await pageRes.text();
+        const json = await res.json();
+        console.log("\n✅ ¡Respuesta de la API recibida!");
+        console.log("Claves:", Object.keys(json?.data || json));
 
-        // 1. Extraer todas las etiquetas <script src="...">
-        const scriptSrcs = (html.match(/<script[^>]+src=["']([^"']+)["']/gi) || [])
-            .map(s => s.match(/src=["']([^"']+)["']/i)[1])
-            .filter(src => src.includes("app") || src.includes("bundle") || src.includes("main") || src.includes(".js"));
+        const posts = json?.data?.posts || json?.posts || [];
+        console.log(`Total de episodios encontrados: ${posts.length}`);
 
-        console.log("Scripts encontrados en la web:", scriptSrcs);
+        posts.forEach(ep => {
+            console.log(`▶ [Episodio ${ep.episode || ep.number || ep.episode_number}] "${ep.title}" -> Post ID: ${ep._id || ep.id}`);
+        });
 
-        for (let src of scriptSrcs) {
-            if (!src.startsWith("http")) {
-                src = src.startsWith("/") ? BASE_URL + src : `${BASE_URL}/${src}`;
-            }
-
-            console.log(`\nDescargando e inspeccionando: ${src}`);
-            const jsRes = await fetch(src, { headers: { "User-Agent": USER_AGENT } });
-            const jsCode = await jsRes.text();
-            console.log(`Tamaño del script: ${jsCode.length} caracteres`);
-
-            // Buscar cualquier llamada a wp-api o wpf
-            const apiCalls = jsCode.match(/(?:wp-api|wp-json|wpf)\/v1\/[a-zA-Z0-9_\-\/]+/g) || [];
-            const uniqueCalls = [...new Set(apiCalls)];
-
-            if (uniqueCalls.length > 0) {
-                console.log("✅ Rutas de API encontradas dentro de este JS:");
-                uniqueCalls.forEach(call => console.log(`  ▶ /${call}`));
-            }
-
-            // Buscar funciones de temporadas o episodios
-            const episodeFunctions = jsCode.match(/.{0,50}(?:seasons|episodes|temporadas|capitulos).{0,50}/gi) || [];
-            if (episodeFunctions.length > 0) {
-                console.log(`\nMuestra de referencias a episodios (${episodeFunctions.length} encontradas):`);
-                episodeFunctions.slice(0, 5).forEach((f, i) => console.log(`  [${i+1}] ...${f}...`));
-            }
+        // Probar obtener el reproductor del primer episodio de la lista
+        if (posts.length > 0) {
+            const firstEpId = posts[0]._id || posts[0].id;
+            console.log(`\nConsultando reproductor para el Episodio 1 (ID: ${firstEpId})...`);
+            const pRes = await fetch(`${FAST_API}/player?postId=${firstEpId}&demo=0`, {
+                headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
+            });
+            const pJson = await pRes.json();
+            console.log(`Servidores listos: ${pJson?.data?.embeds?.length}`);
         }
 
     } catch (e) {
@@ -49,4 +43,4 @@ async function findApiRoutesInBundle() {
     }
 }
 
-findApiRoutesInBundle();
+testEpisodeList();
