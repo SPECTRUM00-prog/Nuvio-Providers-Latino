@@ -110,7 +110,7 @@ function resolveGoodStream(embedUrl) {
         }
         var unpacked = unpackJS(html);
         if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i) ||
                        unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
             if (m3u8) {
                 var streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
@@ -148,7 +148,7 @@ function resolveStreamWish(embedUrl) {
         }
         var unpacked = unpackJS(html);
         if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i) ||
                        unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
             if (m3u8) {
                 var streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
@@ -182,7 +182,7 @@ function resolveFilemoon(embedUrl) {
         }
         var unpacked = unpackJS(html);
         if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i) ||
                        unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
             if (m3u8) {
                 var streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
@@ -193,6 +193,27 @@ function resolveFilemoon(embedUrl) {
                     headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
                 };
             }
+        }
+        return null;
+    })
+    .catch(function() { return null; });
+}
+
+function resolveVideoApp(embedUrl) {
+    return fetch(embedUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://www.cinecalidad.am/" }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i) ||
+                          html.match(/src=["'](https?:\/\/[^"']+)["']/i);
+
+        if (iframeMatch && iframeMatch[1]) {
+            var inner = iframeMatch[1];
+            if (inner.indexOf("vimeos") !== -1) return resolveVimeos(inner);
+            if (inner.indexOf("goodstream") !== -1) return resolveGoodStream(inner);
+            if (inner.indexOf("streamwish") !== -1 || inner.indexOf("hlswish") !== -1) return resolveStreamWish(inner);
+            if (inner.indexOf("filemoon") !== -1) return resolveFilemoon(inner);
         }
         return null;
     })
@@ -301,7 +322,7 @@ function extractEmbedsFromPage(pageUrl) {
         }
 
         // 2. Extraer enlaces directos de botones o links
-        var linkRegex = /href=["'](https?:\/\/[^"']*(?:vimeos|goodstream|hlswish|streamwish|filemoon|voe)[^"']*)["']/gi;
+        var linkRegex = /href=["'](https?:\/\/[^"']*(?:vimeos|goodstream|hlswish|streamwish|filemoon|videoapp|voe)[^"']*)["']/gi;
         var lMatch;
         while ((lMatch = linkRegex.exec(html)) !== null) {
             if (embeds.indexOf(lMatch[1]) === -1) embeds.push(lMatch[1]);
@@ -374,6 +395,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     promise = resolveGoodStream(embedUrl);
                 } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1) {
                     promise = resolveStreamWish(embedUrl);
+                } else if (u.indexOf("videoapp") !== -1) {
+                    promise = resolveVideoApp(embedUrl);
                 } else if (u.indexOf("filemoon") !== -1) {
                     promise = resolveFilemoon(embedUrl);
                 } else if (u.indexOf("voe") !== -1) {
