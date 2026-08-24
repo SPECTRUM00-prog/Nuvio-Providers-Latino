@@ -29,72 +29,66 @@ function unpackJS(packed) {
     }
 }
 
-async function resolveHgLinkDynamically(testUrl) {
-    console.log(`=== RESOLVIENDO REDIRECCIÓN DE HGLINK ===`);
-    console.log(`URL de entrada: ${testUrl}`);
+// Extractor directo probando los espejos activos de StreamWish
+async function testStreamWishDomains() {
+    const videoId = "hzf2gnqi94cn";
+    console.log(`=== PROBANDO ESPEJOS ACTIVOS DE STREAMWISH (ID: ${videoId}) ===`);
 
-    try {
-        // 1. Descargar el script de hglink
-        const jsRes = await fetch("https://hglink.to/main.js?v=1.1.9", {
-            headers: { "User-Agent": USER_AGENT, "Referer": "https://hglink.to/" }
-        });
-        const jsCode = await jsRes.text();
+    const domains = [
+        "https://hlswish.com/e/",
+        "https://streamwish.to/e/",
+        "https://streamwish.com/e/",
+        "https://swishcdn.com/e/",
+        "https://dwish.pro/e/",
+        "https://awish.pro/e/",
+        "https://mwish.pro/e/"
+    ];
 
-        // 2. Simular window.location para ejecutar la lógica de redirección
-        let resolvedFinalUrl = null;
-        const mockWindow = {
-            location: {
-                href: testUrl,
-                pathname: new URL(testUrl).pathname,
-                search: new URL(testUrl).search,
-                hostname: new URL(testUrl).hostname
+    for (const base of domains) {
+        const targetUrl = `${base}${videoId}`;
+        console.log(`\nConsultando: ${targetUrl}...`);
+
+        try {
+            const res = await fetch(targetUrl, {
+                headers: {
+                    "User-Agent": USER_AGENT,
+                    "Referer": targetUrl
+                },
+                redirect: "follow"
+            });
+
+            console.log(`Status: ${res.status} | URL Final: ${res.url}`);
+            if (res.status !== 200) continue;
+
+            const html = await res.text();
+            console.log(`Tamaño HTML: ${html.length} caracteres`);
+
+            // 1. Detección directa en sources / file
+            const direct = html.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
+                           html.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+            if (direct) {
+                console.log("\n🎉 ¡STREAM ENCONTRADO DE FORMA DIRECTA!");
+                console.log("URL:", direct[1]);
+                break;
             }
-        };
 
-        // Creamos una función segura para extraer el destination
-        const sandboxFunc = new Function("window", jsCode);
-        sandboxFunc(mockWindow);
-
-        resolvedFinalUrl = mockWindow.location.href;
-        console.log(`\n✅ ¡URL real de StreamWish descubierta!`);
-        console.log(`Destino: ${resolvedFinalUrl}`);
-
-        // 3. Consultar la página real de StreamWish
-        console.log(`\nConsultando reproductor final en: ${resolvedFinalUrl}...`);
-        const playerRes = await fetch(resolvedFinalUrl, {
-            headers: {
-                "User-Agent": USER_AGENT,
-                "Referer": resolvedFinalUrl
+            // 2. Desempaquetado JS
+            const unpacked = unpackJS(html);
+            if (unpacked) {
+                const m3u8Match = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
+                                  unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+                if (m3u8Match) {
+                    const finalUrl = (m3u8Match[1] || m3u8Match[0]).replace(/\\/g, "");
+                    console.log("\n🎉 ¡STREAM DESEMPAQUETADO CON ÉXITO!");
+                    console.log("URL:", finalUrl);
+                    break;
+                }
             }
-        });
-        const playerHtml = await playerRes.text();
-        console.log(`Tamaño HTML del reproductor: ${playerHtml.length} caracteres`);
 
-        // 4. Extraer el .m3u8
-        const direct = playerHtml.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-        if (direct) {
-            console.log("\n🎉 ¡STREAM HLS ENCONTRADO DIRECTO!");
-            console.log("URL:", direct[1]);
-            return;
+        } catch (e) {
+            console.log(`Error en ${base}:`, e.message);
         }
-
-        const unpacked = unpackJS(playerHtml);
-        if (unpacked) {
-            const m3u8Match = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
-                              unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-            if (m3u8Match) {
-                const streamUrl = (m3u8Match[1] || m3u8Match[0]).replace(/\\/g, "");
-                console.log("\n🎉 ¡STREAM HLS DESEMPAQUETADO CON ÉXITO!");
-                console.log("URL:", streamUrl);
-                return;
-            }
-        }
-
-        console.log("❌ No se encontró .m3u8 en la página final.");
-
-    } catch (e) {
-        console.error("Error:", e.message);
     }
 }
 
-resolveHgLinkDynamically("https://hglink.to/e/hzf2gnqi94cn");
+testStreamWishDomains();
