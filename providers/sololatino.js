@@ -1,5 +1,6 @@
 /**
- * Plugin de SoloLatino para Nuvio
+ * Plugin de SoloLatino (Player+ / Premium) para Nuvio
+ * Soporta Películas y Series
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -13,15 +14,21 @@ const HEADERS = {
     "Referer": "https://sololatino.net/"
 };
 
-// 1. OBTENER ID DE IMDB DESDE TMDB
-async function getImdbId(tmdbId, mediaType) {
+// 1. OBTENER INFORMACIÓN Y CÓDIGO IMDB DESDE TMDB
+async function getMediaData(tmdbId, mediaType) {
     try {
         const type = mediaType === "movie" ? "movie" : "tv";
-        const url = `https://api.themoviedb.org/3/${type}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
+        const url = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=external_ids`;
         const res = await fetch(url);
         const data = await res.json();
-        return data.imdb_id || null;
-    } catch {
+        
+        return {
+            title: data.title || data.name,
+            year: (data.release_date || data.first_air_date || "").substring(0, 4),
+            imdbId: data.external_ids?.imdb_id || data.imdb_id || null
+        };
+    } catch (e) {
+        console.error("[SoloLatino] Error TMDB:", e.message);
         return null;
     }
 }
@@ -88,7 +95,7 @@ async function resolveStreamWish(url) {
     }
 }
 
-// 3. CONSULTAR STREAM DIRECTO
+// 3. CONSULTAR EL STREAM INDIVIDUAL
 async function getDirectStream(serverId, token, cookie, playerUrl) {
     try {
         const postHeaders = {
@@ -129,35 +136,41 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     const streams = [];
 
     try {
-        const imdbId = await getImdbId(tmdbId, mediaType);
-        if (!imdbId) {
-            console.log("[SoloLatino] No se encontró IMDb ID");
+        // A. Consultar TMDB
+        const media = await getMediaData(tmdbId, mediaType);
+        if (!media || !media.imdbId) {
+            console.log("[SoloLatino] No se pudo obtener el IMDb ID desde TMDB.");
             return [];
         }
 
-        console.log(`[SoloLatino] IMDb ID: ${imdbId}`);
+        console.log(`[SoloLatino] "${media.title}" (${media.year}) | IMDb: ${media.imdbId}`);
 
+        // B. Formatear la URL de película o serie
         const isMovie = mediaType === "movie";
-        const s = parseInt(seasonNum || 1);
-        const e = parseInt(episodeNum || 1);
-        const epStr = e < 10 ? `0${e}` : e;
-        const slug = isMovie ? imdbId : `${imdbId}-${s}x${epStr}`;
+        let slug = media.imdbId;
+        if (!isMovie) {
+            const s = parseInt(seasonNum || 1);
+            const e = parseInt(episodeNum || 1);
+            const epStr = String(e).padStart(2, "0");
+            slug = `${media.imdbId}-${s}x${epStr}`;
+        }
+
         const playerUrl = `${BASE_URL}/f/${slug}`;
+        console.log(`[SoloLatino] Conectando a Player+: ${playerUrl}`);
 
-        console.log(`[SoloLatino] Cargando reproductor: ${playerUrl}`);
-
+        // C. Cargar reproductor y extraer Token
         const pageRes = await fetch(playerUrl, { headers: HEADERS });
         const html = await pageRes.text();
         const cookie = pageRes.headers.get("set-cookie") || "";
 
         const tokenMatch = html.match(/(?:let\s+token|const\s+_t|tok|_t|token)\s*.*['"]([a-f0-9]{32})['"]/);
         if (!tokenMatch) {
-            console.log("[SoloLatino] No se encontró token en el reproductor");
+            console.log("[SoloLatino] No se encontró token activo en el reproductor.");
             return [];
         }
 
         const token = tokenMatch[1];
-        console.log(`[SoloLatino] Token obtenido: ${token}`);
+        console.log(`[SoloLatino] Token de sesión: ${token}`);
 
         const postHeaders = {
             ...HEADERS,
@@ -166,17 +179,17 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         };
         if (cookie) postHeaders["cookie"] = cookie;
 
-        // Clic de activación
+        // D. Handshake de activación
         await fetch(`${BASE_URL}/s.php`, {
             method: "POST",
             headers: postHeaders,
             body: `a=click&tok=${token}`
         }).catch(() => {});
 
-        // Pausa de 1 segundo obligatoria para validación de sesión
-        await new Promise((r) => setTimeout(r, 1000));
+        // Pausa de 1.2 segundos para que el servidor registre la sesión
+        await new Promise((r) => setTimeout(r, 1200));
 
-        // Obtener lista de servidores
+        // E. Obtener lista de servidores disponibles
         const scanRes = await fetch(`${BASE_URL}/s.php`, {
             method: "POST",
             headers: postHeaders,
@@ -186,17 +199,17 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         const serverList = [];
         if (scanData?.langs_s?.LAT) {
-            serverList.push(...scanData.langs_s.LAT.map((srv) => ({ name: srv[0], id: srv[1], lang: "Latino" })));
+            serverList.push(...scanData.langs_s.LAT.map(s => ({ name: s[0], id: s[1], lang: "Latino" })));
         }
         if (scanData?.s) {
-            serverList.push(...scanData.s.map((srv) => ({ name: srv[0], id: srv[1], lang: "Latino" })));
+            serverList.push(...scanData.s.map(s => ({ name: s[0], id: s[1], lang: "Latino" })));
         }
 
-        // Eliminar duplicados por ID de servidor
-        const uniqueServers = Array.from(new Map(serverList.map((s) => [s.id, s])).values());
+        // Quitar servidores duplicados
+        const uniqueServers = Array.from(new Map(serverList.map(s => [s.id, s])).values());
         console.log(`[SoloLatino] Servidores encontrados: ${uniqueServers.length}`);
 
-        // Resolver servidores en paralelo
+        // F. Resolver servidores en paralelo
         const resolvePromises = uniqueServers.slice(0, 5).map(async (srv) => {
             const rawUrl = await getDirectStream(srv.id, token, cookie, playerUrl);
             if (!rawUrl) return null;
