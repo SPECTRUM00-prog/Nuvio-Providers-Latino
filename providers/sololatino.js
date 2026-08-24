@@ -1,6 +1,5 @@
 /**
- * Plugin de SoloLatino (Motor SLPLAYER / Multi-Server) para Nuvio
- * Soporta Películas y Series en Español Latino / Castellano
+ * Plugin de SoloLatino (Motor SLPLAYER / Debug Mode) para Nuvio
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -14,7 +13,6 @@ const HEADERS = {
     "Referer": `${BASE_URL}/`
 };
 
-// Decodificador Base64 universal con padding automático
 function decodeB64(str) {
     if (!str) return null;
     try {
@@ -26,7 +24,6 @@ function decodeB64(str) {
     }
 }
 
-// 1. OBTENER INFORMACIÓN DE TMDB
 async function getMediaData(tmdbId, mediaType) {
     try {
         const type = mediaType === "movie" ? "movie" : "tv";
@@ -45,43 +42,10 @@ async function getMediaData(tmdbId, mediaType) {
     }
 }
 
-// 2. EXTRACTORES DE VIDEO UNIVERSALES
-
-// Extractor VOE (soporta voe.sx, johnbeyondnation, marissashare, cloudwindow)
 async function resolveVOE(url) {
     try {
-        const res = await fetch(url, {
-            headers: { "User-Agent": USER_AGENT, "Referer": url },
-            redirect: "follow"
-        });
+        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" });
         const html = await res.text();
-
-        // A. Intentar descifrar script JSON
-        const jsonMatch = html.match(/<script type="application\/json">([\s\S]*?)<\/script>/);
-        if (jsonMatch) {
-            try {
-                let enc = JSON.parse(jsonMatch[1].trim());
-                if (Array.isArray(enc)) enc = enc[0];
-                let rot = enc.replace(/[a-zA-Z]/g, c => {
-                    const code = c.charCodeAt(0);
-                    const limit = c <= "Z" ? 90 : 122;
-                    return String.fromCharCode(limit >= code + 13 ? code + 13 : code - 13);
-                });
-                ["@$", "^^", "~@", "%?", "*~", "!!", "#&"].forEach(n => rot = rot.split(n).join(""));
-                const b64 = decodeB64(rot);
-                if (b64) {
-                    let shifted = "";
-                    for (let i = 0; i < b64.length; i++) shifted += String.fromCharCode(b64.charCodeAt(i) - 3);
-                    const decrypted = decodeB64(shifted.split("").reverse().join(""));
-                    const data = JSON.parse(decrypted);
-                    if (data && (data.source || data.direct_access_url)) {
-                        return { url: data.source || data.direct_access_url, quality: "1080p", server: "VOE" };
-                    }
-                }
-            } catch {}
-        }
-
-        // B. Fallback directo en HTML
         const directMatch = html.match(/(?:mp4|hls)'\s*:\s*'([^']+)'/i) || html.match(/(?:mp4|hls)"\s*:\s*"([^"]+)"/i);
         if (directMatch) {
             let streamUrl = directMatch[1];
@@ -94,57 +58,23 @@ async function resolveVOE(url) {
     }
 }
 
-// Extractor StreamWish (soporta streamwish, hlswish, hglink, hanerix, strwish)
 async function resolveStreamWish(url) {
     try {
-        const res = await fetch(url, {
-            headers: { "User-Agent": USER_AGENT, "Referer": url },
-            redirect: "follow"
-        });
+        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" });
         const html = await res.text();
-
-        // A. Búsqueda directa
         const fileMatch = html.match(/file\s*:\s*["']([^"']+)["']/i);
-        if (fileMatch) {
-            return { url: fileMatch[1], quality: "1080p", server: "StreamWish" };
-        }
-
-        // B. Desempaquetador eval
-        const packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-z]\)\{[\s\S]*?\}\s*\('([\s\S]+?)',\s*(\d+),\s*(\d+),\s*'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            const [, p, a, , k] = packMatch;
-            const radix = parseInt(a);
-            const words = k.split("|");
-            const baseAlphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-            const unbase = (str) => {
-                let result = 0;
-                for (let i = 0; i < str.length; i++) result = result * radix + baseAlphabet.indexOf(str[i]);
-                return result;
-            };
-            const unpacked = p.replace(/\b([0-9a-zA-Z]+)\b/g, m => words[unbase(m)] || m);
-            const m3u8 = unpacked.match(/https?:\/\/[^"'\s]+\.m3u8[^"'\s]*/);
-            if (m3u8) {
-                return { url: m3u8[0], quality: "1080p", server: "StreamWish" };
-            }
-        }
+        if (fileMatch) return { url: fileMatch[1], quality: "1080p", server: "StreamWish" };
         return null;
     } catch {
         return null;
     }
 }
 
-// Extractor VidHide (soporta vidhide, minochinos, dintezuvio, vadisov)
 async function resolveVidHide(url) {
     try {
-        const res = await fetch(url, {
-            headers: { "User-Agent": USER_AGENT, "Referer": url },
-            redirect: "follow"
-        });
+        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" });
         const html = await res.text();
-
-        const rawMatch = html.match(/"hls[24]"\s*:\s*"([^"]+)"/) || 
-                         html.match(/file\s*:\s*["']([^"']+)["']/i) ||
-                         html.match(/["'](https?:\/\/[^"']+?\/stream\/[^"']+?\.m3u8[^"']*?)["']/i);
+        const rawMatch = html.match(/"hls[24]"\s*:\s*"([^"]+)"/) || html.match(/file\s*:\s*["']([^"']+)["']/i);
         if (rawMatch) {
             let finalUrl = rawMatch[1];
             if (!finalUrl.startsWith("http")) finalUrl = new URL(url).origin + finalUrl;
@@ -156,72 +86,18 @@ async function resolveVidHide(url) {
     }
 }
 
-// 3. EXTRAER Y DESCIFRAR REPRODUCTORES
 function extractDecodedEmbeds(html) {
     const embeds = [];
-
-    // Método A: Buscar variable dataLink
-    const match = html.match(/let\s+dataLink\s*=\s*((\[[\s\S]*?\])|(\{[\s\S]*?\}))\s*;/);
-    if (match) {
-        try {
-            const rawData = JSON.parse(match[1].replace(/\\\//g, "/"));
-            const list = Array.isArray(rawData) ? rawData : Object.values(rawData);
-
-            for (const item of list) {
-                const lang = (item.video_language || "").toUpperCase();
-                const langLabel = lang === "ESP" ? "Castellano" : lang === "SUB" ? "Subtitulado" : "Latino";
-
-                if (Array.isArray(item.sortedEmbeds)) {
-                    for (const embed of item.sortedEmbeds) {
-                        let link = embed.link;
-                        if (!link) continue;
-
-                        // Descifrar JWT si viene en formato (header.payload.sig)
-                        if (link.includes(".")) {
-                            const parts = link.split(".");
-                            if (parts.length === 3) {
-                                const payload = decodeB64(parts[1]);
-                                if (payload) {
-                                    try {
-                                        const parsed = JSON.parse(payload);
-                                        link = parsed.link || link;
-                                    } catch {}
-                                }
-                            }
-                        }
-
-                        if (link.startsWith("http") && !link.includes("/d/")) {
-                            embeds.push({
-                                url: link,
-                                server: embed.servername || "Servidor",
-                                lang: langLabel
-                            });
-                        }
-                    }
-                }
-            }
-        } catch (e) {
-            console.error("[SoloLatino] Error analizando dataLink:", e.message);
-        }
-    }
-
-    // Método B: Fallback buscando iframes directos en el HTML
     const regexDirect = /https?:\/\/[^"'\s<>]+(?:minochinos|vidhide|streamwish|hlswish|hglink|hanerix|voe\.sx|johnbeyondnation)[^"'\s<>]*/gi;
-    let directM;
-    while ((directM = regexDirect.exec(html)) !== null) {
-        if (!embeds.some(e => e.url === directM[0])) {
-            embeds.push({
-                url: directM[0],
-                server: "Servidor",
-                lang: "Latino"
-            });
+    let m;
+    while ((m = regexDirect.exec(html)) !== null) {
+        if (!embeds.some(e => e.url === m[0])) {
+            embeds.push({ url: m[0], server: "Servidor", lang: "Latino" });
         }
     }
-
     return embeds;
 }
 
-// 4. FUNCIÓN PRINCIPAL PARA NUVIO
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return [];
 
@@ -237,7 +113,6 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         console.log(`[SoloLatino] "${media.title}" (${media.year}) | IMDb: ${media.imdbId}`);
 
-        // Construir la URL de SLPlayer
         const isMovie = mediaType === "movie";
         let targetUrl = `${BASE_URL}/f/${media.imdbId}`;
         if (!isMovie) {
@@ -252,26 +127,19 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         const pageRes = await fetch(targetUrl, { headers: HEADERS });
         const html = await pageRes.text();
 
+        // LÍNEAS DE DEPURACIÓN
+        console.log(`[Debug] Código HTTP: ${pageRes.status} ${pageRes.statusText}`);
+        console.log(`[Debug] Fragmento recibido:\n${html.substring(0, 200)}...\n`);
+
         const embeds = extractDecodedEmbeds(html);
         console.log(`[SoloLatino] Reproductores detectados: ${embeds.length}`);
 
-        // Resolver todos los servidores en paralelo
         const resolvePromises = embeds.map(async (item) => {
             const u = item.url.toLowerCase();
             let res = null;
-
-            // VOE y sus espejos
-            if (u.includes("voe") || u.includes("johnbeyondnation") || u.includes("marissashare")) {
-                res = await resolveVOE(item.url);
-            }
-            // StreamWish y sus espejos
-            else if (u.includes("streamwish") || u.includes("hlswish") || u.includes("hglink") || u.includes("hanerix") || u.includes("strwish")) {
-                res = await resolveStreamWish(item.url);
-            }
-            // VidHide y sus espejos
-            else if (u.includes("vidhide") || u.includes("minochinos") || u.includes("dintezuvio")) {
-                res = await resolveVidHide(item.url);
-            }
+            if (u.includes("voe") || u.includes("johnbeyondnation")) res = await resolveVOE(item.url);
+            else if (u.includes("streamwish") || u.includes("hlswish") || u.includes("hglink") || u.includes("hanerix")) res = await resolveStreamWish(item.url);
+            else if (u.includes("vidhide") || u.includes("minochinos")) res = await resolveVidHide(item.url);
 
             if (res && res.url) {
                 return {
@@ -279,10 +147,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     title: `${res.quality} · ${res.server} (${item.lang})`,
                     url: res.url,
                     quality: res.quality,
-                    headers: {
-                        "User-Agent": USER_AGENT,
-                        "Referer": item.url
-                    }
+                    headers: { "User-Agent": USER_AGENT, "Referer": item.url }
                 };
             }
             return null;
@@ -290,9 +155,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         const results = await Promise.allSettled(resolvePromises);
         for (const r of results) {
-            if (r.status === "fulfilled" && r.value) {
-                streams.push(r.value);
-            }
+            if (r.status === "fulfilled" && r.value) streams.push(r.value);
         }
 
         return streams;
