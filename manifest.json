@@ -8,7 +8,7 @@
       "description": "Películas y Series en Español Latino desde LaMovie.",
       "version": "2.0.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/lamovie.js",
       "enabled": true,
       "contentLanguage": ["es"]
