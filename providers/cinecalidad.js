@@ -22,17 +22,6 @@ function decodeB64(str) {
     }
 }
 
-// Convertir títulos a Slugs para URLs
-function slugify(text) {
-    return text.normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, "")
-        .replace(/\s+/g, "-")
-        .replace(/-+/g, "-")
-        .replace(/^-|-$/g, "");
-}
-
 // 1. OBTENER INFORMACIÓN DE TMDB
 async function getTMDBInfo(tmdbId, mediaType) {
     try {
@@ -51,26 +40,29 @@ async function getTMDBInfo(tmdbId, mediaType) {
     }
 }
 
-// 2. EXTRACTORES DE VIDEO
-// Extractor VOE
-async function resolveVOE(url) {
+// 2. BUSCADOR DE CINECALIDAD (Obtiene el link real /ver-pelicula/...)
+async function searchCinecalidad(query) {
     try {
-        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: url } });
+        const searchUrl = `${SITE_URL}/?s=${encodeURIComponent(query)}`;
+        const res = await fetch(searchUrl, { headers: HEADERS });
         const html = await res.text();
 
-        // Buscar enlaces directos en HLS o MP4
-        const directMatch = html.match(/(?:mp4|hls)'\s*:\s*'([^']+)'/i) || html.match(/(?:mp4|hls)"\s*:\s*"([^"]+)"/i);
-        if (directMatch) {
-            let streamUrl = directMatch[1];
-            if (streamUrl.startsWith("aHR0")) streamUrl = decodeB64(streamUrl);
-            return { url: streamUrl, quality: "1080p", server: "VOE" };
+        // Buscar enlaces que apunten a /ver-pelicula/
+        const matches = [];
+        const regex = /href="([^"]*\/ver-pelicula\/[^"]+)"/g;
+        let match;
+        while ((match = regex.exec(html)) !== null) {
+            matches.push(match[1]);
         }
-        return null;
-    } catch {
-        return null;
+
+        return [...new Set(matches)];
+    } catch (e) {
+        console.error("[CineCalidad] Error en buscador:", e.message);
+        return [];
     }
 }
 
+// 3. EXTRACTORES DE VIDEO
 // Extractor Vimeos
 async function resolveVimeos(url) {
     try {
@@ -101,14 +93,31 @@ async function resolveVimeos(url) {
     }
 }
 
+// Extractor VOE
+async function resolveVOE(url) {
+    try {
+        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: url } });
+        const html = await res.text();
+        const directMatch = html.match(/(?:mp4|hls)'\s*:\s*'([^']+)'/i) || html.match(/(?:mp4|hls)"\s*:\s*"([^"]+)"/i);
+        if (directMatch) {
+            let streamUrl = directMatch[1];
+            if (streamUrl.startsWith("aHR0")) streamUrl = decodeB64(streamUrl);
+            return { url: streamUrl, quality: "1080p", server: "VOE" };
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
 // Extractor StreamWish / HLSWish
 async function resolveStreamWish(url) {
     try {
-        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://streamwish.to/" } });
+        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://hlswish.com/" } });
         const html = await res.text();
         const fileMatch = html.match(/file\s*:\s*["']([^"']+)["']/i);
         if (fileMatch) {
-            return { url: fileMatch[1], quality: "1080p", server: "StreamWish" };
+            return { url: fileMatch[1], quality: "1080p", server: "HLSWish" };
         }
         return null;
     } catch {
@@ -131,19 +140,30 @@ async function resolveGoodStream(url) {
     }
 }
 
-// 3. EXTRAER ENLACES BASE64 DEL HTML DE CINECALIDAD
+// 4. EXTRAER REPRODUCTORES DEL HTML DE LA PELÍCULA
 function extractEmbedUrls(html) {
     const rawMatches = [];
-    const regex = /data-src="([A-Za-z0-9+/=]{20,})"/g;
+    
+    // Buscar atributos data-src o enlaces en Base64
+    const b64Regex = /(?:data-src|data-url|href)="([A-Za-z0-9+/=]{20,})"/g;
     let match;
-    while ((match = regex.exec(html)) !== null) {
+    while ((match = b64Regex.exec(html)) !== null) {
         rawMatches.push(match[1]);
     }
 
-    return [...new Set(rawMatches.map(decodeB64).filter(u => u && u.startsWith("http")))];
+    // Decodificar Base64
+    const decoded = rawMatches.map(decodeB64).filter(u => u && u.startsWith("http"));
+
+    // Buscar también enlaces directos en texto claro
+    const directRegex = /https?:\/\/[^"'\s<>]+(?:vimeos\.net|voe\.sx|goodstream\.one|hlswish\.com|streamwish\.[a-z]+)[^"'\s<>]*/gi;
+    while ((match = directRegex.exec(html)) !== null) {
+        decoded.push(match[0]);
+    }
+
+    return [...new Set(decoded)];
 }
 
-// 4. FUNCIÓN PRINCIPAL DE NUVIO
+// 5. FUNCIÓN PRINCIPAL PARA NUVIO
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (mediaType === "tv") {
         console.log("[CineCalidad] Las series no están soportadas en esta web.");
@@ -159,39 +179,32 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         console.log(`[CineCalidad] Película: "${tmdbData.title}" (${tmdbData.year})`);
 
-        // Posibles slugs para la URL de CineCalidad
-        const slugCandidates = [
-            slugify(tmdbData.title),
-            `${slugify(tmdbData.title)}-2`,
-            tmdbData.originalTitle ? slugify(tmdbData.originalTitle) : null
-        ].filter(Boolean);
-
-        let movieHtml = null;
-
-        for (const slug of slugCandidates) {
-            const pageUrl = `${SITE_URL}/pelicula/${slug}/`;
-            try {
-                const res = await fetch(pageUrl, { headers: HEADERS });
-                if (res.ok) {
-                    movieHtml = await res.text();
-                    console.log(`[CineCalidad] Encontrado: ${pageUrl}`);
-                    break;
-                }
-            } catch {}
+        // 1. Buscar en CineCalidad
+        let movieUrls = await searchCinecalidad(tmdbData.title);
+        if (!movieUrls.length && tmdbData.originalTitle) {
+            movieUrls = await searchCinecalidad(tmdbData.originalTitle);
         }
 
-        if (!movieHtml) {
-            console.log("[CineCalidad] No se encontró la película por slug.");
+        if (!movieUrls.length) {
+            console.log("[CineCalidad] No se encontraron resultados en el buscador.");
             return [];
         }
 
+        const targetUrl = movieUrls[0];
+        console.log(`[CineCalidad] Página encontrada: ${targetUrl}`);
+
+        // 2. Cargar la página de la película
+        const pageRes = await fetch(targetUrl, { headers: HEADERS });
+        const movieHtml = await pageRes.text();
+
+        // 3. Extraer embeds
         const embedUrls = extractEmbedUrls(movieHtml);
         console.log(`[CineCalidad] Embeds encontrados: ${embedUrls.length}`);
 
-        // Resolver todos los servidores en paralelo
+        // 4. Resolver todos los servidores en paralelo
         const resolvePromises = embedUrls.map(async (url) => {
-            if (url.includes("voe.sx")) return await resolveVOE(url);
             if (url.includes("vimeos")) return await resolveVimeos(url);
+            if (url.includes("voe.sx")) return await resolveVOE(url);
             if (url.includes("streamwish") || url.includes("hlswish") || url.includes("strwish")) return await resolveStreamWish(url);
             if (url.includes("goodstream")) return await resolveGoodStream(url);
             return null;
