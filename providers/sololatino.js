@@ -1,21 +1,21 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
- * Compatible con Android TV y FireTV (Hermes Engine - 100% Pure JS / Zero-Dependencies)
+ * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains / No async-await)
  */
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const BASE_URL = "https://embed69.org";
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var BASE_URL = "https://embed69.org";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 // ==========================================
-// 1. HELPERS PUROS: BASE64 & UTF-8 (HERMES SAFE)
+// 1. HELPERS PUROS: BASE64 & UTF-8 (HERMES)
 // ==========================================
 function decodeB64ToBytes(b64) {
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    let str = String(b64).replace(/[=]+$/, "");
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    var str = String(b64).replace(/[=]+$/, "");
     if (str.length % 4 === 1) return new Uint8Array(0);
-    let output = [];
-    for (let bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output.push(255 & bs >> (-2 * bc & 6)) : 0) {
+    var output = [];
+    for (var bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output.push(255 & bs >> (-2 * bc & 6)) : 0) {
         buffer = chars.indexOf(buffer);
     }
     return new Uint8Array(output);
@@ -23,16 +23,16 @@ function decodeB64ToBytes(b64) {
 
 function decodeB64(input) {
     if (!input) return null;
-    const bytes = decodeB64ToBytes(input);
-    let str = "";
-    for (let i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
+    var bytes = decodeB64ToBytes(input);
+    var str = "";
+    for (var i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
     return str;
 }
 
 function stringToUtf8Bytes(str) {
-    const bytes = [];
-    for (let i = 0; i < str.length; i++) {
-        let code = str.charCodeAt(i);
+    var bytes = [];
+    for (var i = 0; i < str.length; i++) {
+        var code = str.charCodeAt(i);
         if (code < 0x80) {
             bytes.push(code);
         } else if (code < 0x800) {
@@ -49,24 +49,24 @@ function stringToUtf8Bytes(str) {
 }
 
 function utf8BytesToString(bytes) {
-    let str = "";
-    let i = 0;
+    var str = "";
+    var i = 0;
     while (i < bytes.length) {
-        let b1 = bytes[i++];
+        var b1 = bytes[i++];
         if (b1 < 0x80) {
             str += String.fromCharCode(b1);
         } else if (b1 > 0xbf && b1 < 0xe0) {
-            let b2 = bytes[i++];
+            var b2 = bytes[i++];
             str += String.fromCharCode(((b1 & 0x1f) << 6) | (b2 & 0x3f));
         } else if (b1 > 0xdf && b1 < 0xf0) {
-            let b2 = bytes[i++];
-            let b3 = bytes[i++];
+            var b2 = bytes[i++];
+            var b3 = bytes[i++];
             str += String.fromCharCode(((b1 & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f));
         } else {
-            let b2 = bytes[i++];
-            let b3 = bytes[i++];
-            let b4 = bytes[i++];
-            let code = (((b1 & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f)) - 0x10000;
+            var b2 = bytes[i++];
+            var b3 = bytes[i++];
+            var b4 = bytes[i++];
+            var code = (((b1 & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f)) - 0x10000;
             str += String.fromCharCode(0xd800 + (code >> 10), 0xdc00 + (code & 0x3ff));
         }
     }
@@ -74,11 +74,11 @@ function utf8BytesToString(bytes) {
 }
 
 // ==========================================
-// 2. MOTOR SHA-256 PURO (Zero Dependencies)
+// 2. MOTOR SHA-256 PURO (Síncrono y Nativo)
 // ==========================================
 function sha256(input) {
-    const bytes = typeof input === "string" ? stringToUtf8Bytes(input) : input;
-    const K = [
+    var bytes = typeof input === "string" ? stringToUtf8Bytes(input) : input;
+    var K = [
         0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
         0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
         0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
@@ -89,74 +89,62 @@ function sha256(input) {
         0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
     ];
 
-    let H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
     
-    const bitLen = bytes.length * 8;
-    const newLen = (((bytes.length + 8) >> 6) + 1) << 6;
-    const padded = new Uint8Array(newLen);
+    var bitLen = bytes.length * 8;
+    var newLen = (((bytes.length + 8) >> 6) + 1) << 6;
+    var padded = new Uint8Array(newLen);
     padded.set(bytes);
     padded[bytes.length] = 0x80;
 
-    const view = new DataView(padded.buffer);
+    var view = new DataView(padded.buffer);
     view.setUint32(newLen - 4, bitLen, false);
 
-    const W = new Uint32Array(64);
+    var W = new Uint32Array(64);
 
-    for (let i = 0; i < newLen; i += 64) {
-        for (let t = 0; t < 16; t++) W[t] = view.getUint32(i + t * 4, false);
-        for (let t = 16; t < 64; t++) {
-            const gamma0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
-            const gamma1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
+    for (var i = 0; i < newLen; i += 64) {
+        for (var t = 0; t < 16; t++) W[t] = view.getUint32(i + t * 4, false);
+        for (var t = 16; t < 64; t++) {
+            var gamma0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
+            var gamma1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
             W[t] = (W[t - 16] + gamma0 + W[t - 7] + gamma1) | 0;
         }
 
-        let [a, b, c, d, e, f, g, h] = H;
+        var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
 
-        for (let t = 0; t < 64; t++) {
-            const S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-            const ch = (e & f) ^ (~e & g);
-            const temp1 = (h + S1 + ch + K[t] + W[t]) | 0;
-            const S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-            const maj = (a & b) ^ (a & c) ^ (b & c);
-            const temp2 = (S0 + maj) | 0;
+        for (var t = 0; t < 64; t++) {
+            var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+            var ch = (e & f) ^ (~e & g);
+            var temp1 = (h + S1 + ch + K[t] + W[t]) | 0;
+            var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+            var maj = (a & b) ^ (a & c) ^ (b & c);
+            var temp2 = (S0 + maj) | 0;
 
-            h = g;
-            g = f;
-            f = e;
-            e = (d + temp1) | 0;
-            d = c;
-            c = b;
-            b = a;
-            a = (temp1 + temp2) | 0;
+            h = g; g = f; f = e; e = (d + temp1) | 0;
+            d = c; c = b; b = a; a = (temp1 + temp2) | 0;
         }
 
-        H[0] = (H[0] + a) | 0;
-        H[1] = (H[1] + b) | 0;
-        H[2] = (H[2] + c) | 0;
-        H[3] = (H[3] + d) | 0;
-        H[4] = (H[4] + e) | 0;
-        H[5] = (H[5] + f) | 0;
-        H[6] = (H[6] + g) | 0;
-        H[7] = (H[7] + h) | 0;
+        H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+        H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
     }
 
-    const out = new Uint8Array(32);
-    const outView = new DataView(out.buffer);
-    for (let i = 0; i < 8; i++) outView.setUint32(i * 4, H[i], false);
+    var out = new Uint8Array(32);
+    var outView = new DataView(out.buffer);
+    for (var i = 0; i < 8; i++) outView.setUint32(i * 4, H[i], false);
     return out;
 }
 
 function sha256Hex(str) {
-    const bytes = sha256(str);
-    let hex = "";
-    for (let i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
+    var bytes = sha256(str);
+    var hex = "";
+    for (var i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
     return hex;
 }
 
 // ==========================================
-// 3. MOTOR AES-256-CBC PURO (Zero Dependencies)
+// 3. MOTOR AES-256-CBC PURO
 // ==========================================
-const SBOX = new Uint8Array([
+var SBOX = new Uint8Array([
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
     0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
     0xb7,0xfd,0x93,0x26,0x36,0x3f,0xf7,0xcc,0x34,0xa5,0xe5,0xf1,0x71,0xd8,0x31,0x15,
@@ -175,16 +163,16 @@ const SBOX = new Uint8Array([
     0x8c,0xa1,0x89,0x0d,0xbf,0xe6,0x42,0x68,0x41,0x99,0x2d,0x0f,0xb0,0x54,0xbb,0x16
 ]);
 
-const INV_SBOX = new Uint8Array(256);
-for (let i = 0; i < 256; i++) INV_SBOX[SBOX[i]] = i;
+var INV_SBOX = new Uint8Array(256);
+for (var i = 0; i < 256; i++) INV_SBOX[SBOX[i]] = i;
 
-const RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
+var RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
 function gmult(a, b) {
-    let p = 0;
-    for (let i = 0; i < 8; i++) {
+    var p = 0;
+    for (var i = 0; i < 8; i++) {
         if (b & 1) p ^= a;
-        let hi = a & 0x80;
+        var hi = a & 0x80;
         a = (a << 1) & 0xff;
         if (hi) a ^= 0x1b;
         b >>= 1;
@@ -193,12 +181,12 @@ function gmult(a, b) {
 }
 
 function keyExpansion256(key) {
-    const w = new Uint32Array(60);
-    for (let i = 0; i < 8; i++) {
+    var w = new Uint32Array(60);
+    for (var i = 0; i < 8; i++) {
         w[i] = (key[4 * i] << 24) | (key[4 * i + 1] << 16) | (key[4 * i + 2] << 8) | key[4 * i + 3];
     }
-    for (let i = 8; i < 60; i++) {
-        let temp = w[i - 1];
+    for (var i = 8; i < 60; i++) {
+        var temp = w[i - 1];
         if (i % 8 === 0) {
             temp = (temp << 8) | (temp >>> 24);
             temp = (SBOX[(temp >>> 24) & 0xff] << 24) | (SBOX[(temp >>> 16) & 0xff] << 16) | (SBOX[(temp >>> 8) & 0xff] << 8) | SBOX[temp & 0xff];
@@ -212,12 +200,12 @@ function keyExpansion256(key) {
 }
 
 function invCipherBlock(block, w) {
-    let state = new Uint8Array(16);
+    var state = new Uint8Array(16);
     state.set(block);
 
     function addRoundKey(rnd) {
-        for (let c = 0; c < 4; c++) {
-            const word = w[rnd * 4 + c];
+        for (var c = 0; c < 4; c++) {
+            var word = w[rnd * 4 + c];
             state[c * 4 + 0] ^= (word >>> 24) & 0xff;
             state[c * 4 + 1] ^= (word >>> 16) & 0xff;
             state[c * 4 + 2] ^= (word >>> 8) & 0xff;
@@ -227,23 +215,20 @@ function invCipherBlock(block, w) {
 
     addRoundKey(14);
 
-    for (let round = 13; round >= 1; round--) {
-        // InvShiftRows
-        let t1 = state[13], t2 = state[10], t3 = state[7];
+    for (var round = 13; round >= 1; round--) {
+        var t1 = state[13];
         state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
-        let t = state[2]; state[2] = state[10]; state[10] = t;
+        var t = state[2]; state[2] = state[10]; state[10] = t;
         t = state[6]; state[6] = state[14]; state[14] = t;
-        let t4 = state[3];
+        var t4 = state[3];
         state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t4;
 
-        // InvSubBytes
-        for (let i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
+        for (var i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
 
         addRoundKey(round);
 
-        // InvMixColumns
-        for (let c = 0; c < 4; c++) {
-            let s0 = state[c * 4], s1 = state[c * 4 + 1], s2 = state[c * 4 + 2], s3 = state[c * 4 + 3];
+        for (var c = 0; c < 4; c++) {
+            var s0 = state[c * 4], s1 = state[c * 4 + 1], s2 = state[c * 4 + 2], s3 = state[c * 4 + 3];
             state[c * 4 + 0] = gmult(s0, 0x0e) ^ gmult(s1, 0x0b) ^ gmult(s2, 0x0d) ^ gmult(s3, 0x09);
             state[c * 4 + 1] = gmult(s0, 0x09) ^ gmult(s1, 0x0e) ^ gmult(s2, 0x0b) ^ gmult(s3, 0x0d);
             state[c * 4 + 2] = gmult(s0, 0x0d) ^ gmult(s1, 0x09) ^ gmult(s2, 0x0e) ^ gmult(s3, 0x0b);
@@ -251,306 +236,298 @@ function invCipherBlock(block, w) {
         }
     }
 
-    // InvShiftRows
-    let t1 = state[13];
+    var t1 = state[13];
     state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
-    let t = state[2]; state[2] = state[10]; state[10] = t;
+    var t = state[2]; state[2] = state[10]; state[10] = t;
     t = state[6]; state[6] = state[14]; state[14] = t;
-    let t4 = state[3];
+    var t4 = state[3];
     state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t4;
 
-    // InvSubBytes
-    for (let i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
+    for (var i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
 
     addRoundKey(0);
-
     return state;
 }
 
 function decryptAES(encryptedBase64, aesKeyBytes) {
     try {
-        const raw = decodeB64ToBytes(encryptedBase64);
+        var raw = decodeB64ToBytes(encryptedBase64);
         if (raw.length < 32 || raw.length % 16 !== 0) return null;
 
-        const iv = raw.slice(0, 16);
-        const ciphertext = raw.slice(16);
-        const w = keyExpansion256(aesKeyBytes);
-        const decrypted = new Uint8Array(ciphertext.length);
+        var iv = raw.slice(0, 16);
+        var ciphertext = raw.slice(16);
+        var w = keyExpansion256(aesKeyBytes);
+        var decrypted = new Uint8Array(ciphertext.length);
 
-        for (let i = 0; i < ciphertext.length; i += 16) {
-            const block = ciphertext.slice(i, i + 16);
-            const invBlock = invCipherBlock(block, w);
-            const prevBlock = i === 0 ? iv : ciphertext.slice(i - 16, i);
-            for (let j = 0; j < 16; j++) {
+        for (var i = 0; i < ciphertext.length; i += 16) {
+            var block = ciphertext.slice(i, i + 16);
+            var invBlock = invCipherBlock(block, w);
+            var prevBlock = i === 0 ? iv : ciphertext.slice(i - 16, i);
+            for (var j = 0; j < 16; j++) {
                 decrypted[i + j] = invBlock[j] ^ prevBlock[j];
             }
         }
 
-        // PKCS#7 Unpadding
-        const pad = decrypted[decrypted.length - 1];
+        var pad = decrypted[decrypted.length - 1];
         if (pad < 1 || pad > 16) return null;
-        for (let i = decrypted.length - pad; i < decrypted.length; i++) {
+        for (var i = decrypted.length - pad; i < decrypted.length; i++) {
             if (decrypted[i] !== pad) return null;
         }
 
         return utf8BytesToString(decrypted.slice(0, decrypted.length - pad));
-    } catch {
+    } catch (e) {
         return null;
     }
 }
 
 // ==========================================
-// 4. DESEMPAQUETADOR DEAN EDWARDS (HERMES)
+// 4. DESEMPAQUETADOR DEAN EDWARDS
 // ==========================================
 function unpackJS(packed) {
     try {
-        const regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
-        const match = packed.match(regex);
+        var regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
+        var match = packed.match(regex);
         if (!match) return null;
 
-        let [, p, a, , k] = match;
-        p = p.slice(1, -1);
-        const words = k.split("|");
-        const radix = parseInt(a, 10);
+        var p = match[1].slice(1, -1);
+        var a = match[2];
+        var k = match[4];
+        var words = k.split("|");
+        var radix = parseInt(a, 10);
 
-        const unbase = (val, base) => {
-            const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        var unbase = function(val, base) {
+            var chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
             if (base <= 36) return parseInt(val, base);
-            let res = 0;
-            for (let i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
+            var res = 0;
+            for (var i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
             return res;
         };
 
-        return p.replace(/\b[0-9a-zA-Z]+\b/g, (token) => {
-            const idx = unbase(token, radix);
+        return p.replace(/\b[0-9a-zA-Z]+\b/g, function(token) {
+            var idx = unbase(token, radix);
             return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
         });
-    } catch {
+    } catch (e) {
         return null;
     }
 }
 
 // ==========================================
-// 5. RESOLVERS INDIVIDUALES
+// 5. RESOLVERS INDIVIDUALES (PROMISE BASED)
 // ==========================================
-async function resolveVidHide(url) {
-    try {
-        const res = await fetch(url, {
-            headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" },
-            redirect: "follow"
-        });
-        const html = await res.text();
-
-        const direct = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+function resolveVidHide(url) {
+    return fetch(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var direct = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
         if (direct) return { url: direct[1], quality: "1080p", server: "VidHide" };
 
-        const unpacked = unpackJS(html);
+        var unpacked = unpackJS(html);
         if (unpacked) {
-            const m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i);
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i);
             if (m3u8) return { url: m3u8[0].replace(/\\/g, ""), quality: "1080p", server: "VidHide" };
         }
         return null;
-    } catch {
-        return null;
-    }
+    })
+    .catch(function() { return null; });
 }
 
-async function resolveStreamWish(url) {
-    try {
-        const res = await fetch(url, {
-            headers: { "User-Agent": USER_AGENT, "Referer": url },
-            redirect: "follow"
-        });
-        const html = await res.text();
-
-        const fileMatch = html.match(/(?:file|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+function resolveStreamWish(url) {
+    return fetch(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": url }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var fileMatch = html.match(/(?:file|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
         if (fileMatch) return { url: fileMatch[1], quality: "1080p", server: "StreamWish" };
 
-        const unpacked = unpackJS(html);
+        var unpacked = unpackJS(html);
         if (unpacked) {
-            const m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
             if (m3u8) return { url: m3u8[0], quality: "1080p", server: "StreamWish" };
         }
         return null;
-    } catch {
-        return null;
-    }
+    })
+    .catch(function() { return null; });
 }
 
-async function resolveVOE(url, depth = 0) {
-    if (depth > 3) return null;
-    try {
-        const res = await fetch(url, {
-            headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" },
-            redirect: "follow"
-        });
-        const html = await res.text();
+function resolveVOE(url, depth) {
+    if (depth === undefined) depth = 0;
+    if (depth > 3) return Promise.resolve(null);
 
-        const jsRedirect = html.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/i) ||
-                           html.match(/location\.replace\(['"]([^'"]+)['"]\)/i);
+    return fetch(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var jsRedirect = html.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/i) ||
+                         html.match(/location\.replace\(['"]([^'"]+)['"]\)/i);
         if (jsRedirect && jsRedirect[1] && jsRedirect[1] !== url) {
-            let nextUrl = jsRedirect[1];
+            var nextUrl = jsRedirect[1];
             if (nextUrl.startsWith("/")) nextUrl = new URL(url).origin + nextUrl;
-            return await resolveVOE(nextUrl, depth + 1);
+            return resolveVOE(nextUrl, depth + 1);
         }
 
-        const direct = html.match(/'hls'\s*:\s*['"]([^'"]+)['"]/i) || html.match(/"hls"\s*:\s*['"]([^'"]+)['"]/i);
+        var direct = html.match(/'hls'\s*:\s*['"]([^'"]+)['"]/i) || html.match(/"hls"\s*:\s*['"]([^'"]+)['"]/i);
         if (direct) {
-            let streamUrl = direct[1];
+            var streamUrl = direct[1];
             if (streamUrl.startsWith("aHR0")) streamUrl = decodeB64(streamUrl);
             return { url: streamUrl, quality: "1080p", server: "VOE" };
         }
         return null;
-    } catch {
-        return null;
-    }
+    })
+    .catch(function() { return null; });
 }
 
 // ==========================================
 // 6. TMDB METADATA
 // ==========================================
-async function getMediaData(tmdbId, mediaType) {
-    try {
-        const isTv = mediaType === "tv" || mediaType === "series";
-        const type = isTv ? "tv" : "movie";
-        const url = `https://api.themoviedb.org/3/${type}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=external_ids`;
-        const res = await fetch(url);
-        const data = await res.json();
-        return {
-            title: data.title || data.name,
-            year: (data.release_date || data.first_air_date || "").substring(0, 4),
-            imdbId: data.external_ids?.imdb_id || data.imdb_id || null
-        };
-    } catch {
-        return null;
-    }
+function getMediaData(tmdbId, mediaType) {
+    var isTv = mediaType === "tv" || mediaType === "series";
+    var type = isTv ? "tv" : "movie";
+    var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=external_ids";
+
+    return fetch(url)
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+            return {
+                title: data.title || data.name,
+                year: (data.release_date || data.first_air_date || "").substring(0, 4),
+                imdbId: (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null
+            };
+        })
+        .catch(function() { return null; });
 }
 
 // ==========================================
 // 7. OBTENER Y DESCIFRAR EMBEDS DE EMBED69
 // ==========================================
-async function fetchAndDecryptEmbed69(targetUrl) {
-    try {
-        const pageRes = await fetch(targetUrl, {
-            headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }
-        });
-        const html = await pageRes.text();
-
-        const challengeMatch = html.match(/const\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/);
-        const difficultyMatch = html.match(/const\s+POW_DIFFICULTY\s*=\s*(\d+)/);
-        const saltMatch = html.match(/const\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/);
-        const dataLinkMatch = html.match(/let\s+dataLink\s*=\s*(\[[\s\S]*?\]);/);
+function fetchAndDecryptEmbed69(targetUrl) {
+    return fetch(targetUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var challengeMatch = html.match(/const\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/);
+        var difficultyMatch = html.match(/const\s+POW_DIFFICULTY\s*=\s*(\d+)/);
+        var saltMatch = html.match(/const\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/);
+        var dataLinkMatch = html.match(/let\s+dataLink\s*=\s*(\[[\s\S]*?\]);/);
 
         if (!challengeMatch || !dataLinkMatch) return [];
 
-        const challenge = challengeMatch[1];
-        const difficulty = parseInt(difficultyMatch ? difficultyMatch[1] : "3", 10);
-        const salt = saltMatch ? saltMatch[1] : "";
-        const dataLink = JSON.parse(dataLinkMatch[1]);
+        var challenge = challengeMatch[1];
+        var difficulty = parseInt(difficultyMatch ? difficultyMatch[1] : "3", 10);
+        var salt = saltMatch ? saltMatch[1] : "";
+        var dataLink = JSON.parse(dataLinkMatch[1]);
 
-        // Resolver PoW con SHA-256 nativo
-        const prefix = "0".repeat(difficulty);
-        let nonce = 0;
+        // Resolver PoW de forma síncrona (<5ms)
+        var prefix = "0".repeat(difficulty);
+        var nonce = 0;
         while (true) {
-            const hash = sha256Hex(challenge + nonce);
+            var hash = sha256Hex(challenge + nonce);
             if (hash.startsWith(prefix)) break;
             nonce++;
         }
 
-        // Clave AES pura
-        const aesKey = sha256(challenge + nonce + salt);
-        const embeds = [];
+        var aesKey = sha256(challenge + nonce + salt);
+        var embeds = [];
 
-        for (const file of dataLink) {
-            const lang = file.video_language === "LAT" ? "Latino" : file.video_language === "ESP" ? "Castellano" : "Subtitulado";
+        for (var i = 0; i < dataLink.length; i++) {
+            var file = dataLink[i];
+            var lang = file.video_language === "LAT" ? "Latino" : file.video_language === "ESP" ? "Castellano" : "Subtitulado";
             if (file.sortedEmbeds) {
-                for (const embed of file.sortedEmbeds) {
-                    const decryptedUrl = decryptAES(embed.link, aesKey);
+                for (var j = 0; j < file.sortedEmbeds.length; j++) {
+                    var embed = file.sortedEmbeds[j];
+                    var decryptedUrl = decryptAES(embed.link, aesKey);
                     if (decryptedUrl) {
-                        embeds.push({ url: decryptedUrl, server: embed.servername, lang });
+                        embeds.push({ url: decryptedUrl, server: embed.servername, lang: lang });
                     }
                 }
             }
         }
         return embeds;
-    } catch {
-        return [];
-    }
+    })
+    .catch(function() { return []; });
 }
 
 // ==========================================
 // 8. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
-async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-    if (!tmdbId) return [];
-    const streams = [];
+function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+    if (!tmdbId) return Promise.resolve([]);
 
-    try {
-        const media = await getMediaData(tmdbId, mediaType);
+    return getMediaData(tmdbId, mediaType).then(function(media) {
         if (!media || !media.imdbId) return [];
 
-        const isTv = mediaType === "tv" || mediaType === "series";
-        let embedsToResolve = [];
+        var isTv = mediaType === "tv" || mediaType === "series";
+        var targetUrl = "";
 
         if (!isTv) {
-            const movieUrl = `${BASE_URL}/f/${media.imdbId}`;
-            embedsToResolve = await fetchAndDecryptEmbed69(movieUrl);
+            targetUrl = BASE_URL + "/f/" + media.imdbId;
         } else {
-            const s = parseInt(seasonNum || 1, 10);
-            const e = parseInt(episodeNum || 1, 10);
-            const epPadded = String(e).padStart(2, "0");
-
-            const urlPadded = `${BASE_URL}/f/${media.imdbId}-${s}x${epPadded}`;
-            embedsToResolve = await fetchAndDecryptEmbed69(urlPadded);
-
-            if (embedsToResolve.length === 0) {
-                const urlSimple = `${BASE_URL}/f/${media.imdbId}-${s}x${e}`;
-                embedsToResolve = await fetchAndDecryptEmbed69(urlSimple);
-            }
+            var s = parseInt(seasonNum || 1, 10);
+            var e = parseInt(episodeNum || 1, 10);
+            var epPadded = String(e).padStart(2, "0");
+            targetUrl = BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded;
         }
 
-        if (embedsToResolve.length === 0) return [];
-
-        const resolvePromises = embedsToResolve.map(async (item) => {
-            const u = item.url.toLowerCase();
-            let res = null;
-
-            if (u.includes("vidhide") || u.includes("minochinos")) {
-                res = await resolveVidHide(item.url);
-            } else if (u.includes("streamwish") || u.includes("hglink") || u.includes("hlswish")) {
-                res = await resolveStreamWish(item.url);
-            } else if (u.includes("voe")) {
-                res = await resolveVOE(item.url);
+        return fetchAndDecryptEmbed69(targetUrl).then(function(embeds) {
+            if (embeds.length === 0 && isTv) {
+                var s = parseInt(seasonNum || 1, 10);
+                var e = parseInt(episodeNum || 1, 10);
+                var fallbackUrl = BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e;
+                return fetchAndDecryptEmbed69(fallbackUrl);
             }
+            return embeds;
+        }).then(function(embedsToResolve) {
+            if (!embedsToResolve || embedsToResolve.length === 0) return [];
 
-            if (res && res.url) {
-                return {
-                    name: "SoloLatino",
-                    title: `${res.quality} · ${res.server} (${item.lang})`,
-                    url: res.url,
-                    quality: res.quality,
-                    headers: {
-                        "User-Agent": USER_AGENT,
-                        "Referer": item.url
+            var resolvePromises = embedsToResolve.map(function(item) {
+                var u = item.url.toLowerCase();
+                var promise = null;
+
+                if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1) {
+                    promise = resolveVidHide(item.url);
+                } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1) {
+                    promise = resolveStreamWish(item.url);
+                } else if (u.indexOf("voe") !== -1) {
+                    promise = resolveVOE(item.url);
+                } else {
+                    promise = Promise.resolve(null);
+                }
+
+                return promise.then(function(res) {
+                    if (res && res.url) {
+                        return {
+                            name: "SoloLatino",
+                            title: res.quality + " · " + res.server + " (" + item.lang + ")",
+                            url: res.url,
+                            quality: res.quality,
+                            headers: {
+                                "User-Agent": USER_AGENT,
+                                "Referer": item.url
+                            }
+                        };
                     }
-                };
-            }
-            return null;
+                    return null;
+                });
+            });
+
+            return Promise.all(resolvePromises).then(function(results) {
+                var streams = [];
+                for (var i = 0; i < results.length; i++) {
+                    if (results[i]) streams.push(results[i]);
+                }
+                return streams;
+            });
         });
-
-        const results = await Promise.allSettled(resolvePromises);
-        for (const r of results) {
-            if (r.status === "fulfilled" && r.value) {
-                streams.push(r.value);
-            }
-        }
-
-        return streams;
-    } catch {
+    }).catch(function() {
         return [];
-    }
+    });
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { getStreams };
+    module.exports = { getStreams: getStreams };
 }
