@@ -3,133 +3,233 @@
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const SITE_URL = "https://sololatino.net";
+const BASE_URL = "https://player.peliserieshoy.com";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
 const HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept": "application/json, text/html, */*",
+    "Accept": "*/*",
     "Accept-Language": "es-MX,es;q=0.9",
-    "Referer": `${SITE_URL}/`
+    "Referer": "https://sololatino.net/"
 };
 
-// 1. OBTENER INFORMACIÓN DE TMDB
-async function getTMDBInfo(tmdbId, mediaType) {
+// 1. OBTENER ID DE IMDB DESDE TMDB
+async function getImdbId(tmdbId, mediaType) {
     try {
-        const url = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=external_ids`;
+        const type = mediaType === "movie" ? "movie" : "tv";
+        const url = `https://api.themoviedb.org/3/${type}/${tmdbId}/external_ids?api_key=${TMDB_API_KEY}`;
         const res = await fetch(url);
         const data = await res.json();
-        
-        return {
-            title: data.title || data.name,
-            originalTitle: data.original_title || data.original_name,
-            year: (data.release_date || data.first_air_date || "").substring(0, 4),
-            imdbId: data.external_ids?.imdb_id || null
-        };
-    } catch (e) {
-        console.error("[SoloLatino] Error TMDB:", e.message);
+        return data.imdb_id || null;
+    } catch {
         return null;
     }
 }
 
-// 2. BUSCADOR EN LA API DE SOLOLATINO
-async function searchSoloLatino(query) {
+// 2. EXTRACTORES DE VIDEO
+// Extractor Vimeos
+async function resolveVimeos(url) {
     try {
-        const searchUrl = `${SITE_URL}/api/search/suggest?q=${encodeURIComponent(query)}`;
-        const res = await fetch(searchUrl, { headers: HEADERS });
-        const results = await res.json();
-        return Array.isArray(results) ? results : [];
-    } catch (e) {
-        console.error("[SoloLatino] Error en buscador:", e.message);
-        return [];
-    }
-}
-
-// 3. EXTRAER ENLACE DEL REPRODUCTOR (IFRAME / P.PHP)
-async function extractPlayerStream(pageUrl) {
-    try {
-        const res = await fetch(pageUrl, { headers: HEADERS });
+        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://vimeos.net/" } });
         const html = await res.text();
+        const match = html.match(/eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+        if (match) {
+            const [_, p, a, c, k] = match;
+            const radix = parseInt(a);
+            const words = k.split("|");
+            const baseAlphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
 
-        // Buscar el iframe de player.peliserieshoy.com
-        const iframeMatch = html.match(/<iframe[^>]+src="([^"]+player\.peliserieshoy\.com[^"]*)"/i) ||
-                            html.match(/<iframe[^>]+src="([^"]+)"/i);
-
-        if (!iframeMatch) return null;
-
-        let iframeUrl = iframeMatch[1];
-        if (iframeUrl.startsWith("//")) iframeUrl = `https:${iframeUrl}`;
-
-        // Cargar el iframe para extraer el video /p.php
-        const iframeRes = await fetch(iframeUrl, {
-            headers: {
-                "User-Agent": USER_AGENT,
-                "Referer": pageUrl
-            }
-        });
-        const iframeHtml = await iframeRes.text();
-
-        // Extraer src del video
-        const videoMatch = iframeHtml.match(/<video[^>]+src="([^"]+)"/i) ||
-                           iframeHtml.match(/src:\s*["']([^"']+\/p\.php[^"']*)["']/i) ||
-                           iframeHtml.match(/(https?:\/\/[^"'\s]+\.m3u8[^"'\s]*)/i);
-
-        if (videoMatch) {
-            let videoUrl = videoMatch[1];
-            if (videoUrl.startsWith("/")) {
-                const domainMatch = iframeUrl.match(/^(https?:\/\/[^/]+)/);
-                const domain = domainMatch ? domainMatch[1] : "https://player.peliserieshoy.com";
-                videoUrl = `${domain}${videoUrl}`;
-            }
-
-            return {
-                name: "SoloLatino",
-                title: "1080p · Player+",
-                url: videoUrl,
-                quality: "1080p",
-                headers: {
-                    "User-Agent": USER_AGENT,
-                    "Referer": iframeUrl
-                }
+            const decodeNum = (val) => {
+                let num = 0;
+                for (let char of val) num = num * radix + baseAlphabet.indexOf(char);
+                return num;
             };
-        }
 
+            const unpacked = p.replace(/\b(\w+)\b/g, (token) => words[decodeNum(token)] || token);
+            const m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
+            if (m3u8Match) {
+                return { url: m3u8Match[1], quality: "1080p", server: "Vimeos" };
+            }
+        }
         return null;
-    } catch (e) {
-        console.error("[SoloLatino] Error extrayendo reproductor:", e.message);
+    } catch {
+        return null;
+    }
+}
+
+// Extractor VOE
+async function resolveVOE(url) {
+    try {
+        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: url } });
+        const html = await res.text();
+        const directMatch = html.match(/(?:mp4|hls)'\s*:\s*'([^']+)'/i) || html.match(/(?:mp4|hls)"\s*:\s*"([^"]+)"/i);
+        if (directMatch) {
+            let streamUrl = directMatch[1];
+            if (streamUrl.startsWith("aHR0")) {
+                streamUrl = typeof atob !== "undefined" ? atob(streamUrl) : Buffer.from(streamUrl, "base64").toString("utf8");
+            }
+            return { url: streamUrl, quality: "1080p", server: "VOE" };
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+// Extractor StreamWish
+async function resolveStreamWish(url) {
+    try {
+        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://hlswish.com/" } });
+        const html = await res.text();
+        const fileMatch = html.match(/file\s*:\s*["']([^"']+)["']/i);
+        if (fileMatch) {
+            return { url: fileMatch[1], quality: "1080p", server: "StreamWish" };
+        }
+        return null;
+    } catch {
+        return null;
+    }
+}
+
+// 3. CONSULTAR EL SERVIDOR DE PELISERIESHOY
+async function getDirectStream(serverId, token, cookie, playerUrl) {
+    try {
+        const postHeaders = {
+            ...HEADERS,
+            "Referer": playerUrl,
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+        };
+        if (cookie) postHeaders["cookie"] = cookie;
+
+        const res = await fetch(`${BASE_URL}/s.php`, {
+            method: "POST",
+            headers: postHeaders,
+            body: `a=2&v=${serverId}&tok=${token}`
+        });
+
+        const data = await res.json();
+        if (data && data.u) {
+            let videoUrl = data.u;
+            if (data.sig) {
+                videoUrl = `${BASE_URL}/p.php?url=${encodeURIComponent(data.u)}&sig=${data.sig}`;
+            }
+            if (!videoUrl.startsWith("http")) {
+                videoUrl = `${BASE_URL}${videoUrl}`;
+            }
+            return videoUrl;
+        }
+        return null;
+    } catch {
         return null;
     }
 }
 
 // 4. FUNCIÓN PRINCIPAL PARA NUVIO
 async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+    if (!tmdbId) return [];
+
     console.log(`[SoloLatino] Buscando TMDB: ${tmdbId} (${mediaType})`);
     const streams = [];
 
     try {
-        const tmdbData = await getTMDBInfo(tmdbId, mediaType);
-        if (!tmdbData) return [];
-
-        console.log(`[SoloLatino] Título: "${tmdbData.title}" (${tmdbData.year})`);
-
-        // 1. Buscar coincidencia en SoloLatino
-        let results = await searchSoloLatino(tmdbData.title);
-        if (!results.length && tmdbData.originalTitle) {
-            results = await searchSoloLatino(tmdbData.originalTitle);
-        }
-
-        if (!results.length) {
-            console.log("[SoloLatino] No se encontraron resultados en el buscador.");
+        // A. Obtener IMDb ID
+        const imdbId = await getImdbId(tmdbId, mediaType);
+        if (!imdbId) {
+            console.log("[SoloLatino] No se encontró IMDb ID");
             return [];
         }
 
-        const match = results[0];
-        console.log(`[SoloLatino] Encontrado: "${match.title}" -> ${match.url}`);
+        console.log(`[SoloLatino] IMDb ID: ${imdbId}`);
 
-        // 2. Extraer stream del reproductor
-        const stream = await extractPlayerStream(match.url);
-        if (stream) {
-            streams.push(stream);
+        // B. Armar slug (Película o Serie)
+        const isMovie = mediaType === "movie";
+        const s = parseInt(seasonNum || 1);
+        const e = parseInt(episodeNum || 1);
+        const epStr = e < 10 ? `0${e}` : e;
+        const slug = isMovie ? imdbId : `${imdbId}-${s}x${epStr}`;
+        const playerUrl = `${BASE_URL}/f/${slug}`;
+
+        console.log(`[SoloLatino] Cargando reproductor: ${playerUrl}`);
+
+        // C. Obtener token de sesión
+        const pageRes = await fetch(playerUrl, { headers: HEADERS });
+        const html = await pageRes.text();
+        const cookie = pageRes.headers.get("set-cookie") || "";
+
+        const tokenMatch = html.match(/(?:let\s+token|const\s+_t|tok|_t|token)\s*.*['"]([a-f0-9]{32})['"]/);
+        if (!tokenMatch) {
+            console.log("[SoloLatino] No se encontró token en la página del reproductor");
+            return [];
+        }
+
+        const token = tokenMatch[1];
+        console.log(`[SoloLatino] Token obtenido: ${token}`);
+
+        const postHeaders = {
+            ...HEADERS,
+            "Referer": playerUrl,
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"
+        };
+        if (cookie) postHeaders["cookie"] = cookie;
+
+        // D. Handshake de activación
+        await fetch(`${BASE_URL}/s.php`, {
+            method: "POST",
+            headers: postHeaders,
+            body: `a=click&tok=${token}`
+        }).catch(() => {});
+
+        // E. Obtener lista de servidores disponibles
+        const scanRes = await fetch(`${BASE_URL}/s.php`, {
+            method: "POST",
+            headers: postHeaders,
+            body: `a=1&tok=${token}`
+        });
+        const scanData = await scanRes.json();
+
+        const serverList = [];
+        if (scanData?.langs_s?.LAT) {
+            serverList.push(...scanData.langs_s.LAT.map(s => ({ name: s[0], id: s[1], lang: "Latino" })));
+        }
+        if (scanData?.s) {
+            serverList.push(...scanData.s.map(s => ({ name: s[0], id: s[1], lang: "Latino" })));
+        }
+
+        console.log(`[SoloLatino] Servidores encontrados: ${serverList.length}`);
+
+        // F. Resolver servidores en paralelo
+        const resolvePromises = serverList.slice(0, 5).map(async (srv) => {
+            const rawUrl = await getDirectStream(srv.id, token, cookie, playerUrl);
+            if (!rawUrl) return null;
+
+            let finalData = null;
+            if (rawUrl.includes("vimeos")) finalData = await resolveVimeos(rawUrl);
+            else if (rawUrl.includes("voe.sx")) finalData = await resolveVOE(rawUrl);
+            else if (rawUrl.includes("streamwish") || rawUrl.includes("hlswish")) finalData = await resolveStreamWish(rawUrl);
+            else {
+                finalData = { url: rawUrl, quality: "1080p", server: srv.name };
+            }
+
+            if (finalData) {
+                return {
+                    name: "SoloLatino",
+                    title: `${finalData.quality || "1080p"} · ${srv.name}`,
+                    url: finalData.url,
+                    quality: finalData.quality || "1080p",
+                    headers: {
+                        "User-Agent": USER_AGENT,
+                        "Referer": playerUrl
+                    }
+                };
+            }
+            return null;
+        });
+
+        const results = await Promise.allSettled(resolvePromises);
+        for (const r of results) {
+            if (r.status === "fulfilled" && r.value) {
+                streams.push(r.value);
+            }
         }
 
         return streams;
