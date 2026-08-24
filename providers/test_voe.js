@@ -131,4 +131,41 @@ async function run() {
     }
 }
 
+async function inspectFinalPage() {
+    const url = "https://johnbeyondnation.com/e/agapjo0vfrcb";
+    console.log(`Inspeccionando página final: ${url}`);
+
+    try {
+        const res = await fetch(url, {
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                "Referer": "https://voe.sx/"
+            },
+            redirect: "follow"
+        });
+
+        const html = await res.text();
+        console.log(`HTTP Status: ${res.status}`);
+        console.log(`Tamaño HTML: ${html.length} caracteres`);
+
+        // Extraer todos los bloques <script>
+        const scriptMatches = html.match(/<script[\s\S]*?<\/script>/gi) || [];
+        console.log(`\nSe encontraron ${scriptMatches.length} etiquetas <script>:\n`);
+
+        scriptMatches.forEach((s, idx) => {
+            // Ignorar scripts externos con src="..."
+            if (!s.includes("src=")) {
+                console.log(`=== SCRIPT EN LÍNEA #${idx + 1} ===`);
+                console.log(s);
+                console.log("===================================\n");
+            }
+        });
+
+    } catch (e) {
+        console.error("Error:", e.message);
+    }
+}
+
+inspectFinalPage();
+
 run();
