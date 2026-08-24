@@ -1,45 +1,54 @@
 const SITE_URL = "https://lamovie.org";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-async function inspectSeries() {
-    const seriesId = 6844; // The Last of Us
-    console.log(`Inspeccionando API de LaMovie para ID: ${seriesId}...`);
+async function findEpisodes() {
+    console.log("=== DIAGNÓSTICO DE EPISODIOS EN LAMOVIE ===");
 
-    // 1. Probar endpoint /wp-api/v1/post
-    try {
-        const res = await fetch(`${SITE_URL}/wp-api/v1/post?id=${seriesId}`, {
-            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-        });
-        const json = await res.json();
-        console.log("\n[1] Claves devueltas en /wp-api/v1/post:", Object.keys(json?.data || {}));
-        
-        // Si hay temporadas, mostrar su estructura
-        if (json?.data) {
-            console.log("Datos de la serie:", JSON.stringify(json.data).substring(0, 500) + "...");
-        }
-    } catch (e) {
-        console.log("Error en /wp-api/v1/post:", e.message);
-    }
-
-    // 2. Probar si existen otros endpoints como /seasons o /episodes
-    const endpoints = [
-        `/wp-api/v1/seasons?id=${seriesId}`,
-        `/wp-api/v1/episodes?id=${seriesId}`,
-        `/wp-api/v1/player?postId=${seriesId}&type=tvshows`
+    // Prueba A: Buscar el episodio directamente en la API
+    const queries = [
+        "The Last of Us 1x1",
+        "The Last of Us 1x01",
+        "The Last of Us Temporada 1"
     ];
 
-    for (const ep of endpoints) {
+    for (const q of queries) {
         try {
-            const res = await fetch(`${SITE_URL}${ep}`, {
-                headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
-            });
+            const url = `${SITE_URL}/wp-api/v1/search?postType=any&q=${encodeURIComponent(q)}&postsPerPage=5`;
+            const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, "Accept": "application/json" } });
             const json = await res.json();
-            if (json?.data) {
-                console.log(`\n[2] Respuesta válida en endpoint: ${ep}`);
-                console.log(JSON.stringify(json.data).substring(0, 300));
+            const posts = json?.data?.posts || [];
+            console.log(`\n[A] Búsqueda: "${q}" -> Encontrados: ${posts.length}`);
+            posts.forEach(p => console.log(`  - [${p.type || p.postType || 'post'}] ${p.title} (ID: ${p._id || p.id})`));
+        } catch (e) {
+            console.log(`Error buscando "${q}":`, e.message);
+        }
+    }
+
+    // Prueba B: Inspeccionar el HTML de la serie en /series/the-last-of-us-2023/
+    try {
+        console.log("\n[B] Consultando HTML de la serie...");
+        const res = await fetch(`${SITE_URL}/series/the-last-of-us-2023/`, {
+            headers: { "User-Agent": USER_AGENT }
+        });
+        const html = await res.text();
+        console.log(`Tamaño HTML: ${html.length} caracteres`);
+
+        // Buscar IDs de episodios o temporadas en el HTML
+        const episodeMatches = html.match(/(?:data-id|data-post|episode-id|id)=["'](\d+)["']/gi) || [];
+        console.log(`IDs encontrados en atributos HTML:`, episodeMatches.slice(0, 10));
+
+        // Buscar si hay variables JSON con episodios dentro de <script>
+        const scriptMatches = html.match(/<script[\s\S]*?<\/script>/gi) || [];
+        scriptMatches.forEach((s, idx) => {
+            if (s.includes("episode") || s.includes("season") || s.includes("vimeos") || s.includes("embed")) {
+                console.log(`\n--- Script con datos #${idx + 1} ---`);
+                console.log(s.substring(0, 300) + "...");
             }
-        } catch {}
+        });
+
+    } catch (e) {
+        console.log("Error en HTML:", e.message);
     }
 }
 
-inspectSeries();
+findEpisodes();
