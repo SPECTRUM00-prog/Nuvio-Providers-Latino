@@ -14,8 +14,24 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DESEMPAQUETADOR
+// CRIPTOGRAFÍA PURA (HERMES ZERO-DEPENDENCIES)
 // ==========================================
+
+function pureBtoa(str) {
+    if (typeof btoa === "function") {
+        try { return btoa(str); } catch (e) {}
+    }
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    var output = "";
+    for (var block = 0, charCode, i = 0, map = chars;
+         str.charAt(i | 0) || (map = "=", i % 1);
+         output += map.charAt(63 & block >> 8 - i % 1 * 8)) {
+        charCode = str.charCodeAt(i += 3 / 4);
+        if (charCode > 0xFF) return "";
+        block = block << 8 | charCode;
+    }
+    return output;
+}
 
 function normalizeText(text) {
     if (!text) return "";
@@ -100,7 +116,7 @@ function getServerLabel(url) {
 }
 
 // ==========================================
-// RESOLVERS DE SERVIDORES
+// RESOLVERS DE STREAMING
 // ==========================================
 
 function resolveVidHide(url) {
@@ -165,13 +181,6 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
 
-    // Redirecciones directas de TioPlus
-    if (u.includes("tioplus.app/")) {
-        return fetch(url, { headers: DEFAULT_HEADERS, redirect: "follow" })
-            .then(function(res) { return dispatchResolver(res.url); })
-            .catch(function() { return null; });
-    }
-
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) {
         return resolveVidHide(url);
     }
@@ -182,93 +191,120 @@ function dispatchResolver(url) {
     return Promise.resolve(null);
 }
 
+function resolvePlayerEndpoint(playerUrl) {
+    return fetch(playerUrl, { headers: DEFAULT_HEADERS, redirect: "follow" })
+        .then(function(res) {
+            var targetUrl = res.url || "";
+            if (targetUrl && !targetUrl.includes("tioplus.app/player/")) {
+                return dispatchResolver(targetUrl);
+            }
+            return res.text().then(function(html) {
+                var ifrMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
+                if (ifrMatch) {
+                    var innerUrl = ifrMatch[1];
+                    if (innerUrl.startsWith("/")) innerUrl = BASE_URL + innerUrl;
+                    return dispatchResolver(innerUrl);
+                }
+                var directM3u8 = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
+                if (directM3u8) {
+                    return {
+                        url: directM3u8[0],
+                        quality: detectQualityFromUrl(directM3u8[0]),
+                        headers: { "User-Agent": USER_AGENT, "Referer": playerUrl }
+                    };
+                }
+                return null;
+            });
+        })
+        .catch(function() { return null; });
+}
+
 // ==========================================
 // BÚSQUEDA Y EXTRACCIÓN
 // ==========================================
 
 function searchPelisplus(query, isMovie) {
-    var searchUrl = `${BASE_URL}/search/${encodeURIComponent(query)}`;
-    console.log(`[PelisPlus] Buscando: "${query}"`);
+    var searchUrl = `${BASE_URL}/api/search/${encodeURIComponent(query)}`;
+    console.log(`[PelisPlus] Buscando en API: "${query}"`);
 
-    return fetch(searchUrl, { headers: DEFAULT_HEADERS })
-        .then(function(res) {
-            if (!res.ok) return [];
-            return res.text();
-        })
-        .then(function(html) {
-            var targetPrefix = isMovie ? "/pelicula/" : "/serie/";
-            var regex = new RegExp(`href=["'](${targetPrefix}[^"']+)["']`, "gi");
-            var matches = [];
-            var match;
+    return fetch(searchUrl, {
+        headers: {
+            "User-Agent": USER_AGENT,
+            "Accept": "*/*",
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": `${BASE_URL}/search`
+        }
+    })
+    .then(function(res) {
+        if (!res.ok) return [];
+        return res.text();
+    })
+    .then(function(html) {
+        var targetPrefix = isMovie ? "/pelicula/" : "/serie/";
+        var regex = new RegExp(`href=["'](${targetPrefix}[^"']+)["']`, "gi");
+        var matches = [];
+        var match;
 
-            while ((match = regex.exec(html)) !== null) {
-                var path = match[1];
-                var slug = path.replace(targetPrefix, "").replace(/\/$/, "");
-                if (matches.indexOf(slug) === -1) {
-                    matches.push(slug);
-                }
+        while ((match = regex.exec(html)) !== null) {
+            var path = match[1];
+            var slug = path.replace(targetPrefix, "").replace(/\/$/, "");
+            if (matches.indexOf(slug) === -1) {
+                matches.push(slug);
             }
+        }
 
-            console.log(`[PelisPlus] Slugs encontrados: ${matches.length}`);
-            return matches;
-        })
-        .catch(function(err) {
-            console.log(`[PelisPlus] Error en búsqueda: ${err.message}`);
-            return [];
-        });
+        console.log(`[PelisPlus] Slugs encontrados: ${matches.length}`);
+        return matches;
+    })
+    .catch(function(err) {
+        console.log(`[PelisPlus] Error en búsqueda: ${err.message}`);
+        return [];
+    });
 }
 
 function extractStreamsFromUrl(pageUrl) {
-    console.log(`[PelisPlus] Consultando: ${pageUrl}`);
+    console.log(`[PelisPlus] Consultando página: ${pageUrl}`);
     return fetch(pageUrl, { headers: DEFAULT_HEADERS })
         .then(function(res) {
             if (!res.ok) throw new Error("HTTP " + res.status);
             return res.text();
         })
         .then(function(html) {
-            var embeds = [];
+            var tokens = [];
 
-            // 1. Extraer iframes
-            var iframeRegex = /<iframe[^>]+src=["']([^"']+)["']/gi;
-            var ifMatch;
-            while ((ifMatch = iframeRegex.exec(html)) !== null) {
-                var src = ifMatch[1];
-                if (src.startsWith("/")) src = BASE_URL + src;
-                embeds.push(src);
+            // 1. Extraer tokens de data-server
+            var dataServerRegex = /data-server=["']([^"']+)["']/gi;
+            var dsMatch;
+            while ((dsMatch = dataServerRegex.exec(html)) !== null) {
+                tokens.push(dsMatch[1]);
             }
 
-            // 2. Extraer atributos data-video / data-url
-            var dataRegex = /data-(?:video|url|src)=["']([^"']+)["']/gi;
+            // 2. Extraer tokens de data-tr
+            var dataTrRegex = /data-tr=["']([^"']+)["']/gi;
             var dtMatch;
-            while ((dtMatch = dataRegex.exec(html)) !== null) {
-                var dSrc = dtMatch[1];
-                if (dSrc.startsWith("/")) dSrc = BASE_URL + dSrc;
-                embeds.push(dSrc);
+            while ((dtMatch = dataTrRegex.exec(html)) !== null) {
+                tokens.push(dtMatch[1]);
             }
 
-            // 3. Extraer links puente de tioplus.app/ID
-            var bridgeRegex = /https?:\/\/tioplus\.app\/[a-zA-Z0-9_-]{20,}/gi;
-            var brMatch;
-            while ((brMatch = bridgeRegex.exec(html)) !== null) {
-                embeds.push(brMatch[0]);
-            }
-
-            // Deduplicar
-            var uniqueEmbeds = embeds.filter(function(item, pos, self) {
+            // Deduplicar tokens
+            var uniqueTokens = tokens.filter(function(item, pos, self) {
                 return item && self.indexOf(item) === pos;
             });
 
-            if (uniqueEmbeds.length === 0) {
+            if (uniqueTokens.length === 0) {
+                console.log("[PelisPlus] No se encontraron tokens de reproducción");
                 return [];
             }
 
-            console.log(`[PelisPlus] Reproductores encontrados: ${uniqueEmbeds.length}`);
+            console.log(`[PelisPlus] Opciones de servidor encontradas: ${uniqueTokens.length}`);
 
-            var promises = uniqueEmbeds.map(function(embedUrl) {
-                var sName = getServerLabel(embedUrl);
-                return dispatchResolver(embedUrl)
+            // Resolver concurrentemente
+            var promises = uniqueTokens.map(function(tok) {
+                var playerUrl = `${BASE_URL}/player/${pureBtoa(tok)}`;
+                return resolvePlayerEndpoint(playerUrl)
                     .then(function(res) {
                         if (!res || !res.url) return null;
+                        var sName = getServerLabel(res.url);
                         var q = res.quality || "1080p";
                         return {
                             name: "PelisPlus",
@@ -286,7 +322,10 @@ function extractStreamsFromUrl(pageUrl) {
         .then(function(results) {
             return results.filter(function(st) { return st !== null; });
         })
-        .catch(function() { return []; });
+        .catch(function(err) {
+            console.log(`[PelisPlus] Error extrayendo streams: ${err.message}`);
+            return [];
+        });
 }
 
 // ==========================================
@@ -320,14 +359,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                     var pageUrl = isMovie
                         ? `${BASE_URL}/pelicula/${s}`
-                        : `${BASE_URL}/episodio/${s}-${season}x${episode}`;
+                        : `${BASE_URL}/serie/${s}/season/${season}/episode/${episode}`;
 
                     return extractStreamsFromUrl(pageUrl).then(function(streams) {
                         if (streams && streams.length > 0) return streams;
 
-                        // Fallback alternativo para series
+                        // Fallback de URL alternativa para series
                         if (!isMovie) {
-                            var altUrl = `${BASE_URL}/serie/${s}/temporada/${season}/episodio/${episode}`;
+                            var altUrl = `${BASE_URL}/episodio/${s}-${season}x${episode}`;
                             return extractStreamsFromUrl(altUrl).then(function(altStreams) {
                                 if (altStreams && altStreams.length > 0) return altStreams;
                                 return tryNextSlug(index + 1);
