@@ -1,4 +1,3 @@
-const BASE_URL = "https://www.cinecalidad.am";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 function decodeB64(input) {
@@ -13,65 +12,34 @@ function decodeB64(input) {
     return output;
 }
 
-async function testCineCalidadSeries() {
-    console.log("=== PROBANDO CINECALIDAD SERIES ===");
+async function inspectEpisodeHtml() {
+    const episodeUrl = "https://www.cinecalidad.am/ver-el-episodio/pablo-escobar-el-patron-del-mal-1x1/";
+    console.log(`Inspeccionando: ${episodeUrl}`);
 
-    // 1. Probar búsqueda
-    const queries = ["Pablo Escobar", "Pablo Escobar El Patron del Mal"];
-    let seriesUrl = null;
-
-    for (const q of queries) {
-        console.log(`\n[1] Buscando: "${q}"...`);
-        const res = await fetch(`${BASE_URL}/?s=${encodeURIComponent(q)}`, {
-            headers: { "User-Agent": USER_AGENT }
-        });
+    try {
+        const res = await fetch(episodeUrl, { headers: { "User-Agent": USER_AGENT } });
         const html = await res.text();
 
-        // Regex mejorado para capturar URLs absolutas y relativas (/ver-serie/...)
-        const regex = /href=["']((?:https?:\/\/[^"']*)?\/(?:ver-serie|serie)\/[^"']+)["']/gi;
-        let match;
-        const found = [];
-        while ((match = regex.exec(html)) !== null) {
-            let full = match[1];
-            if (!full.startsWith("http")) full = BASE_URL + (full.startsWith("/") ? full : "/" + full);
-            if (!found.includes(full)) found.push(full);
-        }
+        // 1. Buscar todas las cadenas Base64 que comiencen por 'aHR0' (http/https)
+        const b64Matches = html.match(/aHR0[a-zA-Z0-9+\/=_~-]+/g) || [];
+        const uniqueB64 = [...new Set(b64Matches)];
+        console.log(`\n[1] Cadenas Base64 de URLs encontradas: ${uniqueB64.length}`);
 
-        console.log(`Resultados encontrados: ${found.length}`);
-        if (found.length > 0) {
-            seriesUrl = found[0];
-            console.log(`✅ Ficha seleccionada: ${seriesUrl}`);
-            break;
-        }
-    }
-
-    if (!seriesUrl) {
-        console.log("❌ No se encontró la ficha de la serie.");
-        return;
-    }
-
-    // 2. Construir URL del episodio 1x1
-    const slug = seriesUrl.replace(/\/$/, "").split("/").pop();
-    const episodeUrl = `${BASE_URL}/ver-el-episodio/${slug}-1x1/`;
-    console.log(`\n[2] Consultando episodio: ${episodeUrl}`);
-
-    const epRes = await fetch(episodeUrl, { headers: { "User-Agent": USER_AGENT } });
-    console.log(`Status del episodio: ${epRes.status}`);
-
-    if (epRes.status === 200) {
-        const epHtml = await epRes.text();
-        console.log(`Tamaño HTML: ${epHtml.length} caracteres`);
-
-        // 3. Extraer zopass (Base64)
-        const zopassMatches = epHtml.match(/zopass=([a-zA-Z0-9+\/=_~-]+)/gi) || [];
-        console.log(`\n[3] Enlaces zopass encontrados: ${zopassMatches.length}`);
-
-        zopassMatches.forEach((z, i) => {
-            const rawB64 = z.split("=")[1];
-            const decoded = decodeB64(rawB64);
-            console.log(`  [${i + 1}] Base64: ${rawB64.substring(0, 20)}... -> Decodificado: ${decoded}`);
+        uniqueB64.forEach((b64, idx) => {
+            const dec = decodeB64(b64);
+            if (dec && dec.startsWith("http")) {
+                console.log(`  ▶ [${idx + 1}] Decodificado: ${dec}`);
+            }
         });
+
+        // 2. Extraer el bloque HTML de "VER ONLINE" para ver las etiquetas exactas
+        console.log("\n[2] Bloques de botones encontrados en el HTML:");
+        const buttons = html.match(/<(?:a|li|button|div)[^>]+(?:vimeos|goodstream|voe|doodstream|zopass|option)[^>]*>/gi) || [];
+        buttons.slice(0, 8).forEach(b => console.log(`  ${b}`));
+
+    } catch (e) {
+        console.error("Error:", e.message);
     }
 }
 
-testCineCalidadSeries();
+inspectEpisodeHtml();
