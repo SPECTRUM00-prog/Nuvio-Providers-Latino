@@ -40,14 +40,13 @@ async function getTMDBInfo(tmdbId, mediaType) {
     }
 }
 
-// 2. BUSCADOR DE CINECALIDAD (Obtiene el link real /ver-pelicula/...)
+// 2. BUSCADOR DE CINECALIDAD
 async function searchCinecalidad(query) {
     try {
         const searchUrl = `${SITE_URL}/?s=${encodeURIComponent(query)}`;
         const res = await fetch(searchUrl, { headers: HEADERS });
         const html = await res.text();
 
-        // Buscar enlaces que apunten a /ver-pelicula/
         const matches = [];
         const regex = /href="([^"]*\/ver-pelicula\/[^"]+)"/g;
         let match;
@@ -117,7 +116,7 @@ async function resolveStreamWish(url) {
         const html = await res.text();
         const fileMatch = html.match(/file\s*:\s*["']([^"']+)["']/i);
         if (fileMatch) {
-            return { url: fileMatch[1], quality: "1080p", server: "HLSWish" };
+            return { url: fileMatch[1], quality: "1080p", server: "StreamWish" };
         }
         return null;
     } catch {
@@ -140,27 +139,22 @@ async function resolveGoodStream(url) {
     }
 }
 
-// 4. EXTRAER REPRODUCTORES DEL HTML DE LA PELÍCULA
+// 4. EXTRAER REPRODUCTORES DEL ATRIBUTO ZOPASS
 function extractEmbedUrls(html) {
-    const rawMatches = [];
+    const embeds = [];
     
-    // Buscar atributos data-src o enlaces en Base64
-    const b64Regex = /(?:data-src|data-url|href)="([A-Za-z0-9+/=]{20,})"/g;
+    // Captura el parámetro zopass= en Base64
+    const regex = /zopass=([A-Za-z0-9+/=]{15,})/g;
     let match;
-    while ((match = b64Regex.exec(html)) !== null) {
-        rawMatches.push(match[1]);
+    while ((match = regex.exec(html)) !== null) {
+        const cleanB64 = match[1].split("&")[0]; // limpia cualquier parámetro extra
+        const decoded = decodeB64(cleanB64);
+        if (decoded && decoded.startsWith("http")) {
+            embeds.push(decoded);
+        }
     }
 
-    // Decodificar Base64
-    const decoded = rawMatches.map(decodeB64).filter(u => u && u.startsWith("http"));
-
-    // Buscar también enlaces directos en texto claro
-    const directRegex = /https?:\/\/[^"'\s<>]+(?:vimeos\.net|voe\.sx|goodstream\.one|hlswish\.com|streamwish\.[a-z]+)[^"'\s<>]*/gi;
-    while ((match = directRegex.exec(html)) !== null) {
-        decoded.push(match[0]);
-    }
-
-    return [...new Set(decoded)];
+    return [...new Set(embeds)];
 }
 
 // 5. FUNCIÓN PRINCIPAL PARA NUVIO
@@ -193,13 +187,13 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         const targetUrl = movieUrls[0];
         console.log(`[CineCalidad] Página encontrada: ${targetUrl}`);
 
-        // 2. Cargar la página de la película
+        // 2. Cargar el HTML de la película
         const pageRes = await fetch(targetUrl, { headers: HEADERS });
         const movieHtml = await pageRes.text();
 
-        // 3. Extraer embeds
+        // 3. Extraer embeds desde zopass
         const embedUrls = extractEmbedUrls(movieHtml);
-        console.log(`[CineCalidad] Embeds encontrados: ${embedUrls.length}`);
+        console.log(`[CineCalidad] Embeds encontrados (${embedUrls.length}):`, embedUrls);
 
         // 4. Resolver todos los servidores en paralelo
         const resolvePromises = embedUrls.map(async (url) => {
