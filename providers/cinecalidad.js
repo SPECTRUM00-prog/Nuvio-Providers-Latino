@@ -1,244 +1,366 @@
 /**
- * Plugin de CineCalidad para Nuvio
+ * Plugin de CineCalidad (Películas y Series) para Nuvio Media Hub
+ * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
  */
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const SITE_URL = "https://www.cinecalidad.am";
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var BASE_URL = "https://www.cinecalidad.am";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-const HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "es-MX,es;q=0.9",
-    "Referer": `${SITE_URL}/`
-};
+// ==========================================
+// 1. HELPERS BASE64 & STRINGS (HERMES SAFE)
+// ==========================================
+function decodeB64(input) {
+    if (!input) return null;
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    var str = String(input).replace(/[=]+$/, "");
+    if (str.length % 4 === 1) return null;
+    var output = "";
+    for (var bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0) {
+        buffer = chars.indexOf(buffer);
+    }
+    return output;
+}
 
-// 1. OBTENER INFORMACIÓN DE TMDB
-async function getTMDBInfo(tmdbId, mediaType) {
+function cleanTitle(str) {
+    if (!str) return "";
+    return str
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9\s]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
+// ==========================================
+// 2. DESEMPAQUETADOR DEAN EDWARDS
+// ==========================================
+function unpackJS(packed) {
     try {
-        const url = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX`;
-        const res = await fetch(url);
-        const data = await res.json();
-        
-        return {
-            title: data.title || data.name,
-            originalTitle: data.original_title || data.original_name,
-            year: (data.release_date || data.first_air_date || "").substring(0, 4)
+        var regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
+        var match = packed.match(regex);
+        if (!match) return null;
+
+        var p = match[1].slice(1, -1);
+        var a = match[2];
+        var k = match[4];
+        var words = k.split("|");
+        var radix = parseInt(a, 10);
+
+        var unbase = function(val, base) {
+            var chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            if (base <= 36) return parseInt(val, base);
+            var res = 0;
+            for (var i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
+            return res;
         };
+
+        return p.replace(/\b[0-9a-zA-Z]+\b/g, function(token) {
+            var idx = unbase(token, radix);
+            return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
+        });
     } catch (e) {
-        console.error("[CineCalidad] Error TMDB:", e.message);
         return null;
     }
 }
 
-// 2. BUSCADOR DE CINECALIDAD
-async function searchCinecalidad(query) {
-    try {
-        const searchUrl = `${SITE_URL}/?s=${encodeURIComponent(query)}`;
-        const res = await fetch(searchUrl, { headers: HEADERS });
-        const html = await res.text();
-
-        const matches = [];
-        const regex = /href="([^"]*\/ver-pelicula\/[^"]+)"/g;
-        let match;
-        while ((match = regex.exec(html)) !== null) {
-            matches.push(match[1]);
-        }
-
-        return [...new Set(matches)];
-    } catch (e) {
-        console.error("[CineCalidad] Error en buscador:", e.message);
-        return [];
-    }
-}
-
-// 3. EXTRACTORES DE VIDEO
-// Extractor Vimeos
-async function resolveVimeos(url) {
-    try {
-        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://vimeos.net/" } });
-        const html = await res.text();
-        const match = html.match(/eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (match) {
-            const [_, p, a, c, k] = match;
-            const radix = parseInt(a);
-            const words = k.split("|");
-            const baseAlphabet = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-
-            const decodeNum = (val) => {
-                let num = 0;
-                for (let char of val) num = num * radix + baseAlphabet.indexOf(char);
-                return num;
-            };
-
-            const unpacked = p.replace(/\b(\w+)\b/g, (token) => words[decodeNum(token)] || token);
-            const m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
+// ==========================================
+// 3. RESOLVERS INDIVIDUALES
+// ==========================================
+function resolveVimeos(embedUrl) {
+    return fetch(embedUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var unpacked = unpackJS(html);
+        if (unpacked) {
+            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) ||
+                            unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
             if (m3u8Match) {
-                return { url: m3u8Match[1], quality: "1080p", server: "Vimeos" };
+                return {
+                    url: m3u8Match[1].replace(/\\/g, ""),
+                    quality: "1080p",
+                    server: "Vimeos",
+                    headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
+                };
             }
         }
         return null;
-    } catch {
-        return null;
-    }
+    })
+    .catch(function() { return null; });
 }
 
-// Extractor VOE
-async function resolveVOE(url) {
-    try {
-        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: url } });
-        const html = await res.text();
-        const directMatch = html.match(/(?:mp4|hls)'\s*:\s*'([^']+)'/i) || html.match(/(?:mp4|hls)"\s*:\s*"([^"]+)"/i);
-        if (directMatch) {
-            let streamUrl = directMatch[1];
-            if (streamUrl.startsWith("aHR0")) {
-                streamUrl = typeof atob !== "undefined" ? atob(streamUrl) : Buffer.from(streamUrl, "base64").toString("utf8");
+function resolveGoodStream(embedUrl) {
+    return fetch(embedUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var unpacked = unpackJS(html);
+        if (unpacked) {
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+            if (m3u8) {
+                return {
+                    url: m3u8[0],
+                    quality: "1080p",
+                    server: "GoodStream",
+                    headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
+                };
             }
+        }
+        return null;
+    })
+    .catch(function() { return null; });
+}
+
+function resolveStreamWish(embedUrl) {
+    return fetch(embedUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var fileMatch = html.match(/(?:file|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+        if (fileMatch) {
+            return {
+                url: fileMatch[1],
+                quality: "1080p",
+                server: "StreamWish",
+                headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
+            };
+        }
+        var unpacked = unpackJS(html);
+        if (unpacked) {
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+            if (m3u8) {
+                return {
+                    url: m3u8[0],
+                    quality: "1080p",
+                    server: "StreamWish",
+                    headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
+                };
+            }
+        }
+        return null;
+    })
+    .catch(function() { return null; });
+}
+
+function resolveVOE(url, depth) {
+    if (depth === undefined) depth = 0;
+    if (depth > 3) return Promise.resolve(null);
+
+    return fetch(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://cinecalidad.am/" }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var jsRedirect = html.match(/window\.location\.href\s*=\s*['"]([^'"]+)['"]/i) ||
+                         html.match(/location\.replace\(['"]([^'"]+)['"]\)/i);
+        if (jsRedirect && jsRedirect[1] && jsRedirect[1] !== url) {
+            var nextUrl = jsRedirect[1];
+            if (nextUrl.startsWith("/")) nextUrl = new URL(url).origin + nextUrl;
+            return resolveVOE(nextUrl, depth + 1);
+        }
+
+        var direct = html.match(/'hls'\s*:\s*['"]([^'"]+)['"]/i) || html.match(/"hls"\s*:\s*['"]([^'"]+)['"]/i);
+        if (direct) {
+            var streamUrl = direct[1];
+            if (streamUrl.startsWith("aHR0")) streamUrl = decodeB64(streamUrl);
             return { url: streamUrl, quality: "1080p", server: "VOE" };
         }
         return null;
-    } catch {
-        return null;
-    }
+    })
+    .catch(function() { return null; });
 }
 
-// Extractor StreamWish / HLSWish
-async function resolveStreamWish(url) {
-    try {
-        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://hlswish.com/" } });
-        const html = await res.text();
-        const fileMatch = html.match(/file\s*:\s*["']([^"']+)["']/i);
-        if (fileMatch) {
-            return { url: fileMatch[1], quality: "1080p", server: "HLSWish" };
-        }
-        return null;
-    } catch {
-        return null;
-    }
+// ==========================================
+// 4. TMDB METADATA
+// ==========================================
+function getMediaData(tmdbId, mediaType) {
+    var isTv = mediaType === "tv" || mediaType === "series";
+    var type = isTv ? "tv" : "movie";
+    var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX";
+
+    return fetch(url)
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+            return {
+                title: isTv ? data.name : data.title,
+                originalTitle: isTv ? data.original_name : data.original_title,
+                year: (data.release_date || data.first_air_date || "").substring(0, 4)
+            };
+        })
+        .catch(function() { return null; });
 }
 
-// Extractor GoodStream
-async function resolveGoodStream(url) {
-    try {
-        const res = await fetch(url, { headers: { "User-Agent": USER_AGENT, Referer: "https://goodstream.one" } });
-        const html = await res.text();
-        const fileMatch = html.match(/file:\s*"([^"]+)"/);
-        if (fileMatch) {
-            return { url: fileMatch[1], quality: "1080p", server: "GoodStream" };
+// ==========================================
+// 5. BUSCADOR EN CINECALIDAD
+// ==========================================
+function searchCinecalidad(query, isTv) {
+    var searchUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
+    return fetch(searchUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var pattern = isTv ? /href=["'](https?:\/\/[^"']*cinecalidad[^"']*\/(?:ver-serie|serie)\/[^"']+)["']/gi
+                           : /href=["'](https?:\/\/[^"']*cinecalidad[^"']*\/(?:ver-pelicula|pelicula)\/[^"']+)["']/gi;
+        var matches = [];
+        var m;
+        while ((m = pattern.exec(html)) !== null) {
+            if (matches.indexOf(m[1]) === -1) matches.push(m[1]);
         }
-        return null;
-    } catch {
-        return null;
-    }
+        return matches;
+    })
+    .catch(function() { return []; });
 }
 
-// 4. RESOLVER REDIRECCIONES DE ZOPASS
-async function resolveZopassUrl(zopassPath) {
-    try {
-        const fullUrl = zopassPath.startsWith("http") ? zopassPath : `${SITE_URL}${zopassPath}`;
-        const res = await fetch(fullUrl, {
-            headers: HEADERS,
-            redirect: "follow"
-        });
+// ==========================================
+// 6. EXTRAER ENLACES DEL HTML
+// ==========================================
+function extractEmbedsFromPage(pageUrl) {
+    return fetch(pageUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
+    })
+    .then(function(res) {
+        if (res.status !== 200) return [];
+        return res.text();
+    })
+    .then(function(html) {
+        if (!html) return [];
+        var embeds = [];
 
-        // La URL final a la que redirigió
-        let finalUrl = res.url;
-        
-        // Si no redirigió en headers, buscar iframe en su HTML
-        if (finalUrl.includes("zopass")) {
-            const html = await res.text();
-            const iframeMatch = html.match(/<iframe[^>]+src="([^"]+)"/i);
-            if (iframeMatch) finalUrl = iframeMatch[1];
-        }
-
-        return finalUrl;
-    } catch {
-        return null;
-    }
-}
-
-// 5. FUNCIÓN PRINCIPAL PARA NUVIO
-async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-    if (mediaType === "tv") {
-        console.log("[CineCalidad] Las series no están soportadas en esta web.");
-        return [];
-    }
-
-    console.log(`[CineCalidad] Buscando TMDB: ${tmdbId}`);
-    const streams = [];
-
-    try {
-        const tmdbData = await getTMDBInfo(tmdbId, mediaType);
-        if (!tmdbData) return [];
-
-        console.log(`[CineCalidad] Película: "${tmdbData.title}" (${tmdbData.year})`);
-
-        // 1. Buscar en CineCalidad
-        let movieUrls = await searchCinecalidad(tmdbData.title);
-        if (!movieUrls.length && tmdbData.originalTitle) {
-            movieUrls = await searchCinecalidad(tmdbData.originalTitle);
-        }
-
-        if (!movieUrls.length) {
-            console.log("[CineCalidad] No se encontraron resultados en el buscador.");
-            return [];
-        }
-
-        const targetUrl = movieUrls[0];
-        console.log(`[CineCalidad] Página encontrada: ${targetUrl}`);
-
-        // 2. Cargar el HTML de la película
-        const pageRes = await fetch(targetUrl, { headers: HEADERS });
-        const movieHtml = await pageRes.text();
-
-        // 3. Extraer todos los data-option de los botones
-        const zopassPaths = [];
-        const regex = /data-option="([^"]+)"/g;
-        let match;
-        while ((match = regex.exec(movieHtml)) !== null) {
-            zopassPaths.push(match[1]);
-        }
-
-        console.log(`[CineCalidad] Opciones de reproductor encontradas: ${zopassPaths.length}`);
-
-        // 4. Seguir las redirecciones de zopass en paralelo
-        const embedUrls = (await Promise.all(zopassPaths.map(resolveZopassUrl))).filter(Boolean);
-        console.log(`[CineCalidad] Embeds resueltos:`, embedUrls);
-
-        // 5. Resolver cada servidor de video
-        const resolvePromises = embedUrls.map(async (url) => {
-            if (url.includes("vimeos")) return await resolveVimeos(url);
-            if (url.includes("voe.sx")) return await resolveVOE(url);
-            if (url.includes("streamwish") || url.includes("hlswish") || url.includes("strwish")) return await resolveStreamWish(url);
-            if (url.includes("goodstream")) return await resolveGoodStream(url);
-            return null;
-        });
-
-        const results = await Promise.allSettled(resolvePromises);
-
-        for (const res of results) {
-            if (res.status === "fulfilled" && res.value) {
-                const data = res.value;
-                streams.push({
-                    name: "CineCalidad",
-                    title: `${data.quality} · ${data.server}`,
-                    url: data.url,
-                    quality: data.quality,
-                    headers: {
-                        "User-Agent": USER_AGENT,
-                        "Referer": `${SITE_URL}/`
-                    }
-                });
+        // 1. Extraer URLs codificadas en zopass (?zopass=...)
+        var zopassRegex = /zopass=([a-zA-Z0-9+\/=_~-]+)/gi;
+        var zMatch;
+        while ((zMatch = zopassRegex.exec(html)) !== null) {
+            var decoded = decodeB64(zMatch[1]);
+            if (decoded && decoded.startsWith("http")) {
+                embeds.push(decoded);
             }
         }
 
-        return streams;
-    } catch (error) {
-        console.error("[CineCalidad] Error general:", error.message);
+        // 2. Extraer data-option / data-url directos
+        var optRegex = /(?:data-option|data-url|data-src)=["']([^"']+)["']/gi;
+        var optMatch;
+        while ((optMatch = optRegex.exec(html)) !== null) {
+            var val = optMatch[1];
+            if (val.indexOf("zopass=") !== -1) {
+                var param = val.split("zopass=")[1].split("&")[0];
+                var dec = decodeB64(param);
+                if (dec && dec.startsWith("http")) embeds.push(dec);
+            } else if (val.startsWith("http")) {
+                embeds.push(val);
+            }
+        }
+
+        // Quitar duplicados
+        return embeds.filter(function(item, pos, self) {
+            return self.indexOf(item) === pos;
+        });
+    })
+    .catch(function() { return []; });
+}
+
+// ==========================================
+// 7. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// ==========================================
+function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+    if (!tmdbId) return Promise.resolve([]);
+
+    var isTv = mediaType === "tv" || mediaType === "series";
+
+    return getMediaData(tmdbId, mediaType).then(function(media) {
+        if (!media) return [];
+
+        var query = media.title || media.originalTitle;
+        if (!query) return [];
+
+        return searchCinecalidad(cleanTitle(query), isTv).then(function(urls) {
+            if (urls.length === 0 && media.originalTitle) {
+                return searchCinecalidad(cleanTitle(media.originalTitle), isTv);
+            }
+            return urls;
+        }).then(function(urls) {
+            if (!urls || urls.length === 0) return [];
+
+            var targetPage = urls[0];
+
+            // Si es serie, transformar la URL de la serie a la del capítulo
+            if (isTv) {
+                var s = parseInt(seasonNum || 1, 10);
+                var e = parseInt(episodeNum || 1, 10);
+                var epPadded = String(e).padStart(2, "0");
+
+                // De: https://www.cinecalidad.am/ver-serie/slug/
+                // A:  https://www.cinecalidad.am/ver-el-episodio/slug-1x1/
+                var slug = targetPage.replace(/\/$/, "").split("/").pop();
+                targetPage = BASE_URL + "/ver-el-episodio/" + slug + "-" + s + "x" + e + "/";
+            }
+
+            return extractEmbedsFromPage(targetPage).then(function(embeds) {
+                // Fallback con padding (ej: 1x01) si no devolvió nada
+                if (embeds.length === 0 && isTv) {
+                    var s = parseInt(seasonNum || 1, 10);
+                    var e = parseInt(episodeNum || 1, 10);
+                    var epPadded = String(e).padStart(2, "0");
+                    var slug = urls[0].replace(/\/$/, "").split("/").pop();
+                    var fallbackPage = BASE_URL + "/ver-el-episodio/" + slug + "-" + s + "x" + epPadded + "/";
+                    return extractEmbedsFromPage(fallbackPage);
+                }
+                return embeds;
+            });
+        }).then(function(embeds) {
+            if (!embeds || embeds.length === 0) return [];
+
+            var resolvePromises = embeds.map(function(embedUrl) {
+                var u = embedUrl.toLowerCase();
+                var promise = null;
+
+                if (u.indexOf("vimeos") !== -1) {
+                    promise = resolveVimeos(embedUrl);
+                } else if (u.indexOf("goodstream") !== -1) {
+                    promise = resolveGoodStream(embedUrl);
+                } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1) {
+                    promise = resolveStreamWish(embedUrl);
+                } else if (u.indexOf("voe") !== -1) {
+                    promise = resolveVOE(embedUrl);
+                } else {
+                    promise = Promise.resolve(null);
+                }
+
+                return promise.then(function(stream) {
+                    if (stream && stream.url) {
+                        return {
+                            name: "CineCalidad",
+                            title: stream.quality + " · " + stream.server + " (Latino)",
+                            url: stream.url,
+                            quality: stream.quality,
+                            headers: stream.headers || {
+                                "User-Agent": USER_AGENT,
+                                "Referer": embedUrl
+                            }
+                        };
+                    }
+                    return null;
+                });
+            });
+
+            return Promise.all(resolvePromises).then(function(results) {
+                var streams = [];
+                for (var i = 0; i < results.length; i++) {
+                    if (results[i]) streams.push(results[i]);
+                }
+                return streams;
+            });
+        });
+    }).catch(function() {
         return [];
-    }
+    });
 }
 
 if (typeof module !== "undefined") {
-    module.exports = { getStreams };
+    module.exports = { getStreams: getStreams };
 }
