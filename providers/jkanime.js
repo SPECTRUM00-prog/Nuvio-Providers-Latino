@@ -14,7 +14,7 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DECODIFICACIÓN BASE64 SEGURA
+// UTILIDADES Y DECODIFICACIÓN BASE64 PURA
 // ==========================================
 
 function pureAtob(input) {
@@ -123,7 +123,7 @@ function probeM3u8Quality(m3u8Url, headers) {
 function getServerLabel(url) {
     if (!url) return "Online";
     var u = url.toLowerCase();
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return "StreamWish";
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("fasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return "StreamWish";
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) return "VidHide";
     if (u.includes("filemoon")) return "Filemoon";
     if (u.includes("streamtape")) return "Streamtape";
@@ -184,8 +184,8 @@ function resolveVidHide(url) {
     var targetUrl = url;
     if (targetUrl.includes("callistanise.com/") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/")) {
         targetUrl = targetUrl.replace("callistanise.com/", "callistanise.com/v/");
-    } else if (targetUrl.includes("vidhide") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/")) {
-        targetUrl = targetUrl.replace(/\.com\//, ".com/v/").replace(/\.pro\//, ".pro/v/");
+    } else if (targetUrl.includes("vidhide") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/") && !targetUrl.includes("/embed/")) {
+        targetUrl = targetUrl.replace(/\.com\//, ".com/v/").replace(/\.pro\//, ".pro/v/").replace(/\.vip\//, ".vip/v/");
     }
 
     var hostMatch = targetUrl.match(/^(https?:\/\/[^/]+)/i);
@@ -344,7 +344,7 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
 
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) {
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("fasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) {
         return resolveStreamWish(url);
     }
     if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) {
@@ -367,34 +367,46 @@ function dispatchResolver(url) {
 // BÚSQUEDA Y EXTRACCIÓN
 // ==========================================
 
-function searchJkanime(query) {
-    var searchUrl = `${BASE_URL}/buscar/${encodeURIComponent(query)}/`;
-    console.log(`[JKAnime] Buscando: "${query}"`);
+function searchJkanime(queries) {
+    var queryList = Array.isArray(queries) ? queries : [queries];
+    
+    function tryNextQuery(index) {
+        if (index >= queryList.length) return Promise.resolve([]);
+        var q = queryList[index];
+        if (!q || hasJapaneseChars(q)) return tryNextQuery(index + 1);
 
-    return fetch(searchUrl, { headers: DEFAULT_HEADERS })
-        .then(function(res) {
-            if (!res.ok) return [];
-            return res.text();
-        })
-        .then(function(html) {
-            var regex = /href=["']https?:\/\/jkanime\.net\/([^"'/]+)\/["']/gi;
-            var matches = [];
-            var match;
+        var searchUrl = `${BASE_URL}/buscar/${encodeURIComponent(q)}/`;
+        console.log(`[JKAnime] Buscando: "${q}"`);
 
-            while ((match = regex.exec(html)) !== null) {
-                var slug = match[1];
-                if (slug && slug !== "buscar" && slug !== "horario" && slug !== "top" && slug !== "directorio" && matches.indexOf(slug) === -1) {
-                    matches.push(slug);
+        return fetch(searchUrl, { headers: DEFAULT_HEADERS })
+            .then(function(res) {
+                if (!res.ok) return [];
+                return res.text();
+            })
+            .then(function(html) {
+                var regex = /href=["']https?:\/\/jkanime\.net\/([^"'/]+)\/["']/gi;
+                var matches = [];
+                var match;
+
+                while ((match = regex.exec(html)) !== null) {
+                    var slug = match[1];
+                    if (slug && slug !== "buscar" && slug !== "horario" && slug !== "top" && slug !== "directorio" && matches.indexOf(slug) === -1) {
+                        matches.push(slug);
+                    }
                 }
-            }
 
-            console.log(`[JKAnime] Slugs encontrados: ${matches.length}`);
-            return matches;
-        })
-        .catch(function(err) {
-            console.log(`[JKAnime] Error en búsqueda: ${err.message}`);
-            return [];
-        });
+                if (matches.length > 0) {
+                    console.log(`[JKAnime] Slugs encontrados para "${q}": ${matches.length}`);
+                    return matches;
+                }
+                return tryNextQuery(index + 1);
+            })
+            .catch(function() {
+                return tryNextQuery(index + 1);
+            });
+    }
+
+    return tryNextQuery(0);
 }
 
 function extractStreamsFromEpisodePage(pageUrl) {
@@ -408,7 +420,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(html) {
             var rawEmbeds = [];
 
-            // 1. Extraer parámetro ?u=BASE64 de los iframes o links
+            // 1. Extraer parámetro ?u=BASE64
             var uRegex = /[?&]u=([a-zA-Z0-9+/=_-]+)/gi;
             var uMatch;
             while ((uMatch = uRegex.exec(html)) !== null) {
@@ -427,6 +439,8 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 if (vParam) {
                     var d = decodeBase64Safe(vParam[1]);
                     if (d && d.startsWith("http")) rawEmbeds.push(d);
+                } else if (vSrc.startsWith("http")) {
+                    rawEmbeds.push(vSrc);
                 }
             }
 
@@ -489,16 +503,23 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            // Priorizar título en caracteres latinos para buscar en JKAnime
-            var primarySearch = (!hasJapaneseChars(title) && title) ? title : origTitle;
-            if (hasJapaneseChars(primarySearch)) {
-                primarySearch = title;
+            // Construir lista de búsqueda con ambos nombres y palabras clave
+            var searchQueries = [];
+            if (title && !hasJapaneseChars(title)) {
+                searchQueries.push(title);
+                var wordsT = title.split(/\s+/);
+                if (wordsT.length > 3) searchQueries.push(wordsT.slice(0, 3).join(" "));
+            }
+            if (origTitle && origTitle !== title && !hasJapaneseChars(origTitle)) {
+                searchQueries.push(origTitle);
+                var wordsO = origTitle.split(/\s+/);
+                if (wordsO.length > 3) searchQueries.push(wordsO.slice(0, 3).join(" "));
             }
 
             var cleanT = cleanSlug(title);
             var cleanOrig = hasJapaneseChars(origTitle) ? "" : cleanSlug(origTitle);
 
-            return searchJkanime(primarySearch).then(function(slugs) {
+            return searchJkanime(searchQueries).then(function(slugs) {
                 var candidateSlugs = slugs.slice();
                 if (cleanT && candidateSlugs.indexOf(cleanT) === -1) candidateSlugs.push(cleanT);
                 if (cleanOrig && candidateSlugs.indexOf(cleanOrig) === -1) candidateSlugs.push(cleanOrig);
