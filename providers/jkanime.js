@@ -408,11 +408,10 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(html) {
             var rawEmbeds = [];
 
-            // 1. Extraer los tokens ?u=BASE64 de todo el HTML
-            var uRegex = /[?&]u=([a-zA-Z0-9+/=_-]+)/gi;
-            var uMatch;
-            while ((uMatch = uRegex.exec(html)) !== null) {
-                var decoded = decodeBase64Safe(uMatch[1]);
+            // 1. Extraer TODOS los tokens Base64 que empiezan por aHR0cHM6 (https:)
+            var b64Tokens = html.match(/aHR0cHM6[a-zA-Z0-9+/=_-]+/gi) || [];
+            for (var i = 0; i < b64Tokens.length; i++) {
+                var decoded = decodeBase64Safe(b64Tokens[i]);
                 if (decoded && decoded.startsWith("http")) {
                     rawEmbeds.push(decoded);
                 }
