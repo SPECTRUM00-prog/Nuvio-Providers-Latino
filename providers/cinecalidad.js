@@ -98,12 +98,24 @@ function resolveGoodStream(embedUrl) {
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
+        var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i) ||
+                     html.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+        if (direct) {
+            return {
+                url: direct[1],
+                quality: "1080p",
+                server: "GoodStream",
+                headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
+            };
+        }
         var unpacked = unpackJS(html);
         if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
+                       unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
             if (m3u8) {
+                var streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
                 return {
-                    url: m3u8[0],
+                    url: streamUrl,
                     quality: "1080p",
                     server: "GoodStream",
                     headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
@@ -116,28 +128,68 @@ function resolveGoodStream(embedUrl) {
 }
 
 function resolveStreamWish(embedUrl) {
-    return fetch(embedUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
+    var id = embedUrl.replace(/\/$/, "").split("/").pop();
+    var targetUrl = "https://hlswish.com/e/" + id;
+
+    return fetch(targetUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var fileMatch = html.match(/(?:file|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+        var fileMatch = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i) ||
+                        html.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
         if (fileMatch) {
             return {
                 url: fileMatch[1],
                 quality: "1080p",
                 server: "StreamWish",
+                headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
+            };
+        }
+        var unpacked = unpackJS(html);
+        if (unpacked) {
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
+                       unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+            if (m3u8) {
+                var streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
+                return {
+                    url: streamUrl,
+                    quality: "1080p",
+                    server: "StreamWish",
+                    headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
+                };
+            }
+        }
+        return null;
+    })
+    .catch(function() { return null; });
+}
+
+function resolveFilemoon(embedUrl) {
+    return fetch(embedUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+        if (direct) {
+            return {
+                url: direct[1],
+                quality: "1080p",
+                server: "Filemoon",
                 headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
             };
         }
         var unpacked = unpackJS(html);
         if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i) ||
+                       unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
             if (m3u8) {
+                var streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
                 return {
-                    url: m3u8[0],
+                    url: streamUrl,
                     quality: "1080p",
-                    server: "StreamWish",
+                    server: "Filemoon",
                     headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
                 };
             }
@@ -248,14 +300,11 @@ function extractEmbedsFromPage(pageUrl) {
             }
         }
 
-        // 2. Extraer zopass= directo si estuviera en otros atributos
-        var zopassRegex = /zopass=([a-zA-Z0-9+\/=_~-]+)/gi;
-        var zMatch;
-        while ((zMatch = zopassRegex.exec(html)) !== null) {
-            var decoded = decodeB64(zMatch[1]);
-            if (decoded && decoded.startsWith("http") && embeds.indexOf(decoded) === -1) {
-                embeds.push(decoded);
-            }
+        // 2. Extraer enlaces directos de botones o links
+        var linkRegex = /href=["'](https?:\/\/[^"']*(?:vimeos|goodstream|hlswish|streamwish|filemoon|voe)[^"']*)["']/gi;
+        var lMatch;
+        while ((lMatch = linkRegex.exec(html)) !== null) {
+            if (embeds.indexOf(lMatch[1]) === -1) embeds.push(lMatch[1]);
         }
 
         return embeds.filter(function(item, pos, self) {
@@ -277,9 +326,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         if (!media) return [];
 
         var rawTitle = media.title || media.originalTitle || "";
-        var shortTitle = rawTitle.split(/[:\-\(]/)[0].trim(); // "Pablo Escobar: El Patrón..." -> "Pablo Escobar"
+        var shortTitle = rawTitle.split(/[:\-\(]/)[0].trim();
 
-        // Buscar con título simplificado o completo
         return searchCinecalidad(cleanTitle(shortTitle), isTv).then(function(urls) {
             if (urls.length === 0 && rawTitle !== shortTitle) {
                 return searchCinecalidad(cleanTitle(rawTitle), isTv);
@@ -295,7 +343,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
             var targetPage = urls[0];
 
-            // Si es serie, transformar a la URL del capítulo
             if (isTv) {
                 var s = parseInt(seasonNum || 1, 10);
                 var e = parseInt(episodeNum || 1, 10);
@@ -304,7 +351,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             }
 
             return extractEmbedsFromPage(targetPage).then(function(embeds) {
-                // Fallback con padding si fuera necesario (ej: 1x01)
                 if (embeds.length === 0 && isTv) {
                     var s = parseInt(seasonNum || 1, 10);
                     var e = parseInt(episodeNum || 1, 10);
@@ -328,6 +374,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     promise = resolveGoodStream(embedUrl);
                 } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1) {
                     promise = resolveStreamWish(embedUrl);
+                } else if (u.indexOf("filemoon") !== -1) {
+                    promise = resolveFilemoon(embedUrl);
                 } else if (u.indexOf("voe") !== -1) {
                     promise = resolveVOE(embedUrl);
                 } else {
