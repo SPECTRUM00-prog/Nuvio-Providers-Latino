@@ -14,7 +14,7 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// DECODIFICADOR BASE64 PURO (100% HERMES)
+// UTILIDADES Y DECODIFICACIÓN BASE64 PURA
 // ==========================================
 
 function decodeBase64Safe(input) {
@@ -65,6 +65,19 @@ function cleanSlug(text) {
 
 function hasJapaneseChars(str) {
     return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
+}
+
+function isSlugSimilar(query, slug) {
+    if (!query || !slug) return false;
+    var cleanQ = normalizeText(query).replace(/-/g, " ");
+    var cleanS = normalizeText(slug).replace(/-/g, " ");
+    var qWords = cleanQ.split(/\s+/).filter(function(w) { return w.length > 2; });
+    var sWords = cleanS.split(/\s+/).filter(function(w) { return w.length > 2; });
+
+    for (var i = 0; i < qWords.length; i++) {
+        if (sWords.indexOf(qWords[i]) !== -1) return true;
+    }
+    return false;
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -131,7 +144,7 @@ function getServerLabel(url) {
     if (u.includes("filemoon") || u.includes("bysekoze")) return "Filemoon";
     if (u.includes("streamtape")) return "Streamtape";
     if (u.includes("mp4upload")) return "Mp4upload";
-    if (u.includes("playmudos") || u.includes("/jkplayer/um")) return "Desu / Magi";
+    if (u.includes("playmudos") || u.includes("/jkplayer/um")) return "Desu";
     return "JKAnime";
 }
 
@@ -238,7 +251,7 @@ function resolveMp4upload(url) {
         if (packMatch) {
             var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
             var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4[^"']*)["']/i) ||
-                           unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*)["']/i);
+                           unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
             if (srcMatch) {
                 return {
                     url: srcMatch[1],
@@ -248,10 +261,10 @@ function resolveMp4upload(url) {
                 };
             }
         }
-        var directMatch = html.match(/["'](https?:\/\/[^"'\s\\]+\.mp4[^"'\s\\]*)["']/i);
+        var directMatch = html.match(/https?:\/\/[a-zA-Z0-9.-]+\.mp4upload\.com(?::\d+)?\/[a-zA-Z0-9/._-]+\.mp4/i);
         if (directMatch) {
             return {
-                url: directMatch[1],
+                url: directMatch[0],
                 serverName: "Mp4upload",
                 quality: "720p",
                 headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
@@ -364,7 +377,6 @@ function searchJkanime(queries) {
         if (!q || hasJapaneseChars(q)) return tryNextQuery(index + 1);
 
         var searchUrl = `${BASE_URL}/buscar/${encodeURIComponent(q)}/`;
-        console.log(`[JKAnime] Buscando: "${q}"`);
 
         return fetch(searchUrl, { headers: DEFAULT_HEADERS })
             .then(function(res) {
@@ -379,12 +391,14 @@ function searchJkanime(queries) {
                 while ((match = regex.exec(html)) !== null) {
                     var slug = match[1];
                     if (slug && slug !== "buscar" && slug !== "horario" && slug !== "top" && slug !== "directorio" && matches.indexOf(slug) === -1) {
-                        matches.push(slug);
+                        // Validar similitud para evitar falsos positivos
+                        if (isSlugSimilar(q, slug)) {
+                            matches.push(slug);
+                        }
                     }
                 }
 
                 if (matches.length > 0) {
-                    console.log(`[JKAnime] Slugs encontrados para "${q}": ${matches.length}`);
                     return matches;
                 }
                 return tryNextQuery(index + 1);
@@ -398,8 +412,6 @@ function searchJkanime(queries) {
 }
 
 function extractStreamsFromEpisodePage(pageUrl) {
-    console.log(`[JKAnime] Consultando episodio: ${pageUrl}`);
-
     return fetch(pageUrl, { headers: DEFAULT_HEADERS })
         .then(function(res) {
             if (!res.ok) throw new Error("HTTP " + res.status);
@@ -408,7 +420,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(html) {
             var rawEmbeds = [];
 
-            // 1. Extraer TODOS los tokens Base64 que empiezan por aHR0cHM6 (https:)
+            // 1. Extraer tokens Base64 con prefijo "aHR0cHM6" (https:)
             var b64Tokens = html.match(/aHR0cHM6[a-zA-Z0-9+/=_-]+/gi) || [];
             for (var i = 0; i < b64Tokens.length; i++) {
                 var decoded = decodeBase64Safe(b64Tokens[i]);
@@ -424,17 +436,13 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 rawEmbeds.push(umMatch[0].replace(/&amp;/g, "&"));
             }
 
-            // Deduplicar URLs
             var uniqueEmbeds = rawEmbeds.filter(function(item, pos, self) {
                 return item && self.indexOf(item) === pos;
             });
 
             if (uniqueEmbeds.length === 0) {
-                console.log("[JKAnime] No se encontraron reproductores en el episodio");
                 return [];
             }
-
-            console.log(`[JKAnime] Servidores encontrados: ${uniqueEmbeds.length}`);
 
             var promises = uniqueEmbeds.map(function(embedUrl) {
                 return dispatchResolver(embedUrl)
@@ -458,10 +466,29 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(results) {
             return results.filter(function(st) { return st !== null; });
         })
-        .catch(function(err) {
-            console.log(`[JKAnime] Error extrayendo capítulo: ${err.message}`);
+        .catch(function() {
             return [];
         });
+}
+
+// ==========================================
+// CÁLCULO DE EPISODIO ABSOLUTO
+// ==========================================
+
+function getAbsoluteEpisodeNumber(meta, season, episode) {
+    if (!meta || !meta.seasons || season <= 1) {
+        return episode || 1;
+    }
+
+    var totalPrevious = 0;
+    for (var i = 0; i < meta.seasons.length; i++) {
+        var s = meta.seasons[i];
+        if (s.season_number > 0 && s.season_number < season) {
+            totalPrevious += (s.episode_count || 0);
+        }
+    }
+
+    return totalPrevious + (parseInt(episode, 10) || 1);
 }
 
 // ==========================================
@@ -471,7 +498,6 @@ function extractStreamsFromEpisodePage(pageUrl) {
 function getStreams(tmdbId, mediaType, season, episode) {
     console.log(`[JKAnime] Buscando TMDB ID ${tmdbId} (${mediaType})`);
     var isMovie = mediaType === "movie";
-    var epNum = episode || 1;
     var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX`;
 
     return fetch(tmdbUrl)
@@ -482,6 +508,13 @@ function getStreams(tmdbId, mediaType, season, episode) {
         .then(function(meta) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
+
+            // Calcular número de episodio absoluto para series largas
+            var sNum = parseInt(season, 10) || 1;
+            var eNum = parseInt(episode, 10) || 1;
+            var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
+
+            console.log(`[JKAnime] Título: "${title}" | Episodio Absoluto: ${absoluteEp}`);
 
             var searchQueries = [];
             if (title && !hasJapaneseChars(title)) {
@@ -500,8 +533,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             return searchJkanime(searchQueries).then(function(slugs) {
                 var candidateSlugs = slugs.slice();
-                if (cleanT && candidateSlugs.indexOf(cleanT) === -1) candidateSlugs.push(cleanT);
-                if (cleanOrig && candidateSlugs.indexOf(cleanOrig) === -1) candidateSlugs.push(cleanOrig);
+                if (cleanT && candidateSlugs.indexOf(cleanT) === -1 && isSlugSimilar(title, cleanT)) candidateSlugs.push(cleanT);
+                if (cleanOrig && candidateSlugs.indexOf(cleanOrig) === -1 && isSlugSimilar(origTitle, cleanOrig)) candidateSlugs.push(cleanOrig);
+
+                // Si no hay candidatos con similitud, abortar limpiamente (evita The Big Bang Theory)
+                if (candidateSlugs.length === 0) {
+                    console.log("[JKAnime] No es un anime o no está en el catálogo");
+                    return [];
+                }
 
                 function tryNextSlug(index) {
                     if (index >= candidateSlugs.length) return Promise.resolve([]);
@@ -509,7 +548,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                     var pageUrl = isMovie
                         ? `${BASE_URL}/${s}/pelicula/`
-                        : `${BASE_URL}/${s}/${epNum}/`;
+                        : `${BASE_URL}/${s}/${absoluteEp}/`;
 
                     return extractStreamsFromEpisodePage(pageUrl).then(function(streams) {
                         if (streams && streams.length > 0) return streams;
