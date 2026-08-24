@@ -79,6 +79,37 @@ function isSlugSimilar(query, slug) {
     return false;
 }
 
+// Mapeo inteligente de sufijos para temporadas de anime
+const SEASON_PATTERNS = {
+    1: ["", "-1", "-1st"],
+    2: ["-ii", "-2", "-2nd", "-season-2", "-2nd-season", "-s2"],
+    3: ["-iii", "-3", "-3rd", "-part-2", "-part-ii", "-season-3", "-3rd-season", "-s3"],
+    4: ["-iv", "-4", "-4th", "-final-season", "-season-4", "-s4"],
+    5: ["-v", "-5", "-5th", "-season-5", "-s5"]
+};
+
+function scoreSlugForSeason(slug, season) {
+    var s = slug.toLowerCase();
+    var sNum = parseInt(season, 10) || 1;
+
+    if (sNum === 1) {
+        if (s.includes("-ii") || s.includes("-iii") || s.includes("-iv") || s.includes("-2") || s.includes("-3") || s.includes("-part-2")) {
+            return -10;
+        }
+        return 10;
+    }
+
+    var targetPatterns = SEASON_PATTERNS[sNum] || [`-${sNum}`];
+    for (var i = 0; i < targetPatterns.length; i++) {
+        var pat = targetPatterns[i];
+        if (pat && s.includes(pat)) {
+            return 20 - i;
+        }
+    }
+
+    return 0;
+}
+
 function unpackDeanEdwards(p, a, c, k) {
     var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     function decodeBase(val, radix) {
@@ -418,7 +449,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(html) {
             var rawEmbeds = [];
 
-            // 1. Extraer del objeto var servers = [...]
+            // 1. Extraer de var servers = [...]
             var serversMatch = html.match(/var\s+servers\s*=\s*(\[[^\]]+\]);/i);
             if (serversMatch) {
                 try {
@@ -523,48 +554,46 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return res.json();
         })
         .then(function(meta) {
-            // Filtro de Origen: Descartar producciones no japonesas (evita South Park, Family Guy, The Big Bang Theory)
+            // Filtro estricto: Descartar producciones occidentales
             var isJapanese = (meta.original_language === "ja") ||
                              (meta.origin_country && meta.origin_country.indexOf("JP") !== -1) ||
                              (meta.production_countries && meta.production_countries.some(function(c) { return c.iso_3166_1 === "JP"; }));
 
             if (!isJapanese) {
-                console.log("[JKAnime] Contenido no japonés (Anime). Descartando consulta.");
+                console.log("[JKAnime] Contenido no japonés. Abortando.");
                 return [];
             }
 
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            // Recolectar todos los títulos alternativos en Romaji e Inglés
             var searchQueries = [];
 
-            // Añadir variantes de temporadas (ej: Konosuba 3, KonoSuba Season 3)
+            // 1. Añadir palabras clave de búsqueda de temporada si sNum > 1
             if (sNum > 1 && !isMovie) {
-                searchQueries.push(`konosuba ${sNum}`);
-                if (title && !hasJapaneseChars(title)) {
-                    searchQueries.push(`${title} ${sNum}`);
-                }
+                searchQueries.push(`${title} ${sNum}`);
+                searchQueries.push(`${title} Season ${sNum}`);
+                searchQueries.push(`${title} Part ${sNum}`);
             }
 
-            // Título principal
             if (title && !hasJapaneseChars(title)) {
                 searchQueries.push(title);
                 var wordsT = title.split(/\s+/);
                 if (wordsT.length > 2) searchQueries.push(wordsT.slice(0, 2).join(" "));
             }
 
-            // Títulos alternativos desde TMDB
+            // 2. Extraer títulos alternativos en Romaji / Inglés
             var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
             for (var i = 0; i < altTitles.length; i++) {
                 var alt = altTitles[i].title || "";
                 if (alt && !hasJapaneseChars(alt)) {
                     if (sNum > 1 && !isMovie) {
                         searchQueries.push(`${alt} ${sNum}`);
+                        searchQueries.push(`${alt} Season ${sNum}`);
                     }
                     searchQueries.push(alt);
                     var wordsA = alt.split(/\s+/);
-                    if (wordsA.length > 3) searchQueries.push(wordsA.slice(0, 3).join(" "));
+                    if (wordsA.length > 2) searchQueries.push(wordsA.slice(0, 2).join(" "));
                 }
             }
 
@@ -583,10 +612,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return searchJkanime(searchQueries).then(function(slugs) {
                 var candidateSlugs = slugs.slice();
 
-                if (sNum > 1 && !isMovie) {
-                    if (cleanT) candidateSlugs.push(`${cleanT}-${sNum}`);
-                }
-
                 if (cleanT && candidateSlugs.indexOf(cleanT) === -1 && isSlugSimilar(title, cleanT)) {
                     candidateSlugs.push(cleanT);
                 }
@@ -595,13 +620,19 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     return [];
                 }
 
+                // Ordenar slugs según puntuación de temporada
+                candidateSlugs.sort(function(a, b) {
+                    return scoreSlugForSeason(b, sNum) - scoreSlugForSeason(a, sNum);
+                });
+
                 function tryNextSlug(index) {
                     if (index >= candidateSlugs.length) return Promise.resolve([]);
                     var s = candidateSlugs[index];
 
-                    // Si el slug incluye el número de temporada (ej: kono-subarashii-sekai-ni-shukufuku-wo-3), usa el capítulo relativo (eNum)
-                    // Si es una serie continua (ej: one-piece), usa el número absoluto continuo
-                    var targetEp = (s.endsWith("-" + sNum) || s.includes("season") || s.includes("-" + sNum + "-")) ? eNum : absoluteEp;
+                    // Si el slug incluye la temporada o parte, usa el episodio relativo (eNum)
+                    // Si es una serie continua (ej: one-piece), usa el episodio absoluto continuo
+                    var isSeasonSpecific = s.includes("-ii") || s.includes("-iii") || s.includes("-iv") || s.includes("-part") || s.includes("-" + sNum);
+                    var targetEp = (isSeasonSpecific || sNum === 1) ? eNum : absoluteEp;
 
                     var pageUrl = isMovie
                         ? `${BASE_URL}/${s}/pelicula/`
