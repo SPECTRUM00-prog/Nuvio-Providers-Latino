@@ -72,7 +72,6 @@ function isSlugSimilar(query, slug) {
     var cleanQ = normalizeText(query).replace(/-/g, " ");
     var cleanS = normalizeText(slug).replace(/-/g, " ");
     var qWords = cleanQ.split(/\s+/).filter(function(w) { return w.length > 2; });
-    var sWords = cleanS.split(/\s+/).filter(function(w) { return w.length > 2; });
 
     for (var i = 0; i < qWords.length; i++) {
         if (cleanS.includes(qWords[i])) return true;
@@ -488,7 +487,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
 }
 
 // ==========================================
-// CÁLCULO DE EPISODIOS CONTINUOS / POR TEMPORADA
+// CÁLCULO DE EPISODIOS CONTINUOS
 // ==========================================
 
 function getAbsoluteEpisodeNumber(meta, season, episode) {
@@ -516,7 +515,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
     var eNum = parseInt(episode, 10) || 1;
-    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX`;
+    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
 
     return fetch(tmdbUrl)
         .then(function(res) {
@@ -524,49 +523,73 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return res.json();
         })
         .then(function(meta) {
+            // Filtro de Origen: Descartar producciones no japonesas (evita South Park, Family Guy, The Big Bang Theory)
+            var isJapanese = (meta.original_language === "ja") ||
+                             (meta.origin_country && meta.origin_country.indexOf("JP") !== -1) ||
+                             (meta.production_countries && meta.production_countries.some(function(c) { return c.iso_3166_1 === "JP"; }));
+
+            if (!isJapanese) {
+                console.log("[JKAnime] Contenido no japonés (Anime). Descartando consulta.");
+                return [];
+            }
+
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            // Calcular número continuo para series largas y mantener número normal para temporadas
-            var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
-
-            // Construir lista de búsqueda incluyendo temporada si es > 1
+            // Recolectar todos los títulos alternativos en Romaji e Inglés
             var searchQueries = [];
 
+            // Añadir variantes de temporadas (ej: Konosuba 3, KonoSuba Season 3)
             if (sNum > 1 && !isMovie) {
+                searchQueries.push(`konosuba ${sNum}`);
                 if (title && !hasJapaneseChars(title)) {
                     searchQueries.push(`${title} ${sNum}`);
-                    searchQueries.push(`${title} Season ${sNum}`);
-                }
-                if (origTitle && origTitle !== title && !hasJapaneseChars(origTitle)) {
-                    searchQueries.push(`${origTitle} ${sNum}`);
                 }
             }
 
+            // Título principal
             if (title && !hasJapaneseChars(title)) {
                 searchQueries.push(title);
                 var wordsT = title.split(/\s+/);
-                if (wordsT.length > 3) searchQueries.push(wordsT.slice(0, 3).join(" "));
-            }
-            if (origTitle && origTitle !== title && !hasJapaneseChars(origTitle)) {
-                searchQueries.push(origTitle);
-                var wordsO = origTitle.split(/\s+/);
-                if (wordsO.length > 3) searchQueries.push(wordsO.slice(0, 3).join(" "));
+                if (wordsT.length > 2) searchQueries.push(wordsT.slice(0, 2).join(" "));
             }
 
+            // Títulos alternativos desde TMDB
+            var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
+            for (var i = 0; i < altTitles.length; i++) {
+                var alt = altTitles[i].title || "";
+                if (alt && !hasJapaneseChars(alt)) {
+                    if (sNum > 1 && !isMovie) {
+                        searchQueries.push(`${alt} ${sNum}`);
+                    }
+                    searchQueries.push(alt);
+                    var wordsA = alt.split(/\s+/);
+                    if (wordsA.length > 3) searchQueries.push(wordsA.slice(0, 3).join(" "));
+                }
+            }
+
+            if (origTitle && origTitle !== title && !hasJapaneseChars(origTitle)) {
+                searchQueries.push(origTitle);
+            }
+
+            // Deduplicar términos de búsqueda
+            searchQueries = searchQueries.filter(function(item, pos, self) {
+                return item && self.indexOf(item) === pos;
+            });
+
+            var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
             var cleanT = cleanSlug(title);
-            var cleanOrig = hasJapaneseChars(origTitle) ? "" : cleanSlug(origTitle);
 
             return searchJkanime(searchQueries).then(function(slugs) {
                 var candidateSlugs = slugs.slice();
 
                 if (sNum > 1 && !isMovie) {
                     if (cleanT) candidateSlugs.push(`${cleanT}-${sNum}`);
-                    if (cleanOrig) candidateSlugs.push(`${cleanOrig}-${sNum}`);
                 }
 
-                if (cleanT && candidateSlugs.indexOf(cleanT) === -1 && isSlugSimilar(title, cleanT)) candidateSlugs.push(cleanT);
-                if (cleanOrig && candidateSlugs.indexOf(cleanOrig) === -1 && isSlugSimilar(origTitle, cleanOrig)) candidateSlugs.push(cleanOrig);
+                if (cleanT && candidateSlugs.indexOf(cleanT) === -1 && isSlugSimilar(title, cleanT)) {
+                    candidateSlugs.push(cleanT);
+                }
 
                 if (candidateSlugs.length === 0) {
                     return [];
@@ -576,9 +599,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     if (index >= candidateSlugs.length) return Promise.resolve([]);
                     var s = candidateSlugs[index];
 
-                    // Si el slug incluye la temporada (ej: konosuba-3), usa el episodio de la temporada (eNum)
-                    // Si es el slug base (ej: one-piece), prueba con el episodio absoluto continuo
-                    var targetEp = (s.endsWith("-" + sNum) || s.includes("season")) ? eNum : absoluteEp;
+                    // Si el slug incluye el número de temporada (ej: kono-subarashii-sekai-ni-shukufuku-wo-3), usa el capítulo relativo (eNum)
+                    // Si es una serie continua (ej: one-piece), usa el número absoluto continuo
+                    var targetEp = (s.endsWith("-" + sNum) || s.includes("season") || s.includes("-" + sNum + "-")) ? eNum : absoluteEp;
 
                     var pageUrl = isMovie
                         ? `${BASE_URL}/${s}/pelicula/`
@@ -587,7 +610,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     return extractStreamsFromEpisodePage(pageUrl).then(function(streams) {
                         if (streams && streams.length > 0) return streams;
 
-                        // Fallback alternativo: probar el episodio relativo
                         if (!isMovie && targetEp !== eNum) {
                             var altUrl = `${BASE_URL}/${s}/${eNum}/`;
                             return extractStreamsFromEpisodePage(altUrl).then(function(altStreams) {
