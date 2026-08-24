@@ -1,50 +1,49 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+const FAST_API = "https://lamovie.org/wp-api/v1";
 
-async function analyzePlayerLogic() {
-    console.log("=== ANALIZANDO LÓGICA DEL REPRODUCTOR EN APP.JS ===");
+async function inspectEpisodePage() {
+    const episodeUrl = "https://lamovie.org/episodio/the-last-of-us-temporada-1-episodio-1/";
+    console.log(`Inspeccionando capítulo: ${episodeUrl}`);
 
     try {
-        const appRes = await fetch("https://lamovie.org/app.js", {
+        const res = await fetch(episodeUrl, {
             headers: { "User-Agent": USER_AGENT }
         });
-        const appJs = await appRes.text();
+        const html = await res.text();
+        console.log(`Tamaño HTML: ${html.length} caracteres`);
 
-        // 1. Buscar cómo llama a /wp-api/v1/player o a los servidores
-        console.log("\n[1] Referencias a /player en app.js:");
-        const playerMatches = appJs.match(/.{0,80}\/player.{0,80}/gi) || [];
-        playerMatches.forEach((m, idx) => console.log(`  [${idx + 1}] ...${m}...`));
+        // 1. Buscar el Post ID del capítulo en el HTML
+        const idMatches = html.match(/(?:post_id|postId|data-id|id)["':=\s]+(\d+)/gi) || [];
+        console.log("\n[1] IDs encontrados en el HTML:", idMatches.slice(0, 8));
 
-        // 2. Buscar cómo construye las URLs de episodios
-        console.log("\n[2] Referencias a vimeos / embed en app.js:");
-        const embedMatches = appJs.match(/.{0,80}(?:vimeos|embeds|fastApi).{0,80}/gi) || [];
-        embedMatches.slice(0, 5).forEach((m, idx) => console.log(`  [${idx + 1}] ...${m}...`));
+        // 2. Buscar si hay scripts de estado o embeds directos
+        const scripts = html.match(/<script[\s\S]*?<\/script>/gi) || [];
+        scripts.forEach((s, idx) => {
+            if (s.includes("embed") || s.includes("vimeos") || s.includes("player") || s.includes("postId")) {
+                console.log(`\n--- Script relevante #${idx + 1} ---`);
+                console.log(s.substring(0, 400));
+            }
+        });
+
+        // 3. Probar si el ID del episodio se puede consultar en /wp-api/v1/player
+        // Extraemos cualquier número que parezca ID de post
+        const numericIds = (html.match(/["'](\d{4,6})["']/g) || []).map(id => id.replace(/["']/g, ''));
+        const uniqueIds = [...new Set(numericIds)];
+
+        for (const id of uniqueIds.slice(0, 3)) {
+            const pUrl = `${FAST_API}/player?postId=${id}&demo=0`;
+            const pRes = await fetch(pUrl, { headers: { "User-Agent": USER_AGENT, "Accept": "application/json" } });
+            const pJson = await pRes.json();
+            if (pJson?.data?.embeds?.length && !pJson.data.embeds[0].url.includes("embed.html")) {
+                console.log(`\n✅ ¡Embeds encontrados con éxito para el Post ID: ${id}!`);
+                console.log(JSON.stringify(pJson.data.embeds, null, 2));
+                break;
+            }
+        }
 
     } catch (e) {
-        console.log("Error analizando app.js:", e.message);
-    }
-
-    // 3. Probar URLs directas de episodios en la web
-    console.log("\n[3] Probando acceso a páginas de episodios:");
-    const testSlugs = [
-        "https://lamovie.org/episodio/the-last-of-us-1x1/",
-        "https://lamovie.org/episodio/the-last-of-us-1x01/",
-        "https://lamovie.org/episodio/the-last-of-us-temporada-1-episodio-1/"
-    ];
-
-    for (const url of testSlugs) {
-        try {
-            const res = await fetch(url, { headers: { "User-Agent": USER_AGENT } });
-            console.log(`URL: ${url} -> Status: ${res.status}`);
-            if (res.status === 200) {
-                const html = await res.text();
-                // Buscar si hay iframe de Vimeos o ID del post
-                const vimeosMatch = html.match(/https?:\/\/[^"'\s<>]*vimeos[^"'\s<>]*/i);
-                const postIdMatch = html.match(/(?:postId|post_id|id)\s*[:=]\s*["']?(\d+)["']?/i);
-                if (vimeosMatch) console.log(`  ✅ Vimeos encontrado: ${vimeosMatch[0]}`);
-                if (postIdMatch) console.log(`  ✅ Post ID del episodio: ${postIdMatch[1]}`);
-            }
-        } catch {}
+        console.error("Error:", e.message);
     }
 }
 
-analyzePlayerLogic();
+inspectEpisodePage();
