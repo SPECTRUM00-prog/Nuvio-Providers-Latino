@@ -30,7 +30,7 @@ function normalizeText(text) {
 }
 
 function cleanSlug(text) {
-    return normalizeText(text).replace(/\s+/g, "-");
+    return normalizeText(text).replace(/\s+/g, "-").replace(/-+/g, "-");
 }
 
 // ==========================================
@@ -50,7 +50,6 @@ function resolveStreamtape(url) {
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        // Patrón estándar de Streamtape: document.getElementById('robotlink').innerHTML = '...' + '...';
         var regex = /document\.getElementById\(['"](?:robotlink|ideoolink|noroot)['"]\)\.innerHTML\s*=\s*['"]([^'"]+)['"]\s*\+\s*(?:\(['"]([^'"]+)['"]\)\.substring\((\d+)\)|['"]([^'"]+)['"])/i;
         var match = html.match(regex);
 
@@ -70,7 +69,6 @@ function resolveStreamtape(url) {
             };
         }
 
-        // Patrón fallback: extracción directa de token de stream
         var tokenMatch = html.match(/['"](\/\/streamtape\.com\/get_video\?[^'"]+)['"]/i) ||
                          html.match(/['"](\/\/[^'"]*tapecontent\.net\/get_video\?[^'"]+)['"]/i);
         if (tokenMatch) {
@@ -111,50 +109,112 @@ function resolveAnomizadorUrl(anomizadorUrl) {
             });
         }
 
-        // VOE, Doodstream y Byse (retorno seguro)
         return null;
     })
     .catch(function() { return null; });
 }
 
 // ==========================================
-// FLUJO DE BÚSQUEDA Y EXTRACCIÓN
+// BÚSQUEDA Y EXTRACCIÓN
 // ==========================================
 
 function searchCatalog(query, isMovie) {
+    if (!query) return Promise.resolve(null);
     var searchUrl = `${BASE_URL}/search?q=${encodeURIComponent(query)}`;
+    console.log(`[ZonaLeRoS] Buscando en API: "${query}"`);
+
     return fetch(searchUrl, { headers: DEFAULT_HEADERS })
         .then(function(res) {
             if (!res.ok) return [];
             return res.json();
         })
         .then(function(items) {
-            if (!Array.isArray(items) || items.length === 0) return null;
+            if (!Array.isArray(items) || items.length === 0) {
+                console.log(`[ZonaLeRoS] 0 resultados para "${query}"`);
+                return null;
+            }
 
+            console.log(`[ZonaLeRoS] ${items.length} resultados devueltos por la API`);
             var targetType = isMovie ? "pelicula" : "series";
             var normalizedQ = normalizeText(query);
 
-            // 1. Coincidencia exacta de tipo y nombre
             for (var i = 0; i < items.length; i++) {
                 var item = items[i];
                 var notab = item.notable || {};
-                var tipo = (notab.tipo || "").toLowerCase();
+                var tipo = (notab.tipo || item.notable_type || "").toLowerCase();
                 var title = normalizeText(notab.title || item.title || "");
 
-                if (tipo.includes(targetType) && (title === normalizedQ || title.includes(normalizedQ))) {
-                    return notab.url || null;
+                if (tipo.includes(targetType) || tipo.includes(isMovie ? "movie" : "serie")) {
+                    if (title === normalizedQ || title.includes(normalizedQ) || normalizedQ.includes(title)) {
+                        console.log(`[ZonaLeRoS] Coincidencia encontrada: ${notab.url || item.url}`);
+                        return notab.url || item.url || null;
+                    }
                 }
             }
 
-            // 2. Primer resultado con URL válida
-            if (items[0] && items[0].notable && items[0].notable.url) {
-                return items[0].notable.url;
+            // Primer resultado con slug válido
+            var first = items[0].notable ? items[0].notable.url : (items[0].url || null);
+            if (first) {
+                console.log(`[ZonaLeRoS] Usando primer resultado: ${first}`);
+                return first;
             }
 
             return null;
         })
-        .catch(function() { return null; });
+        .catch(function(err) {
+            console.log(`[ZonaLeRoS] Error en search API: ${err.message}`);
+            return null;
+        });
 }
+
+function extractFromPage(pageUrl) {
+    console.log(`[ZonaLeRoS] Consultando página: ${pageUrl}`);
+    return fetch(pageUrl, {
+        headers: {
+            "User-Agent": USER_AGENT,
+            "Referer": `${BASE_URL}/`
+        }
+    })
+    .then(function(res) {
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        return res.text();
+    })
+    .then(function(html) {
+        var anomizadorMatches = html.match(/https?:\/\/anomizador\.zona-leros\.com\/\?hs=[^"'\s<>]+/gi) || [];
+
+        var uniqueUrls = [];
+        for (var i = 0; i < anomizadorMatches.length; i++) {
+            var u = anomizadorMatches[i].replace(/&amp;/g, "&");
+            if (uniqueUrls.indexOf(u) === -1) {
+                uniqueUrls.push(u);
+            }
+        }
+
+        if (uniqueUrls.length === 0) {
+            console.log("[ZonaLeRoS] No se encontraron reproductores en la página");
+            return [];
+        }
+
+        console.log(`[ZonaLeRoS] Opciones encontradas: ${uniqueUrls.length}`);
+
+        var resolvePromises = uniqueUrls.map(function(optUrl) {
+            return resolveAnomizadorUrl(optUrl);
+        });
+
+        return Promise.all(resolvePromises);
+    })
+    .then(function(results) {
+        return results.filter(function(st) { return st !== null; });
+    })
+    .catch(function(err) {
+        console.log(`[ZonaLeRoS] Error extrayendo de página: ${err.message}`);
+        return [];
+    });
+}
+
+// ==========================================
+// FUNCIÓN PRINCIPAL EXPORTADA
+// ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
     console.log(`[ZonaLeRoS] Buscando TMDB ID ${tmdbId} (${mediaType})`);
@@ -170,73 +230,51 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
+            console.log(`[ZonaLeRoS] Metadatos TMDB: "${title}" / "${origTitle}"`);
+
+            // Probar búsqueda por título en español y luego en inglés
             return searchCatalog(title, isMovie).then(function(slug) {
-                if (slug) return { slug: slug, isMovie: isMovie };
+                if (slug) return slug;
                 if (origTitle && origTitle !== title) {
-                    return searchCatalog(origTitle, isMovie).then(function(origSlug) {
-                        return { slug: origSlug, isMovie: isMovie };
-                    });
+                    return searchCatalog(origTitle, isMovie);
                 }
-                return { slug: null, isMovie: isMovie };
-            });
-        })
-        .then(function(data) {
-            if (!data.slug) {
-                console.log("[ZonaLeRoS] No se encontró el contenido en ZonaLeRoS");
-                return [];
-            }
+                return null;
+            }).then(function(slugFound) {
+                // Si la API encontró el slug, lo usamos; si no, creamos los slugs candidatos
+                var candidateSlugs = [];
+                if (slugFound) candidateSlugs.push(slugFound);
+                candidateSlugs.push(cleanSlug(title));
+                if (origTitle) candidateSlugs.push(cleanSlug(origTitle));
 
-            var pageUrl = isMovie
-                ? `${BASE_URL}/pelicula/${data.slug}`
-                : `${BASE_URL}/series/episode/${data.slug}-${season}-${episode}`;
-
-            console.log(`[ZonaLeRoS] Obteniendo página: ${pageUrl}`);
-
-            return fetch(pageUrl, {
-                headers: {
-                    "User-Agent": USER_AGENT,
-                    "Referer": `${BASE_URL}/`
-                }
-            })
-            .then(function(res) {
-                if (!res.ok) throw new Error("HTTP " + res.status);
-                return res.text();
-            })
-            .then(function(html) {
-                // Extraer todos los links del anomizador en el HTML
-                var anomizadorMatches = html.match(/https?:\/\/anomizador\.zona-leros\.com\/\?hs=[^"'\s<>]+/gi) || [];
-
-                // Deduplicar URLs
-                var uniqueUrls = [];
-                for (var i = 0; i < anomizadorMatches.length; i++) {
-                    var u = anomizadorMatches[i].replace(/&amp;/g, "&");
-                    if (uniqueUrls.indexOf(u) === -1) {
-                        uniqueUrls.push(u);
-                    }
-                }
-
-                if (uniqueUrls.length === 0) {
-                    console.log("[ZonaLeRoS] No se encontraron enlaces de reproducción");
-                    return [];
-                }
-
-                console.log(`[ZonaLeRoS] Opciones de servidor encontradas: ${uniqueUrls.length}`);
-
-                // Resolución concurrente con Promise.all
-                var resolvePromises = uniqueUrls.map(function(optUrl) {
-                    return resolveAnomizadorUrl(optUrl);
+                // Deduplicar slugs candidatos
+                candidateSlugs = candidateSlugs.filter(function(item, pos, self) {
+                    return item && self.indexOf(item) === pos;
                 });
 
-                return Promise.all(resolvePromises);
-            })
-            .then(function(results) {
-                var validStreams = results.filter(function(st) { return st !== null; });
-                console.log(`[ZonaLeRoS] ✓ ${validStreams.length} streams válidos extraídos`);
-                return validStreams;
+                function tryNextSlug(index) {
+                    if (index >= candidateSlugs.length) {
+                        return Promise.resolve([]);
+                    }
+                    var s = candidateSlugs[index];
+                    var pageUrl = isMovie
+                        ? `${BASE_URL}/pelicula/${s}`
+                        : `${BASE_URL}/series/episode/${s}-${season}-${episode}`;
+
+                    return extractFromPage(pageUrl).then(function(streams) {
+                        if (streams && streams.length > 0) return streams;
+                        return tryNextSlug(index + 1);
+                    });
+                }
+
+                return tryNextSlug(0);
             });
         })
+        .then(function(streams) {
+            console.log(`[ZonaLeRoS] ✓ ${streams.length} streams extraídos`);
+            return streams;
+        })
         .catch(function(err) {
-            console.log(`[ZonaLeRoS] Error: ${err.message}`);
+            console.log(`[ZonaLeRoS] Error general: ${err.message}`);
             return [];
         });
 }
