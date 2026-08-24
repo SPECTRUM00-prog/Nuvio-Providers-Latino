@@ -4,7 +4,6 @@
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const SITE_URL = "https://lamovie.org";
 const FAST_API = "https://lamovie.org/wp-api/v1";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
@@ -107,6 +106,7 @@ async function resolveGoodStream(embedUrl) {
             headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
         });
         const html = await res.text();
+
         const unpacked = unpackJS(html);
         if (unpacked) {
             const m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
@@ -152,58 +152,54 @@ async function searchMedia(query) {
             headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
         });
         const json = await res.json();
-        return json?.data?.posts || [];
+        return json?.data?.posts || json?.posts || [];
     } catch {
         return [];
     }
 }
 
-// 5. OBTENER EMBEDS PARA PELÍCULAS O EPISODIOS
+// 5. OBTENER EMBEDS (PELÍCULA O EPISODIO)
 async function getPlayerEmbeds(postItem, seasonNum, episodeNum, isTv) {
+    const mainId = postItem._id || postItem.id;
+
     if (!isTv) {
         // Película: Consulta directa por Post ID
-        const postId = postItem._id || postItem.id;
-        const res = await fetch(`${FAST_API}/player?postId=${postId}&demo=0`, {
+        const res = await fetch(`${FAST_API}/player?postId=${mainId}&demo=0`, {
             headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
         });
         const json = await res.json();
-        return json?.data?.embeds || [];
+        return json?.data?.embeds || json?.embeds || [];
     }
 
-    // Serie: Construir URL del episodio
+    // Serie: Obtener lista de episodios de la temporada
     const s = parseInt(seasonNum || 1, 10);
     const e = parseInt(episodeNum || 1, 10);
-    const slug = postItem.slug || postItem.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+    const epListUrl = `${FAST_API}/single/episodes/list?_id=${mainId}&season=${s}&page=1&postsPerPage=50`;
 
-    const episodeUrls = [
-        `${SITE_URL}/episodio/${slug}-temporada-${s}-episodio-${e}/`,
-        `${SITE_URL}/episodio/${slug}-temporada-${s}-capitulo-${e}/`,
-        `${SITE_URL}/episodio/${slug}-${s}x${e}/`
-    ];
+    try {
+        const epRes = await fetch(epListUrl, {
+            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
+        });
+        const epJson = await epRes.json();
+        const posts = epJson?.data?.posts || epJson?.posts || [];
 
-    for (const epUrl of episodeUrls) {
-        try {
-            const pageRes = await fetch(epUrl, { headers: { "User-Agent": USER_AGENT } });
-            if (pageRes.status === 200) {
-                const html = await pageRes.text();
-                // Extraer posibles IDs numéricos del HTML del episodio
-                const numericIds = (html.match(/["'](\d{4,6})["']/g) || []).map(id => id.replace(/["']/g, ''));
-                const uniqueIds = [...new Set(numericIds)];
+        // Buscar el episodio que coincida con el número solicitado
+        let targetEpisode = posts.find(ep => parseInt(ep.episode || ep.episode_number || ep.number, 10) === e);
+        
+        // Fallback: si no viene el campo de número, tomar por posición en el arreglo
+        if (!targetEpisode && posts[e - 1]) {
+            targetEpisode = posts[e - 1];
+        }
 
-                for (const id of uniqueIds) {
-                    const pUrl = `${FAST_API}/player?postId=${id}&demo=0`;
-                    const pRes = await fetch(pUrl, { headers: { "User-Agent": USER_AGENT, "Accept": "application/json" } });
-                    const pJson = await pRes.json();
-                    const embeds = pJson?.data?.embeds || [];
-                    
-                    // Si tiene servidores reales (que no sea embed.html en blanco)
-                    if (embeds.length > 0 && !embeds[0].url.includes("embed.html")) {
-                        return embeds;
-                    }
-                }
-            }
-        } catch {}
-    }
+        if (targetEpisode) {
+            const epId = targetEpisode._id || targetEpisode.id;
+            const pRes = await fetch(`${FAST_API}/player?postId=${epId}&demo=0`, {
+                headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
+            });
+            const pJson = await pRes.json();
+            return pJson?.data?.embeds || pJson?.embeds || [];
+        }
+    } catch {}
 
     return [];
 }
@@ -258,7 +254,7 @@ async function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             if (streamData && streamData.url) {
                 return {
                     name: "LaMovie",
-                    title: `${streamData.quality} · ${streamData.server} (Latino)`,
+                    title: `${streamData.quality} · ${streamData.server} (${embed.lang || "Latino"})`,
                     url: streamData.url,
                     quality: streamData.quality,
                     headers: streamData.headers
