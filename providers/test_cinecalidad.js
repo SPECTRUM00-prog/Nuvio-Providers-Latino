@@ -1,47 +1,76 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-const TARGET_URL = "https://www.cinecalidad.am/ver-pelicula/toy-story-5/";
 
-function decodeB64(input) {
-    if (!input) return null;
-    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    let str = String(input).replace(/[=]+$/, "");
-    if (str.length % 4 === 1) return null;
-    let output = "";
-    for (let bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0) {
-        buffer = chars.indexOf(buffer);
+function unpackJS(packed) {
+    try {
+        const regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
+        const match = packed.match(regex);
+        if (!match) return null;
+
+        let [, p, a, , k] = match;
+        p = p.slice(1, -1);
+        const words = k.split("|");
+        const radix = parseInt(a, 10);
+
+        const unbase = (val, base) => {
+            const chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+            if (base <= 36) return parseInt(val, base);
+            let res = 0;
+            for (let i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
+            return res;
+        };
+
+        return p.replace(/\b[0-9a-zA-Z]+\b/g, (token) => {
+            const idx = unbase(token, radix);
+            return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
+        });
+    } catch {
+        return null;
     }
-    return output;
 }
 
-async function inspectCinecalidadServers() {
-    console.log(`=== INSPECCIONANDO SERVIDORES EN: ${TARGET_URL} ===`);
+async function testVideoApp() {
+    const url = "https://videoapp.zip/e/movie/1084244";
+    console.log(`=== PROBANDO VIDEOAPP: ${url} ===`);
 
     try {
-        const res = await fetch(TARGET_URL, {
-            headers: { "User-Agent": USER_AGENT, "Referer": "https://www.cinecalidad.am/" }
+        const res = await fetch(url, {
+            headers: {
+                "User-Agent": USER_AGENT,
+                "Referer": "https://www.cinecalidad.am/"
+            },
+            redirect: "follow"
         });
+
+        console.log(`Status: ${res.status} | URL Final: ${res.url}`);
         const html = await res.text();
+        console.log(`Tamaño HTML: ${html.length} caracteres`);
 
-        console.log(`\n[1] Botones encontrados en el HTML:`);
-        const optionRegex = /<(?:li|a|button|div)[^>]+data-option=["']([^"']+)["'][^>]*>([\s\S]*?)<\/(?:li|a|button|div)>/gi;
-        let match;
-        
-        while ((match = optionRegex.exec(html)) !== null) {
-            let rawOption = match[1];
-            let label = match[2].replace(/<[^>]+>/g, '').trim();
+        // 1. Detección directa en sources / file / src
+        const direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.(?:m3u8|mp4)[^"']*)["']/i) ||
+                       html.match(/<source[^>]+src=["']([^"']+)["']/i);
+        if (direct) {
+            console.log("\n🎉 ¡STREAM ENCONTRADO DIRECTO EN VIDEOAPP!");
+            console.log("URL:", direct[1]);
+            return;
+        }
 
-            if (rawOption.includes("zopass=")) {
-                const b64 = rawOption.split("zopass=")[1].split("&")[0];
-                const dec = decodeB64(b64);
-                console.log(`▶ [${label || 'Servidor'}] -> ${dec}`);
-            } else if (rawOption.startsWith("http") && !rawOption.includes("youtube.com")) {
-                console.log(`▶ [${label || 'Servidor'}] -> ${rawOption}`);
+        // 2. Desempaquetado JS
+        const unpacked = unpackJS(html);
+        if (unpacked) {
+            const m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.(?:m3u8|mp4)[^"'\s<>\\]*/i);
+            if (m3u8) {
+                console.log("\n🎉 ¡STREAM DESEMPAQUETADO CON ÉXITO EN VIDEOAPP!");
+                console.log("URL:", m3u8[0].replace(/\\/g, ""));
+                return;
             }
         }
+
+        console.log("\nFragmento del HTML recibido:");
+        console.log(html.substring(0, 400));
 
     } catch (e) {
         console.error("Error:", e.message);
     }
 }
 
-inspectCinecalidadServers();
+testVideoApp();
