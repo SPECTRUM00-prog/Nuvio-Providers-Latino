@@ -1,49 +1,48 @@
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const FAST_API = "https://lamovie.org/wp-api/v1";
 
-async function inspectEpisodePage() {
-    const episodeUrl = "https://lamovie.org/episodio/the-last-of-us-temporada-1-episodio-1/";
-    console.log(`Inspeccionando capítulo: ${episodeUrl}`);
+async function inspectSeriesMap() {
+    const seriesUrl = "https://lamovie.org/series/the-last-of-us-2023/";
+    console.log(`Leyendo página de la serie: ${seriesUrl}`);
 
     try {
-        const res = await fetch(episodeUrl, {
+        const res = await fetch(seriesUrl, {
             headers: { "User-Agent": USER_AGENT }
         });
         const html = await res.text();
-        console.log(`Tamaño HTML: ${html.length} caracteres`);
 
-        // 1. Buscar el Post ID del capítulo en el HTML
-        const idMatches = html.match(/(?:post_id|postId|data-id|id)["':=\s]+(\d+)/gi) || [];
-        console.log("\n[1] IDs encontrados en el HTML:", idMatches.slice(0, 8));
+        // 1. Extraer siteConfig o variables con los capítulos
+        const configMatch = html.match(/window\.siteConfig\s*=\s*({[\s\S]*?});/i) ||
+                            html.match(/siteConfig\s*=\s*({[\s\S]*?});/i);
 
-        // 2. Buscar si hay scripts de estado o embeds directos
-        const scripts = html.match(/<script[\s\S]*?<\/script>/gi) || [];
-        scripts.forEach((s, idx) => {
-            if (s.includes("embed") || s.includes("vimeos") || s.includes("player") || s.includes("postId")) {
-                console.log(`\n--- Script relevante #${idx + 1} ---`);
-                console.log(s.substring(0, 400));
-            }
-        });
-
-        // 3. Probar si el ID del episodio se puede consultar en /wp-api/v1/player
-        // Extraemos cualquier número que parezca ID de post
-        const numericIds = (html.match(/["'](\d{4,6})["']/g) || []).map(id => id.replace(/["']/g, ''));
-        const uniqueIds = [...new Set(numericIds)];
-
-        for (const id of uniqueIds.slice(0, 3)) {
-            const pUrl = `${FAST_API}/player?postId=${id}&demo=0`;
-            const pRes = await fetch(pUrl, { headers: { "User-Agent": USER_AGENT, "Accept": "application/json" } });
-            const pJson = await pRes.json();
-            if (pJson?.data?.embeds?.length && !pJson.data.embeds[0].url.includes("embed.html")) {
-                console.log(`\n✅ ¡Embeds encontrados con éxito para el Post ID: ${id}!`);
-                console.log(JSON.stringify(pJson.data.embeds, null, 2));
-                break;
+        if (configMatch) {
+            console.log("\n✅ ¡window.siteConfig encontrado!");
+            try {
+                // Evaluamos o parseamos el objeto
+                const cleanConfig = configMatch[1].replace(/;\s*$/, '');
+                console.log("Contenido de siteConfig (primeros 500 caracteres):");
+                console.log(cleanConfig.substring(0, 500));
+            } catch (e) {
+                console.log("Error parseando siteConfig:", e.message);
             }
         }
+
+        // 2. Buscar si hay lista de capítulos en el HTML
+        const episodeListMatches = html.match(/["'](\d{4,6})["']\s*:\s*["']([^"']+)["']/g) || [];
+        console.log(`\n[2] Posible lista de IDs de capítulos (${episodeListMatches.length} encontrados):`);
+        episodeListMatches.slice(0, 10).forEach(m => console.log(`  ${m}`));
+
+        // 3. Probar obtener los reproductores del Post ID 6860 que descubriste
+        console.log("\n[3] Probando reproductor para Post ID: 6860...");
+        const pRes = await fetch(`${FAST_API}/player?postId=6860&demo=0`, {
+            headers: { "User-Agent": USER_AGENT, "Accept": "application/json" }
+        });
+        const pData = await pRes.json();
+        console.log(`Embeds obtenidos: ${pData?.data?.embeds?.length}`);
 
     } catch (e) {
         console.error("Error:", e.message);
     }
 }
 
-inspectEpisodePage();
+inspectSeriesMap();
