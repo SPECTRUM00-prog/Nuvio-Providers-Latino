@@ -12,43 +12,67 @@ function decodeB64(input) {
     return output;
 }
 
-async function decodeVideoAppToken() {
-    const url = "https://videoapp.zip/e/movie/1084244";
-    console.log(`=== ANALIZANDO TOKEN DE VIDEOAPP: ${url} ===`);
+async function testVideoAppEndpoint() {
+    const embedUrl = "https://videoapp.zip/e/movie/1084244";
+    console.log(`=== CONSULTANDO REPRODUCTOR VIDEOAPP: ${embedUrl} ===`);
 
     try {
-        const res = await fetch(url, {
+        const pageRes = await fetch(embedUrl, {
             headers: {
                 "User-Agent": USER_AGENT,
                 "Referer": "https://www.cinecalidad.am/"
-            },
-            redirect: "follow"
+            }
         });
+        const html = await pageRes.text();
 
-        const html = await res.text();
-
-        // 1. Extraer el token JWT
         const tokenMatch = html.match(/var\s+cfToken\s*=\s*["']([^"']+)["']/i) ||
                            html.match(/cfToken\s*=\s*["']([^"']+)["']/i);
 
-        if (tokenMatch) {
-            const jwt = tokenMatch[1];
-            const parts = jwt.split(".");
-            
-            if (parts.length >= 2) {
-                const payloadJson = decodeB64(parts[1]);
-                console.log("\n✅ ¡Token JWT decodificado con éxito!");
-                
-                try {
-                    const data = JSON.parse(payloadJson);
-                    console.log("Contenido del Payload JSON:");
-                    console.log(JSON.stringify(data, null, 2));
-                } catch {
-                    console.log("Payload en texto plano:", payloadJson);
+        if (!tokenMatch) {
+            console.log("❌ No se encontró cfToken.");
+            return;
+        }
+
+        const jwt = tokenMatch[1];
+        const payload = JSON.parse(decodeB64(jwt.split(".")[1]));
+        const targetEndpoint = payload.ee || "https://videoapp.zip/_/r";
+
+        console.log(`\nEndpoint descubierto: ${targetEndpoint}`);
+        console.log(`Parámetro p: ${payload.p}`);
+
+        // Intento 1: Petición POST con JSON
+        console.log("\n[1] Probando POST con payload...");
+        const postRes = await fetch(targetEndpoint, {
+            method: "POST",
+            headers: {
+                "User-Agent": USER_AGENT,
+                "Referer": embedUrl,
+                "Content-Type": "application/json",
+                "x-token": jwt
+            },
+            body: JSON.stringify({
+                p: payload.p,
+                sid: payload.sid,
+                token: jwt
+            })
+        });
+
+        console.log(`Status POST: ${postRes.status}`);
+        const postText = await postRes.text();
+        console.log("Respuesta POST:", postText.substring(0, 300));
+
+        // Intento 2: Petición GET con parámetro ?p=
+        if (postRes.status !== 200) {
+            console.log("\n[2] Probando GET...");
+            const getRes = await fetch(`${targetEndpoint}?p=${encodeURIComponent(payload.p)}&token=${encodeURIComponent(jwt)}`, {
+                headers: {
+                    "User-Agent": USER_AGENT,
+                    "Referer": embedUrl
                 }
-            }
-        } else {
-            console.log("❌ No se encontró la variable cfToken.");
+            });
+            console.log(`Status GET: ${getRes.status}`);
+            const getText = await getRes.text();
+            console.log("Respuesta GET:", getText.substring(0, 300));
         }
 
     } catch (e) {
@@ -56,4 +80,4 @@ async function decodeVideoAppToken() {
     }
 }
 
-decodeVideoAppToken();
+testVideoAppEndpoint();
