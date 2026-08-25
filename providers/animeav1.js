@@ -27,21 +27,9 @@ function normalizeSearchQuery(text) {
         .trim();
 }
 
-function normalizeText(text) {
-    if (!text) return "";
-    return text
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, " ")
-        .replace(/\s+/g, "-")
-        .replace(/-+/g, "-")
-        .trim();
-}
-
-function isLatinOnly(str) {
-    if (!str) return false;
-    return /^[a-zA-Z0-9\s:!?,.'"\-_()]+$/.test(str);
+function hasValidChars(str) {
+    if (!str || str.length < 2) return false;
+    return /[a-zA-Z0-9]/.test(str);
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -122,38 +110,31 @@ function extractEmbedsFromSvelteKit(nodes) {
             if (item && typeof item === "object" && typeof item.embeds === "number") {
                 var embedsObj = dataArr[item.embeds];
                 if (embedsObj && typeof embedsObj === "object") {
-                    // 1. Extraer SUB
-                    if (typeof embedsObj.SUB === "number") {
-                        var subList = dataArr[embedsObj.SUB];
-                        if (Array.isArray(subList)) {
-                            for (var j = 0; j < subList.length; j++) {
-                                var srvItem = dataArr[subList[j]];
-                                if (srvItem && typeof srvItem === "object") {
-                                    var sName = dataArr[srvItem.server] || "HLS";
-                                    var sUrl = dataArr[srvItem.url] || "";
-                                    if (sUrl && typeof sUrl === "string" && sUrl.startsWith("http")) {
-                                        results.push({ lang: "SUB", server: sName, url: sUrl });
+                    
+                    // Extraer idiomas soportados (SUB, DUB/LAT, ESP, etc.)
+                    var langKeys = Object.keys(embedsObj);
+                    for (var l = 0; l < langKeys.length; l++) {
+                        var lKey = langKeys[l];
+                        var langLabel = (lKey === "DUB" || lKey === "LAT") ? "LAT" : "SUB";
+                        var listIdx = embedsObj[lKey];
+
+                        if (typeof listIdx === "number") {
+                            var srvList = dataArr[listIdx];
+                            if (Array.isArray(srvList)) {
+                                for (var j = 0; j < srvList.length; j++) {
+                                    var srvItem = dataArr[srvList[j]];
+                                    if (srvItem && typeof srvItem === "object") {
+                                        var sName = dataArr[srvItem.server] || "HLS";
+                                        var sUrl = dataArr[srvItem.url] || "";
+                                        if (sUrl && typeof sUrl === "string" && sUrl.startsWith("http")) {
+                                            results.push({ lang: langLabel, server: sName, url: sUrl });
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    // 2. Extraer DUB (Latino)
-                    if (typeof embedsObj.DUB === "number") {
-                        var dubList = dataArr[embedsObj.DUB];
-                        if (Array.isArray(dubList)) {
-                            for (var k = 0; k < dubList.length; k++) {
-                                var dItem = dataArr[dubList[k]];
-                                if (dItem && typeof dItem === "object") {
-                                    var dName = dataArr[dItem.server] || "HLS";
-                                    var dUrl = dataArr[dItem.url] || "";
-                                    if (dUrl && typeof dUrl === "string" && dUrl.startsWith("http")) {
-                                        results.push({ lang: "LAT", server: dName, url: dUrl });
-                                    }
-                                }
-                            }
-                        }
-                    }
+
                 }
             }
         }
@@ -192,7 +173,7 @@ function resolveMp4upload(url) {
     .then(function(html) {
         var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
+            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
             var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
                            unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
             if (srcMatch) {
@@ -206,6 +187,50 @@ function resolveMp4upload(url) {
         return null;
     })
     .catch(function() { return null; });
+}
+
+function resolveStreamWish(url) {
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` } })
+        .then(function(res) { return res.text(); })
+        .then(function(html) {
+            var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+            if (packMatch) {
+                var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
+                var m3uMatch = unpacked.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
+                if (m3uMatch) {
+                    return probeM3u8Quality(m3uMatch[0]).then(function(q) {
+                        return { url: m3uMatch[0], quality: q || "1080p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                    });
+                }
+            }
+            var directM3u = html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
+            if (directM3u) {
+                return probeM3u8Quality(directM3u[0]).then(function(q) {
+                    return { url: directM3u[0], quality: q || "1080p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                });
+            }
+            return null;
+        })
+        .catch(function() { return null; });
+}
+
+function resolveVidHide(url) {
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` } })
+        .then(function(res) { return res.text(); })
+        .then(function(html) {
+            var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+            if (packMatch) {
+                var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
+                var m3uMatch = unpacked.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
+                if (m3uMatch) {
+                    return probeM3u8Quality(m3uMatch[0]).then(function(q) {
+                        return { url: m3uMatch[0], quality: q || "1080p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                    });
+                }
+            }
+            return null;
+        })
+        .catch(function() { return null; });
 }
 
 function dispatchResolver(embed) {
@@ -238,6 +263,32 @@ function dispatchResolver(embed) {
         });
     }
 
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("sfasthwish")) {
+        return resolveStreamWish(embed.url).then(function(res) {
+            if (!res) return null;
+            return {
+                name: "AnimeAV1",
+                title: `${res.quality || "1080p"} · ${embed.lang} · StreamWish`,
+                quality: res.quality || "1080p",
+                url: res.url,
+                headers: res.headers || {}
+            };
+        });
+    }
+
+    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) {
+        return resolveVidHide(embed.url).then(function(res) {
+            if (!res) return null;
+            return {
+                name: "AnimeAV1",
+                title: `${res.quality || "1080p"} · ${embed.lang} · VidHide`,
+                quality: res.quality || "1080p",
+                url: res.url,
+                headers: res.headers || {}
+            };
+        });
+    }
+
     return Promise.resolve(null);
 }
 
@@ -251,7 +302,7 @@ function searchAnimeAV1(queries) {
     function tryNextQuery(index) {
         if (index >= queryList.length) return Promise.resolve([]);
         var q = queryList[index];
-        if (!q || !isLatinOnly(q)) return tryNextQuery(index + 1);
+        if (!q || !hasValidChars(q)) return tryNextQuery(index + 1);
 
         console.log(`[AnimeAV1] Buscando: "${q}"`);
 
@@ -333,7 +384,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
     console.log(`[AnimeAV1] Buscando TMDB ID ${tmdbId} (${mediaType})`);
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
-    var eNum = parseInt(episode, 10) || 1;
+    var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
     var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
 
     return fetch(tmdbUrl)
@@ -356,12 +407,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             var rawQueries = [];
 
-            // 1. Extraer palabras clave de títulos alternativos (priorizando Romaji)
+            // 1. Títulos alternativos (Romaji / Inglés)
             var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
             for (var i = 0; i < altTitles.length; i++) {
                 var alt = altTitles[i].title || "";
-                if (isLatinOnly(alt)) {
-                    var cleanAlt = normalizeSearchQuery(alt);
+                var cleanAlt = normalizeSearchQuery(alt);
+                if (hasValidChars(cleanAlt)) {
                     var wordsA = cleanAlt.split(/\s+/);
                     if (wordsA.length >= 2) rawQueries.push(wordsA.slice(0, 2).join(" "));
                     if (wordsA.length >= 3) rawQueries.push(wordsA.slice(0, 3).join(" "));
@@ -369,18 +420,24 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            if (origTitle && isLatinOnly(origTitle)) {
+            // 2. Título Original
+            if (origTitle) {
                 var cleanO = normalizeSearchQuery(origTitle);
-                var wordsO = cleanO.split(/\s+/);
-                if (wordsO.length >= 2) rawQueries.push(wordsO.slice(0, 2).join(" "));
-                rawQueries.push(cleanO);
+                if (hasValidChars(cleanO)) {
+                    var wordsO = cleanO.split(/\s+/);
+                    if (wordsO.length >= 2) rawQueries.push(wordsO.slice(0, 2).join(" "));
+                    rawQueries.push(cleanO);
+                }
             }
 
-            if (title && isLatinOnly(title)) {
+            // 3. Título Localizado en Español
+            if (title) {
                 var cleanT = normalizeSearchQuery(title);
-                var wordsT = cleanT.split(/\s+/);
-                if (wordsT.length >= 2) rawQueries.push(wordsT.slice(0, 2).join(" "));
-                rawQueries.push(cleanT);
+                if (hasValidChars(cleanT)) {
+                    var wordsT = cleanT.split(/\s+/);
+                    if (wordsT.length >= 2) rawQueries.push(wordsT.slice(0, 2).join(" "));
+                    rawQueries.push(cleanT);
+                }
             }
 
             // Deduplicar búsquedas
@@ -391,7 +448,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return searchAnimeAV1(searchQueries).then(function(slugs) {
                 if (slugs.length === 0) return [];
 
-                // Ordenar según temporada (sNum === 2 prioriza -ii / -2)
+                // Ordenar según temporada
                 slugs.sort(function(a, b) {
                     return scoreSlugForSeason(b, sNum) - scoreSlugForSeason(a, sNum);
                 });
