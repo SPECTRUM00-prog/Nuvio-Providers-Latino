@@ -42,12 +42,16 @@ function cleanTitle(str) {
         .trim();
 }
 
+function cleanSlug(text) {
+    return cleanTitle(text).replace(/\s+/g, "-").replace(/-+/g, "-");
+}
+
 function hasJapaneseChars(str) {
     if (!str) return false;
     return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
 }
 
-function scoreAnime(item, titles, year) {
+function scoreAnime(item, titles, year, sNum) {
     if (!item) return 0;
     var rawName = item.title || item.titulo || item.name || item.slug || "";
     var tItem = cleanTitle(rawName);
@@ -71,17 +75,58 @@ function scoreAnime(item, titles, year) {
         }
 
         if (words.length > 0 && matches > 0) {
-            var ratio = (matches / words.length) * 75;
+            var ratio = (matches / words.length) * 80;
             score = Math.max(score, ratio);
         }
     }
 
     var itemYear = item.year || item.anio || item.release_date || "";
     if (score > 0 && year && String(itemYear).indexOf(String(year)) !== -1) {
-        score += 20;
+        score += 15;
+    }
+
+    // Bonificación de temporada en slug
+    var slugLow = (item.slug || "").toLowerCase();
+    if (sNum && sNum > 1) {
+        if (slugLow.indexOf("season-" + sNum) !== -1 || slugLow.indexOf("temporada-" + sNum) !== -1 || slugLow.indexOf("-" + sNum) !== -1) {
+            score += 20;
+        }
     }
 
     return score;
+}
+
+function getSeasonSlugVariants(baseSlug, sNum) {
+    var list = [baseSlug, baseSlug + "-tv"];
+    if (!sNum || sNum === 1) return list;
+
+    var suffixes = [
+        `-${sNum}`,
+        `-season-${sNum}`,
+        `-temporada-${sNum}`,
+        `-s${sNum}`,
+        sNum === 2 ? "-2nd-season" : (sNum === 3 ? "-3rd-season" : `-${sNum}th-season`),
+        sNum === 2 ? "-ii" : (sNum === 3 ? "-iii" : (sNum === 4 ? "-iv" : `-${sNum}`)),
+        sNum === 2 ? "-part-2" : (sNum === 3 ? "-part-3" : `-${sNum}`),
+        sNum === 2 ? "-beyond" : `-${sNum}`
+    ];
+
+    for (var i = 0; i < suffixes.length; i++) {
+        list.push(baseSlug + suffixes[i]);
+    }
+    return list;
+}
+
+function getAbsoluteEpisodeNumber(meta, season, episode) {
+    if (!meta || !meta.seasons || season <= 1) return episode || 1;
+    var totalPrevious = 0;
+    for (var i = 0; i < meta.seasons.length; i++) {
+        var s = meta.seasons[i];
+        if (s.season_number > 0 && s.season_number < season) {
+            totalPrevious += (s.episode_count || 0);
+        }
+    }
+    return totalPrevious + (parseInt(episode, 10) || 1);
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -286,7 +331,6 @@ function resolveMp4upload(url) {
             quality = "480p";
         }
 
-        // 1. Detección en script desempaquetado
         var unpacked = unpackDeanEdwards(html);
         if (unpacked) {
             var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
@@ -297,7 +341,6 @@ function resolveMp4upload(url) {
             }
         }
 
-        // 2. Detección directa en HTML
         var directMatch = html.match(/(?:src|file)\s*:\s*["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i) ||
                           html.match(/["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i);
         if (directMatch) {
@@ -436,17 +479,62 @@ function searchAnimeJara(query) {
 }
 
 function searchMultiQuery(queries) {
+    var results = [];
     function tryNext(idx) {
-        if (idx >= queries.length) return Promise.resolve([]);
+        if (idx >= queries.length) return Promise.resolve(results);
         return searchAnimeJara(queries[idx]).then(function(animes) {
-            if (animes && animes.length > 0) return animes;
+            if (animes && animes.length > 0) {
+                for (var i = 0; i < animes.length; i++) {
+                    if (results.findIndex(function(x) { return x.slug === animes[i].slug; }) === -1) {
+                        results.push(animes[i]);
+                    }
+                }
+            }
             return tryNext(idx + 1);
         });
     }
     return tryNext(0);
 }
 
-function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
+function extractMultiplayerUrlsFromHtml(html, sNum, eNum, absoluteEp) {
+    if (!html) return [];
+    var multiplayers = [];
+
+    // 1. Iframes directos de StreamHJ
+    var iframeRegex = /<iframe[^>]+src=["']([^"']*(?:multiplayer\.streamhj\.top|streamhj\.top)[^"']*)["']/gi;
+    var ifMatch;
+    while ((ifMatch = iframeRegex.exec(html)) !== null) {
+        var src = ifMatch[1].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
+        if (src.indexOf("//") === 0) src = "https:" + src;
+        if (multiplayers.indexOf(src) === -1) multiplayers.push(src);
+    }
+
+    // 2. URLs completas de multiplayer en scripts
+    var multiRegex = /https?:\/\/multiplayer\.streamhj\.top\/[a-zA-Z0-9_/.-]+\.php\?[^"'\s<>]+/gi;
+    var mMatch;
+    while ((mMatch = multiRegex.exec(html)) !== null) {
+        var fullUrl = mMatch[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
+        if (multiplayers.indexOf(fullUrl) === -1) multiplayers.push(fullUrl);
+    }
+
+    // 3. Extracción ESTRICTA de idanime (no postid)
+    var idAnimeRegex = /(?:idanime\s*=\s*["']?|data-idanime\s*=\s*["']?|var\s+idanime\s*=\s*["']?|idanime\s*:\s*["']?)(\d+)/gi;
+    var idMatch;
+    while ((idMatch = idAnimeRegex.exec(html)) !== null) {
+        var id = idMatch[1];
+        var urlRel = "https://" + MULTIPLAYER_HOST + "/player/multiplayer/embed.php?idanime=" + id + "&idcapitulo=" + eNum;
+        if (multiplayers.indexOf(urlRel) === -1) multiplayers.push(urlRel);
+
+        if (absoluteEp && absoluteEp !== eNum) {
+            var urlAbs = "https://" + MULTIPLAYER_HOST + "/player/multiplayer/embed.php?idanime=" + id + "&idcapitulo=" + absoluteEp;
+            if (multiplayers.indexOf(urlAbs) === -1) multiplayers.push(urlAbs);
+        }
+    }
+
+    return multiplayers;
+}
+
+function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) {
     var pageUrls = [];
     var slug = animeItem.slug || "";
 
@@ -457,8 +545,18 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
         pageUrls.push(`${BASE_URL}/pelicula/${slug}/`);
         pageUrls.push(`${BASE_URL}/anime/${slug}`);
     } else {
+        // Formato estándar con Temporada y Episodio
         pageUrls.push(`${BASE_URL}/episode/${slug}-${sNum}x${eNum}/`);
         pageUrls.push(`${BASE_URL}/episode/${slug}-${sNum}x${eNum}`);
+
+        // Formatos de conteo absoluto (ej. One Piece 1x1175 o 1175)
+        if (absoluteEp && absoluteEp !== eNum) {
+            pageUrls.push(`${BASE_URL}/episode/${slug}-1x${absoluteEp}/`);
+            pageUrls.push(`${BASE_URL}/episode/${slug}-${absoluteEp}/`);
+            pageUrls.push(`${BASE_URL}/episode/${slug}-episodio-${absoluteEp}/`);
+        }
+
+        // Formatos estándar por episodio
         pageUrls.push(`${BASE_URL}/episode/${slug}-${eNum}/`);
         pageUrls.push(`${BASE_URL}/episode/${slug}-${eNum}`);
         pageUrls.push(`${BASE_URL}/episode/${slug}-episodio-${eNum}/`);
@@ -481,45 +579,46 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
             .then(function(html) {
                 if (!html || html.length < 150) return tryNextPage(pIdx + 1);
 
-                var multiplayers = [];
+                var multiplayers = extractMultiplayerUrlsFromHtml(html, sNum, eNum, absoluteEp);
 
-                // 1. Extraer todos los iframes a multiplayer.streamhj.top
-                var multiRegex = /https?:\/\/multiplayer\.streamhj\.top\/player\/multiplayer\/embed\.php\?[^"'\s<>]+/gi;
-                var mMatch;
-                while ((mMatch = multiRegex.exec(html)) !== null) {
-                    var fullUrl = mMatch[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
-                    if (multiplayers.indexOf(fullUrl) === -1) multiplayers.push(fullUrl);
-                }
-
-                // 2. Extraer TODOS los idanime presentes (captura pestañas de SUB y CAS/LAT simultáneas)
-                var idAnimeGlobalRegex = /(?:idanime=|data-idanime=|idanime\s*:\s*["']?|postid\s*:\s*["']?)(\d+)/gi;
-                var idMatch;
-                while ((idMatch = idAnimeGlobalRegex.exec(html)) !== null) {
-                    var builtUrl = `https://${MULTIPLAYER_HOST}/player/multiplayer/embed.php?idanime=${idMatch[1]}&idcapitulo=${eNum}`;
-                    if (multiplayers.indexOf(builtUrl) === -1) multiplayers.push(builtUrl);
-                }
-
-                // 3. Fallback en caso de estar en /anime/{slug}
+                // Si estamos en la página del anime (/anime/slug), extraer enlace específico
                 if (targetPage.indexOf("/anime/") !== -1 && multiplayers.length === 0) {
-                    var epLinkRegex = new RegExp('href=["\']([^"\']*(?:episode|ver)\/[^"\']*(?:-' + sNum + 'x' + eNum + '|-' + eNum + '|-episodio-' + eNum + ')[^"\']*)["\']', 'i');
-                    var epMatch = html.match(epLinkRegex);
-                    if (epMatch && epMatch[1]) {
-                        var specificEpUrl = epMatch[1];
+                    var patterns = [
+                        `-${sNum}x${eNum}`,
+                        `-${sNum}x0${eNum}`,
+                        `-${eNum}`,
+                        `-episodio-${eNum}`,
+                        `-capitulo-${eNum}`
+                    ];
+                    if (absoluteEp && absoluteEp !== eNum) {
+                        patterns.push(`-1x${absoluteEp}`);
+                        patterns.push(`-${absoluteEp}`);
+                    }
+
+                    var hrefRegex = /href=["']([^"']*(?:episode|ver)\/[^"']*)["']/gi;
+                    var hMatch;
+                    var specificEpUrl = null;
+
+                    while ((hMatch = hrefRegex.exec(html)) !== null) {
+                        var candidateHref = hMatch[1];
+                        for (var p = 0; p < patterns.length; p++) {
+                            if (candidateHref.indexOf(patterns[p]) !== -1) {
+                                specificEpUrl = candidateHref;
+                                break;
+                            }
+                        }
+                        if (specificEpUrl) break;
+                    }
+
+                    if (specificEpUrl) {
                         if (specificEpUrl.indexOf("http") !== 0) {
                             specificEpUrl = BASE_URL + (specificEpUrl.indexOf("/") === 0 ? "" : "/") + specificEpUrl;
                         }
                         return fetch(specificEpUrl, { headers: DEFAULT_HEADERS, redirect: "follow" })
                             .then(function(r) { return r.text(); })
                             .then(function(epHtml) {
-                                while ((mMatch = multiRegex.exec(epHtml)) !== null) {
-                                    var fUrl = mMatch[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
-                                    if (multiplayers.indexOf(fUrl) === -1) multiplayers.push(fUrl);
-                                }
-                                while ((idMatch = idAnimeGlobalRegex.exec(epHtml)) !== null) {
-                                    var bUrl = `https://${MULTIPLAYER_HOST}/player/multiplayer/embed.php?idanime=${idMatch[1]}&idcapitulo=${eNum}`;
-                                    if (multiplayers.indexOf(bUrl) === -1) multiplayers.push(bUrl);
-                                }
-                                if (multiplayers.length > 0) return multiplayers;
+                                var epMultiplayers = extractMultiplayerUrlsFromHtml(epHtml, sNum, eNum, absoluteEp);
+                                if (epMultiplayers.length > 0) return epMultiplayers;
                                 return tryNextPage(pIdx + 1);
                             })
                             .catch(function() { return tryNextPage(pIdx + 1); });
@@ -552,7 +651,6 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
     .then(function(html) {
         if (!html || html.length < 50) return [];
 
-        // Detectar idioma a partir del encabezado del reproductor
         var lang = "SUB";
         var titleHeaderMatch = html.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
         var headerText = titleHeaderMatch ? titleHeaderMatch[1].toUpperCase() : html.toUpperCase();
@@ -635,6 +733,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             });
 
             var searchQueries = [];
+            var directSlugs = [];
 
             for (var j = 0; j < uniqueTitles.length; j++) {
                 var rawT = uniqueTitles[j];
@@ -648,23 +747,43 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     var twoWords = words.slice(0, 2).join(" ");
                     if (searchQueries.indexOf(twoWords) === -1) searchQueries.push(twoWords);
                 }
+
+                if (sNum > 1 && !isMovie) {
+                    searchQueries.push(`${clean} ${sNum}`);
+                    searchQueries.push(`${clean} season ${sNum}`);
+                    searchQueries.push(`${clean} temporada ${sNum}`);
+                }
+
+                var baseSlug = cleanSlug(rawT);
+                if (baseSlug) {
+                    directSlugs = directSlugs.concat(getSeasonSlugVariants(baseSlug, sNum));
+                }
             }
 
-            return searchMultiQuery(searchQueries).then(function(animes) {
-                if (!animes || animes.length === 0) return [];
+            var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
 
-                // 1. Filtrar candidatos válidos (score >= 35)
+            return searchMultiQuery(searchQueries).then(function(animes) {
+                var allCandidates = animes.slice();
+
+                // Añadir slugs directos generados
+                for (var d = 0; d < directSlugs.length; d++) {
+                    var dSlug = directSlugs[d];
+                    if (allCandidates.findIndex(function(x) { return x.slug === dSlug; }) === -1) {
+                        allCandidates.push({ slug: dSlug, title: dSlug.replace(/-/g, " ") });
+                    }
+                }
+
+                // Filtrar candidatos válidos (score >= 35)
                 var scored = [];
-                for (var a = 0; a < animes.length; a++) {
-                    var sc = scoreAnime(animes[a], uniqueTitles, year);
+                for (var a = 0; a < allCandidates.length; a++) {
+                    var sc = scoreAnime(allCandidates[a], uniqueTitles, year, sNum);
                     if (sc >= 35) {
-                        scored.push({ anime: animes[a], score: sc });
+                        scored.push({ anime: allCandidates[a], score: sc });
                     }
                 }
 
                 if (scored.length === 0) return [];
 
-                // 2. Ordenar por mayor coincidencia
                 scored.sort(function(a, b) {
                     return b.score - a.score;
                 });
@@ -673,7 +792,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     if (aIdx >= scored.length) return Promise.resolve([]);
                     var targetAnime = scored[aIdx].anime;
 
-                    return resolveEpisodeMultiplayers(targetAnime, sNum, eNum, isMovie).then(function(multiUrls) {
+                    return resolveEpisodeMultiplayers(targetAnime, sNum, eNum, isMovie, absoluteEp).then(function(multiUrls) {
                         if (!multiUrls || multiUrls.length === 0) {
                             return tryNextAnime(aIdx + 1);
                         }
