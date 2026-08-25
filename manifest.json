@@ -1,6 +1,6 @@
 {
-  "name": "Latino Providers",
-  "version": "2.4.0",
+  "name": "Nuvio-Spectrum-Latino",
+  "version": "2.5.0",
   "scrapers": [
     {
       "id": "cinecalidad",
@@ -60,8 +60,8 @@
     {
       "id": "jkanime",
       "name": "JKAnime",
-      "description": "Anime en emisión y finalizados en Sub Español desde JKAnime (Desu, VidHide, StreamWish, MP4Upload, Streamtape).",
-      "version": "1.1.0",
+      "description": "Anime en emisión y finalizados en Sub Español desde JKAnime con AniList Engine (Desu, VidHide, StreamWish, MP4Upload, Streamtape).",
+      "version": "1.2.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/jkanime.js",
@@ -89,83 +89,6 @@
       "filename": "providers/animejara.js",
       "enabled": true,
       "contentLanguage": ["es", "ja"]
-    },
-    {
-      "id": "detodopeliculas",
-      "name": "Detodopeliculas",
-      "description": "Streams en Latino desde Detodopeliculas.",
-      "version": "2.0.0",
-      "author": "KennethJYS",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/detodopeliculas.js",
-      "enabled": false,
-      "contentLanguage": ["es"]
-    },
-    {
-      "id": "seriesmetro",
-      "name": "SeriesMetro",
-      "description": "Streams en Latino desde SeriesMetro. Fastream.",
-      "version": "2.0.0",
-      "author": "KennethJYS",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/seriesmetro.js",
-      "enabled": false,
-      "contentLanguage": ["es"]
-    },
-    {
-      "id": "seriesflix",
-      "name": "Seriesflix",
-      "description": "Streams en Latino desde Seriesflix.",
-      "version": "2.0.0",
-      "author": "KennethJYS",
-      "supportedTypes": ["tv"],
-      "filename": "providers/seriesflix.js",
-      "enabled": false,
-      "contentLanguage": ["es"]
-    },
-    {
-      "id": "peliserieshoy",
-      "name": "PelisSeriesHoy",
-      "description": "Streams en Latino desde PelisSeriesHoy.",
-      "version": "2.0.0",
-      "author": "KennethJYS",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/peliserieshoy.js",
-      "enabled": false,
-      "contentLanguage": ["es"]
-    },
-    {
-      "id": "embed69",
-      "name": "Embed69",
-      "description": "Streams en Latino/Español/Subtitulado desde Embed69.",
-      "version": "2.0.0",
-      "author": "KennethJYS",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/embed69.js",
-      "enabled": false,
-      "contentLanguage": ["es"]
-    },
-    {
-      "id": "xupalace",
-      "name": "Xupalace",
-      "description": "Streams en Latino desde Xupalace. StreamWish, VOE, Vidhide.",
-      "version": "2.0.0",
-      "author": "KennethJYS",
-      "supportedTypes": ["movie", "tv"],
-      "filename": "providers/xupalace.js",
-      "enabled": false,
-      "contentLanguage": ["es"]
-    },
-    {
-      "id": "zoowomaniacos",
-      "name": "Zoowomaniacos",
-      "description": "Películas de culto, cine de autor y difíciles de encontrar. OkRu.",
-      "version": "2.0.0",
-      "author": "KennethJYS",
-      "supportedTypes": ["movie"],
-      "filename": "providers/zoowomaniacos.js",
-      "enabled": false,
-      "contentLanguage": ["es"]
     }
   ]
 }
