@@ -14,12 +14,33 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y ALGORITMOS UNIVERSALES
+// UTILIDADES Y DECODIFICADOR BASE64 PURO
 // ==========================================
 
-function toRoman(num) {
-    var romans = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x", "xi", "xii"];
-    return romans[num] || String(num);
+function decodeBase64Safe(input) {
+    if (!input) return "";
+    var b64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    var str = String(input).replace(/-/g, "+").replace(/_/g, "/");
+    while (str.length % 4 !== 0) str += "=";
+    
+    var output = "", chr1, chr2, chr3, enc1, enc2, enc3, enc4, i = 0;
+    str = str.replace(/[^A-Za-z0-9+/=]/g, "");
+
+    while (i < str.length) {
+        enc1 = b64.indexOf(str.charAt(i++));
+        enc2 = b64.indexOf(str.charAt(i++));
+        enc3 = b64.indexOf(str.charAt(i++));
+        enc4 = b64.indexOf(str.charAt(i++));
+
+        chr1 = (enc1 << 2) | (enc2 >> 4);
+        chr2 = ((enc2 & 15) << 4) | (enc3 >> 2);
+        chr3 = ((enc3 & 3) << 6) | enc4;
+
+        output += String.fromCharCode(chr1);
+        if (enc3 !== 64 && enc3 !== -1) output += String.fromCharCode(chr2);
+        if (enc4 !== 64 && enc4 !== -1) output += String.fromCharCode(chr3);
+    }
+    return output;
 }
 
 function cleanTitle(text) {
@@ -86,91 +107,49 @@ function scoreSlugCandidate(slug, titles) {
     return score;
 }
 
-// Algoritmo universal de puntuación de temporadas por Regex estricta
-function scoreSlugForSeason(slug, sNum, totalSeasons) {
+function scoreSlugForSeason(slug, sNum) {
     var s = slug.toLowerCase();
-    var roman = toRoman(sNum);
 
-    // Caso Temporada 1
     if (sNum === 1) {
-        if (/(?:^|-)(ii|iii|iv|v|vi|2|3|4|5|6|season-2|season-3|season-4|beyond|final)(?:-|$)/i.test(s)) {
-            // Permitir Cour 2 de la temporada 1 si no hay temporadas superiores
+        if (/(?:^|-)(ii|iii|iv|v|2|3|4|5|season-2|season-3|season-4|beyond|final)(?:-|$)/i.test(s)) {
             if (s.includes("-2nd-season") && !s.includes("-ii")) return 15;
             return -40;
         }
         return 30;
     }
 
-    // Caso Temporadas Superiores (sNum >= 2)
-    var currentRoman = toRoman(sNum);
-    var higherRomans = [];
-    for (var r = sNum + 1; r <= 10; r++) {
-        higherRomans.push(toRoman(r));
-    }
-    var higherRegex = higherRomans.length > 0 ? new RegExp("(?:^|-)(" + higherRomans.join("|") + "|" + (sNum + 1) + "|season-" + (sNum + 1) + ")(?:-|$)", "i") : null;
-
-    // Penalizar si pertenece a una temporada más avanzada
-    if (higherRegex && higherRegex.test(s)) {
-        return -50;
+    if (sNum === 2) {
+        if (/(?:^|-)(iii|iv|v|3|4|5|season-3|season-4)(?:-|$)/i.test(s)) return -40;
+        if (/(?:^|-)(ii|2nd|season-2|s2|2|beyond)(?:-|$)/i.test(s)) return 50;
+        return 0;
     }
 
-    // Coincidencia exacta con el número romano de la temporada
-    var romanMatchRegex = new RegExp("(?:^|-)(" + currentRoman + ")(?:-|$)", "i");
-    if (romanMatchRegex.test(s)) {
-        return 60;
+    if (sNum === 3) {
+        if (/(?:^|-)(iv|v|4|5|season-4|final)(?:-|$)/i.test(s)) return -40;
+        if (/(?:^|-)(iii|3rd|season-3|s3|3)(?:-|$)/i.test(s)) return 60;
+        return 0;
     }
 
-    // Coincidencia con sufijo numérico u ordinal (ej. -season-2, -2nd-season, -2, -s2)
-    var numSuffix = sNum === 2 ? "2nd" : (sNum === 3 ? "3rd" : sNum + "th");
-    var seasonMatchRegex = new RegExp("(?:^|-)(season-" + sNum + "|" + numSuffix + "-season|s" + sNum + "|" + sNum + ")(?:-|$)", "i");
-    if (seasonMatchRegex.test(s)) {
-        return 50;
-    }
-
-    // Caso Temporada Final
-    if (totalSeasons && sNum === totalSeasons && /(?:^|-)(final-season|the-final-season|final)(?:-|$)/i.test(s)) {
-        return 55;
+    if (sNum === 4) {
+        if (/(?:^|-)(iv|4th|season-4|s4|4|final-season)(?:-|$)/i.test(s)) return 60;
+        return 0;
     }
 
     return 0;
 }
 
-// Generador Universal de Sufijos de Temporada y Split-Cours
-function getSeasonSlugVariants(baseSlug, sNum, isLastSeason) {
-    if (sNum === 1) {
-        return [
-            baseSlug,
-            `${baseSlug}-2nd-season`,
-            `${baseSlug}-part-2`,
-            `${baseSlug}-cour-2`
-        ];
-    }
-
-    var roman = toRoman(sNum);
-    var numOrdinal = sNum === 2 ? "2nd" : (sNum === 3 ? "3rd" : sNum + "th");
-
-    var variants = [
-        `${baseSlug}-${roman}`,
-        `${baseSlug}-${roman}-part-2`,
-        `${baseSlug}-${roman}-cour-2`,
-        `${baseSlug}-${numOrdinal}-season`,
-        `${baseSlug}-season-${sNum}`,
-        `${baseSlug}-${sNum}`,
-        `${baseSlug}-s${sNum}`,
-        `${baseSlug}-part-${sNum}`,
-        `${baseSlug}-cour-${sNum}`
+function getSeasonSlugVariants(baseSlug, sNum) {
+    if (sNum === 1) return [baseSlug, `${baseSlug}-2nd-season`];
+    var suffixes = [
+        sNum === 2 ? "-ii" : (sNum === 3 ? "-iii" : (sNum === 4 ? "-iv" : `-${sNum}`)),
+        sNum === 2 ? "-2nd-season" : (sNum === 3 ? "-3rd-season" : `-${sNum}th-season`),
+        `-season-${sNum}`,
+        `-s${sNum}`,
+        `-${sNum}`,
+        sNum === 2 ? "-part-2" : (sNum === 3 ? "-part-3" : `-${sNum}`),
+        sNum === 2 ? "-beyond" : `-${sNum}`
     ];
-
-    if (sNum === 2) {
-        variants.push(`${baseSlug}-beyond`);
-    }
-
-    if (isLastSeason) {
-        variants.push(`${baseSlug}-final-season`);
-        variants.push(`${baseSlug}-the-final-season`);
-    }
-
-    return variants;
+    return suffixes.map(function(suf) { return baseSlug + suf; });
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -468,48 +447,45 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
-            var totalSeasons = (meta.seasons && meta.seasons.filter(function(s) { return s.season_number > 0; }).length) || 1;
-            var isLastSeason = !isMovie && sNum >= totalSeasons;
 
             var titles = [];
             if (title) titles.push(title);
             if (origTitle && origTitle !== title) titles.push(origTitle);
 
-            var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
-            for (var i = 0; i < altTitles.length; i++) {
-                var alt = altTitles[i].title || "";
-                if (alt && !hasJapaneseChars(alt) && titles.indexOf(alt) === -1) {
-                    titles.push(alt);
-                }
+            var altArr = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
+            for (var i = 0; i < altArr.length; i++) {
+                if (altArr[i].title) titles.push(altArr[i].title);
             }
+
+            var uniqueTitles = titles.filter(function(item, pos, self) {
+                return item && self.indexOf(item) === pos;
+            });
 
             var searchQueries = [];
             var directSlugs = [];
 
-            for (var j = 0; j < titles.length; j++) {
-                var t = titles[j];
-                if (!t || hasJapaneseChars(t)) continue;
+            for (var j = 0; j < uniqueTitles.length; j++) {
+                var rawT = uniqueTitles[j];
+                if (!rawT || hasJapaneseChars(rawT)) continue;
 
-                if (searchQueries.indexOf(t) === -1) searchQueries.push(t);
+                var clean = cleanTitle(rawT);
+                if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
 
-                var wordsT = t.split(/\s+/);
-                if (wordsT.length > 2) {
-                    var shortT = wordsT.slice(0, 2).join(" ");
-                    if (searchQueries.indexOf(shortT) === -1) searchQueries.push(shortT);
+                var words = clean.split(/\s+/).filter(function(w) { return w.length > 2; });
+                if (words.length >= 2) {
+                    var twoWords = words.slice(0, 2).join(" ");
+                    if (searchQueries.indexOf(twoWords) === -1) searchQueries.push(twoWords);
                 }
 
-                // Generación de búsquedas universales por temporada
                 if (sNum > 1 && !isMovie) {
-                    var roman = toRoman(sNum);
-                    searchQueries.push(`${t} ${sNum}`);
-                    searchQueries.push(`${t} Season ${sNum}`);
-                    searchQueries.push(`${t} ${roman.toUpperCase()}`);
-                    searchQueries.push(`${t} Part ${sNum}`);
+                    searchQueries.push(`${clean} ${sNum}`);
+                    searchQueries.push(`${clean} Season ${sNum}`);
+                    searchQueries.push(`${clean} Part ${sNum}`);
                 }
 
-                var baseSlug = cleanSlug(t);
+                var baseSlug = cleanSlug(rawT);
                 if (baseSlug) {
-                    directSlugs = directSlugs.concat(getSeasonSlugVariants(baseSlug, sNum, isLastSeason));
+                    directSlugs = directSlugs.concat(getSeasonSlugVariants(baseSlug, sNum));
                 }
             }
 
@@ -525,11 +501,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                // Filtrar y ordenar por puntuación universal de temporada
+                // Filtrar por coincidencia real (score >= 35) y temporada correcta
                 var validSlugs = [];
                 for (var k = 0; k < candidateSlugs.length; k++) {
-                    var sc = scoreSlugCandidate(candidateSlugs[k], titles);
-                    var seasonScore = scoreSlugForSeason(candidateSlugs[k], sNum, totalSeasons);
+                    var sc = scoreSlugCandidate(candidateSlugs[k], uniqueTitles);
+                    var seasonScore = scoreSlugForSeason(candidateSlugs[k], sNum);
                     if (sc >= 35 && seasonScore >= 0) {
                         validSlugs.push({ slug: candidateSlugs[k], score: sc + seasonScore });
                     }
@@ -545,7 +521,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     if (index >= validSlugs.length) return Promise.resolve([]);
                     var slugToTry = validSlugs[index].slug;
 
-                    var isSeasonSpecific = slugToTry.includes("-ii") || slugToTry.includes("-iii") || slugToTry.includes("-iv") || slugToTry.includes("-v") || slugToTry.includes("-part") || slugToTry.includes("-beyond") || slugToTry.includes("-" + sNum);
+                    var isSeasonSpecific = slugToTry.includes("-ii") || slugToTry.includes("-iii") || slugToTry.includes("-iv") || slugToTry.includes("-part") || slugToTry.includes("-beyond") || slugToTry.includes("-" + sNum);
                     var targetEp = (isSeasonSpecific || sNum === 1) ? eNum : absoluteEp;
 
                     var pageUrlsToTry = [];
@@ -554,27 +530,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/1/`);
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/ova/`);
                     } else {
-                        // 1. Episodio objetivo principal
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${targetEp}/`);
                         if (targetEp !== eNum) {
                             pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum}/`);
-                        }
-
-                        // 2. Desfase universal para Split-Cours (Part 2 / Cour 2)
-                        // Si Nuvio pide un episodio alto de temporada (ej. ep 15) y JKAnime lo tiene como Part 2 (ep 3)
-                        var isSplitCour = slugToTry.includes("-part-2") || slugToTry.includes("-2nd-season") || slugToTry.includes("-cour-2");
-                        if (isSplitCour && eNum > 10) {
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 12}/`);
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 11}/`);
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 13}/`);
-                        }
-
-                        // 3. Fallback inverso de Split-Cour
-                        // Si Nuvio pide un episodio bajo (ej. ep 3) pero en la web Part 2 está numerado continuo (ej. ep 15)
-                        if (isSplitCour && eNum <= 12) {
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum + 12}/`);
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum + 11}/`);
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum + 13}/`);
                         }
                     }
 
