@@ -1,11 +1,8 @@
+```markdown
 # 🌌 Nuvio-Spectrum-Latino
 
 > *"Si comprar no es poseer, el acceso libre y la preservación digital son una necesidad."*  
-> Una suite moderna, ultra-optimizada y sin dependencias de proveedores multimedia en **Español Latino, Castellano y Anime** para **Nuvio Media Hub** (Windows Desktop, Android TV y Amazon FireTV).
-
-[![Hermes Ready](https://img.shields.io/badge/Engine-Hermes%20Compatible-00d2ff?style=for-the-badge&logo=react)](https://hermesengine.dev/)
-[![Zero Dependencies](https://img.shields.io/badge/Dependencies-Zero%2FNative-brightgreen?style=for-the-badge)](https://nodejs.org/)
-[![License](https://img.shields.io/badge/License-MIT-purple?style=for-the-badge)](LICENSE)
+> Suite de plugins de alto rendimiento sin dependencias externas en **Español Latino, Castellano y Anime** para **Nuvio Media Hub** (Windows Desktop, Android TV y Amazon FireTV).
 
 ---
 
@@ -29,6 +26,9 @@ Este proyecto proporciona scrapers de alto rendimiento para **Nuvio Media Hub**,
 | `animeav1` | **AnimeAV1** | ✅ | ✅ | ✅ | Sub / Latino | 🟢 100% Operativo |
 | `animejara` | **AnimeJara** | ✅ | ✅ | ✅ | Sub / Latino / Castellano | 🟢 100% Operativo |
 | `jkanime` | **JKAnime (AniList Engine)** | ✅ | ✅ | ✅ | Sub Español | 🟢 100% Operativo |
+| `detodopeliculas` | **DeTodoPeliculas** | ✅ | ✅ | ❌ | Latino | 🟡 En Migración |
+| `seriesmetro` | **SeriesMetro** | ❌ | ✅ | ❌ | Latino | 🟡 En Migración |
+| `seriesflix` | **SeriesFlix** | ❌ | ✅ | ❌ | Latino | 🟡 En Migración |
 
 ---
 
@@ -61,32 +61,36 @@ Los plugins de este repositorio cumplen estrictamente las restricciones del moto
 
 ---
 
-## 🧪 Pruebas & Validación Local (`test.js`)
+## 🧪 Pruebas, Ejemplos de Uso & URL del Manifest
 
 El repositorio incluye un **Runner & Auditor de Streams** que valida conectividad en vivo, mide latencia en milisegundos y verifica la respuesta `HTTP 200/206` de cada CDN.
 
 ```bash
-# Probar una película con un proveedor
-node test.js <TMDB_ID> movie <proveedor>
-
-# Probar una serie con temporada y episodio
-node test.js <TMDB_ID> tv <temporada> <episodio> <proveedor>
-
-# Probar TODOS los proveedores en paralelo simultáneamente
-node test.js <TMDB_ID> <movie|tv> [temporada] [episodio] all
-
-
-# Película: Deadpool & Wolverine (TMDB 533535) en LaMovie
+# Probar Película (Deadpool & Wolverine en LaMovie)
 node test.js 533535 movie lamovie
 
-# Serie: Gravity Falls (TMDB 40075) S01E01 en CineCalidad
+# Probar Serie (Gravity Falls S01E01 en CineCalidad)
 node test.js 40075 tv 1 1 cinecalidad
 
-# Anime: Mushoku Tensei (TMDB 94664) S02E15 en AnimeJara
+# Probar Anime Split-Cour (Mushoku Tensei S02E15 en AnimeJara)
 node test.js 94664 tv 2 15 animejara
 
-# Anime: One Piece (TMDB 37854) S22E66 (Capítulo 1128) en JKAnime
+# Probar Anime Continuo (One Piece S22E66 / Cap 1128 en JKAnime)
 node test.js 37854 tv 22 66 jkanime
 
-# Auditoría General en todos los proveedores
+# Probar TODOS los proveedores en paralelo simultáneamente
 node test.js 533535 movie all
+```
+
+### 🔗 URL del Manifest para Nuvio Media Hub:
+Para instalar o actualizar este repositorio en **Nuvio Media Hub**, agrega la siguiente URL en la sección de Plugins:
+```text
+https://raw.githubusercontent.com/SPECTRUM00-prog/Nuvio-Providers-Latino/main/manifest.json
+```
+
+---
+
+## ⚖️ Disclaimer
+
+Este proyecto fue desarrollado exclusivamente con fines educativos y de investigación sobre interoperabilidad de software, optimización de motores JavaScript ligeros (Hermes) y preservación de medios. El software no almacena, hostea ni transmite ningún archivo multimedia; únicamente indexa información disponible públicamente en la web.
+```
