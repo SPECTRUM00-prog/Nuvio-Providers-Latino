@@ -44,15 +44,7 @@ function scorePost(post, titles, year, isTv) {
     var postSlug = cleanTitle(post.slug || post.post_name || "");
     var score = 0;
 
-    // 1. Bonus si coincide el tipo de contenido
-    var pType = (post.post_type || post.type || "").toLowerCase();
-    if (isTv && (pType.indexOf("tv") !== -1 || pType.indexOf("serie") !== -1)) {
-        score += 20;
-    } else if (!isTv && (pType.indexOf("movie") !== -1 || pType.indexOf("pelicula") !== -1)) {
-        score += 20;
-    }
-
-    // 2. Coincidencia de título
+    // 1. Coincidencia de título
     for (var i = 0; i < titles.length; i++) {
         var t = cleanTitle(titles[i]);
         if (!t) continue;
@@ -72,15 +64,26 @@ function scorePost(post, titles, year, isTv) {
 
         if (words.length > 0) {
             var ratio = (matches / words.length) * 70;
-            score = Math.max(score, ratio);
+            if (matches > 0) {
+                score = Math.max(score, ratio);
+            }
         }
     }
 
-    // 3. Coincidencia de año (Filtro vital para sagas como Deadpool 2016 vs 2018 vs 2024)
-    var postYear = String(post.year || post.release_date || post.date || post.title || "").match(/\b(19\d\d|20\d\d)\b/);
-    var extractedYear = postYear ? postYear[1] : "";
-    if (year && extractedYear && extractedYear === String(year)) {
-        score += 25;
+    // Solo agregar bonificaciones si hubo coincidencia de título
+    if (score > 0) {
+        var pType = (post.post_type || post.type || "").toLowerCase();
+        if (isTv && (pType.indexOf("tv") !== -1 || pType.indexOf("serie") !== -1)) {
+            score += 15;
+        } else if (!isTv && (pType.indexOf("movie") !== -1 || pType.indexOf("pelicula") !== -1)) {
+            score += 15;
+        }
+
+        var postYear = String(post.year || post.release_date || post.date || post.title || "").match(/\b(19\d\d|20\d\d)\b/);
+        var extractedYear = postYear ? postYear[1] : "";
+        if (year && extractedYear && extractedYear === String(year)) {
+            score += 20;
+        }
     }
 
     return score;
@@ -122,7 +125,85 @@ function unpackJS(packed) {
 }
 
 // ==========================================
-// 3. RESOLVERS DE STREAMING
+// 3. DETECCIÓN DINÁMICA DE RESOLUCIÓN REAL
+// ==========================================
+
+var QUALITY_MAPS = {
+    vimeos:     { x: "1080p", o: "1080p", h: "720p", n: "480p", l: "360p" },
+    goodstream: { x: "1080p", o: "1080p", h: "720p", n: "480p", l: "360p" }
+};
+var QUALITY_ORDER = ["x", "o", "h", "n", "l"];
+
+function detectQualityFromUrl(url) {
+    if (!url) return null;
+    var u = url.toLowerCase();
+    
+    var qMap = null;
+    if (u.indexOf("goodstream") !== -1) qMap = QUALITY_MAPS.goodstream;
+    else if (u.indexOf("vimeos") !== -1) qMap = QUALITY_MAPS.vimeos;
+    
+    if (qMap) {
+        var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
+        if (urlsetMatch) {
+            var tags = urlsetMatch[1].split(",");
+            for (var i = 0; i < QUALITY_ORDER.length; i++) {
+                var tag = QUALITY_ORDER[i];
+                if (tags.indexOf(tag) !== -1 && qMap[tag]) {
+                    return qMap[tag];
+                }
+            }
+        }
+    }
+
+    if (/4k|2160p?/i.test(u)) return "4K";
+    if (/1080p?/i.test(u)) return "1080p";
+    if (/720p?/i.test(u)) return "720p";
+    if (/480p?/i.test(u)) return "480p";
+    return null;
+}
+
+function probeM3u8Quality(m3u8Url, headers) {
+    var fastQ = detectQualityFromUrl(m3u8Url);
+    if (fastQ) return Promise.resolve(fastQ);
+
+    if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
+
+    return fetch(m3u8Url, {
+        headers: headers || { "User-Agent": USER_AGENT },
+        redirect: "follow"
+    })
+    .then(function(res) {
+        if (!res.ok) return "720p";
+        return res.text();
+    })
+    .then(function(text) {
+        if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
+            if (/1080/i.test(m3u8Url)) return "1080p";
+            if (/720/i.test(m3u8Url)) return "720p";
+            return "720p";
+        }
+
+        var maxH = 0;
+        var resRegex = /RESOLUTION=\d+x(\d+)/gi;
+        var match;
+        while ((match = resRegex.exec(text)) !== null) {
+            var h = parseInt(match[1], 10);
+            if (h > maxH) maxH = h;
+        }
+
+        if (maxH >= 2160) return "4K";
+        if (maxH >= 1080) return "1080p";
+        if (maxH >= 720) return "720p";
+        if (maxH >= 480) return "480p";
+        return "720p";
+    })
+    .catch(function() {
+        return "720p";
+    });
+}
+
+// ==========================================
+// 4. RESOLVERS DE STREAMING
 // ==========================================
 
 function resolveVimeos(embedUrl) {
@@ -131,18 +212,28 @@ function resolveVimeos(embedUrl) {
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
+        var streamUrl = null;
         var unpacked = unpackJS(html);
         if (unpacked) {
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) ||
                             unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
-            if (m3u8Match) {
+            if (m3u8Match) streamUrl = m3u8Match[1].replace(/\\/g, "");
+        }
+        if (!streamUrl) {
+            var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+            if (direct) streamUrl = direct[1].replace(/\\/g, "");
+        }
+
+        if (streamUrl) {
+            var headers = { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" };
+            return probeM3u8Quality(streamUrl, headers).then(function(q) {
                 return {
-                    url: m3u8Match[1].replace(/\\/g, ""),
-                    quality: "1080p",
+                    url: streamUrl,
+                    quality: q || "720p",
                     server: "Vimeos",
-                    headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
+                    headers: headers
                 };
-            }
+            });
         }
         return null;
     })
@@ -155,27 +246,28 @@ function resolveStreamWish(embedUrl) {
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var fileMatch = html.match(/(?:file|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-        if (fileMatch) {
-            return {
-                url: fileMatch[1],
-                quality: "1080p",
-                server: "StreamWish",
-                headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
-            };
+        var streamUrl = null;
+        var fileMatch = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+        if (fileMatch) streamUrl = fileMatch[1].replace(/\\/g, "");
+
+        if (!streamUrl) {
+            var unpacked = unpackJS(html);
+            if (unpacked) {
+                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+                if (m3u8) streamUrl = m3u8[0].replace(/\\/g, "");
+            }
         }
 
-        var unpacked = unpackJS(html);
-        if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
-            if (m3u8) {
+        if (streamUrl) {
+            var headers = { "User-Agent": USER_AGENT, "Referer": embedUrl };
+            return probeM3u8Quality(streamUrl, headers).then(function(q) {
                 return {
-                    url: m3u8[0],
-                    quality: "1080p",
+                    url: streamUrl,
+                    quality: q || "720p",
                     server: "StreamWish",
-                    headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
+                    headers: headers
                 };
-            }
+            });
         }
         return null;
     })
@@ -188,26 +280,29 @@ function resolveGoodStream(embedUrl) {
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var unpacked = unpackJS(html);
-        if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
-            if (m3u8) {
-                return {
-                    url: m3u8[0],
-                    quality: "1080p",
-                    server: "GoodStream",
-                    headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
-                };
+        var streamUrl = null;
+        var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i) ||
+                     html.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+        if (direct) streamUrl = direct[1].replace(/\\/g, "");
+
+        if (!streamUrl) {
+            var unpacked = unpackJS(html);
+            if (unpacked) {
+                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+                if (m3u8) streamUrl = m3u8[0].replace(/\\/g, "");
             }
         }
-        var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-        if (direct) {
-            return {
-                url: direct[1],
-                quality: "1080p",
-                server: "GoodStream",
-                headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
-            };
+
+        if (streamUrl) {
+            var headers = { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" };
+            return probeM3u8Quality(streamUrl, headers).then(function(q) {
+                return {
+                    url: streamUrl,
+                    quality: q || "720p",
+                    server: "GoodStream",
+                    headers: headers
+                };
+            });
         }
         return null;
     })
@@ -215,7 +310,7 @@ function resolveGoodStream(embedUrl) {
 }
 
 // ==========================================
-// 4. TMDB METADATA
+// 5. TMDB METADATA
 // ==========================================
 
 function getTMDBInfo(tmdbId, mediaType) {
@@ -252,7 +347,7 @@ function getTMDBInfo(tmdbId, mediaType) {
 }
 
 // ==========================================
-// 5. CONSULTAS A LA API REST DE LAMOVIE
+// 6. CONSULTAS A LA API REST DE LAMOVIE
 // ==========================================
 
 function searchMedia(query) {
@@ -282,7 +377,6 @@ function getPlayerEmbeds(postItem, seasonNum, episodeNum, isTv) {
     if (!mainId) return Promise.resolve([]);
 
     if (!isTv) {
-        // Película: Consulta directa por Post ID
         return fetch(FAST_API + "/player?postId=" + mainId + "&demo=0", { headers: DEFAULT_HEADERS })
             .then(function(res) { return res.json(); })
             .then(function(json) {
@@ -291,7 +385,6 @@ function getPlayerEmbeds(postItem, seasonNum, episodeNum, isTv) {
             .catch(function() { return []; });
     }
 
-    // Serie: Obtener lista de episodios de la temporada
     var s = parseInt(seasonNum || 1, 10);
     var e = parseInt(episodeNum || 1, 10);
     var epListUrl = FAST_API + "/single/episodes/list?_id=" + mainId + "&season=" + s + "&page=1&postsPerPage=50";
@@ -330,7 +423,7 @@ function getPlayerEmbeds(postItem, seasonNum, episodeNum, isTv) {
 }
 
 // ==========================================
-// 6. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// 7. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
@@ -350,7 +443,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             var clean = cleanTitle(raw);
             if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
 
-            // 1. Variante con "y" (para títulos con & como Deadpool & Wolverine -> Deadpool y Wolverine)
             if (raw.indexOf("&") !== -1) {
                 var withY = cleanTitle(raw.replace(/&/g, " y "));
                 if (withY && searchQueries.indexOf(withY) === -1) searchQueries.push(withY);
@@ -359,11 +451,9 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                 if (withAnd && searchQueries.indexOf(withAnd) === -1) searchQueries.push(withAnd);
             }
 
-            // 2. Variante sin subtítulo (antes de dos puntos o guiones)
             var shortT = cleanTitle(raw.split(/[:\-\(]/)[0]);
             if (shortT && searchQueries.indexOf(shortT) === -1) searchQueries.push(shortT);
 
-            // 3. Palabra clave raíz (ej. "Deadpool" de "Deadpool & Wolverine")
             var words = clean.split(/\s+/).filter(function(w) { return w.length > 3; });
             if (words.length > 0) {
                 var mainWord = words[0];
@@ -378,15 +468,29 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         return searchMultiQuery(searchQueries).then(function(posts) {
             if (!posts || posts.length === 0) return [];
 
-            // Puntuación de precisión
-            posts.sort(function(a, b) {
-                return scorePost(b, media.titles, media.year, isTv) - scorePost(a, media.titles, media.year, isTv);
+            // 1. Filtrar candidatos con umbral mínimo estricto (score >= 35)
+            var scoredPosts = [];
+            for (var p = 0; p < posts.length; p++) {
+                var sc = scorePost(posts[p], media.titles, media.year, isTv);
+                if (sc >= 35) {
+                    scoredPosts.push({ post: posts[p], score: sc });
+                }
+            }
+
+            // Si no hay coincidencias reales con el título, abortar
+            if (scoredPosts.length === 0) {
+                return [];
+            }
+
+            // 2. Ordenar candidatos por mayor precisión
+            scoredPosts.sort(function(a, b) {
+                return b.score - a.score;
             });
 
-            // Probar candidatos en cascada
+            // 3. Probar candidatos en cascada
             function tryCandidates(cIdx) {
-                if (cIdx >= posts.length) return Promise.resolve([]);
-                var currentPost = posts[cIdx];
+                if (cIdx >= scoredPosts.length) return Promise.resolve([]);
+                var currentPost = scoredPosts[cIdx].post;
 
                 return getPlayerEmbeds(currentPost, s, e, isTv).then(function(embeds) {
                     if (!embeds || embeds.length === 0) {
