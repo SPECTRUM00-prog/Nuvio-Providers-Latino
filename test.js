@@ -1,35 +1,187 @@
-// test.js
-// Uso: node test.js [tmdbId] [tipo] [temporada] [episodio] [provider]
-// Ejemplos:
-//   node test.js 550 movie
-//   node test.js 157336 movie movie cinecalidad
-//   node test.js 1396 tv 1 1 lamovie
+/**
+ * Test Runner Avanzado & Validador de Streams para Nuvio Media Hub
+ * 
+ * Uso:
+ *   node test.js <tmdbId> <movie|tv> [season] [episode] [provider|all]
+ * 
+ * Ejemplos:
+ *   node test.js 533535 movie lamovie
+ *   node test.js 94664 tv 2 1 jkanime
+ *   node test.js 56568 tv 1 1 animejara
+ *   node test.js 40075 tv 1 1 all
+ */
 
-const providerName = process.argv[6] || 'lamovie';
-const { getStreams } = require(`./providers/${providerName}.js`);
+const fs = require('fs');
+const path = require('path');
 
-const tmdbId = process.argv[2] || '550';
-const mediaType = process.argv[3] || 'movie';
-const season = process.argv[4] ? parseInt(process.argv[4]) : null;
-const episode = process.argv[5] ? parseInt(process.argv[5]) : null;
+// Colores para la consola
+const C = {
+    reset: "\x1b[0m",
+    bright: "\x1b[1m",
+    dim: "\x1b[2m",
+    green: "\x1b[32m",
+    yellow: "\x1b[33m",
+    red: "\x1b[31m",
+    cyan: "\x1b[36m",
+    magenta: "\x1b[35m",
+    blue: "\x1b[34m"
+};
 
-console.log(`\nTesting ${providerName} provider...`);
-console.log(`TMDB: ${tmdbId} | Tipo: ${mediaType}${season ? ` | S${season}E${episode}` : ''}\n`);
+// 1. Parseo inteligente de argumentos
+const args = process.argv.slice(2);
+if (args.length === 0) {
+    console.log(`${C.yellow}Uso:${C.reset} node test.js <tmdbId> <movie|tv> [season] [episode] [provider|all]`);
+    console.log(`${C.dim}Ejemplo Película:${C.reset} node test.js 533535 movie cinecalidad`);
+    console.log(`${C.dim}Ejemplo Serie:${C.reset}    node test.js 94664 tv 2 1 jkanime`);
+    process.exit(1);
+}
 
-getStreams(tmdbId, mediaType, season, episode)
-  .then(streams => {
-    if (!streams || streams.length === 0) {
-      console.log('❌ No se encontraron streams');
-      return;
+const tmdbId = args[0];
+const mediaType = args[1] || 'movie';
+const isTv = mediaType === 'tv' || mediaType === 'series';
+
+let season = null;
+let episode = null;
+let providerInput = 'cinecalidad';
+
+if (isTv) {
+    season = args[2] ? parseInt(args[2], 10) : 1;
+    episode = args[3] ? parseInt(args[3], 10) : 1;
+    providerInput = args[4] || 'cinecalidad';
+} else {
+    // Para películas, si pasaron season/episode o directo el provider
+    if (args[2] && isNaN(parseInt(args[2], 10)) && args[2] !== 'null') {
+        providerInput = args[2];
+    } else if (args[4]) {
+        providerInput = args[4];
+    } else {
+        providerInput = args[2] && args[2] !== 'null' ? args[2] : 'cinecalidad';
     }
-    console.log(`\n✅ ${streams.length} streams encontrados:\n`);
-    streams.forEach((s, i) => {
-      console.log(`[${i + 1}] ${s.title}`);
-      console.log(`    URL: ${s.url}`);
-      if (s.headers && Object.keys(s.headers).length > 0) {
-        console.log(`    Headers: ${JSON.stringify(s.headers)}`);
-      }
-      console.log();
-    });
-  })
-  .catch(e => console.error('Error:', e.message));
+}
+
+// 2. Cargar proveedores a probar
+let providersToTest = [];
+const providersDir = path.join(__dirname, 'providers');
+
+if (providerInput.toLowerCase() === 'all') {
+    const files = fs.readdirSync(providersDir).filter(f => f.endsWith('.js') && !f.startsWith('inspect_'));
+    providersToTest = files.map(f => f.replace('.js', ''));
+} else {
+    providersToTest = [providerInput.toLowerCase()];
+}
+
+// 3. Función para sondear el stream y comprobar conectividad real
+async function probeStreamUrl(stream) {
+    const startTime = Date.now();
+    const headers = stream.headers || { "User-Agent": "Mozilla/5.0" };
+
+    try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 6000);
+
+        // Hacemos una petición con Range para no descargar el video completo
+        const res = await fetch(stream.url, {
+            method: 'GET',
+            headers: {
+                ...headers,
+                "Range": "bytes=0-1024"
+            },
+            signal: controller.signal,
+            redirect: 'follow'
+        });
+
+        clearTimeout(timeout);
+        const latency = Date.now() - startTime;
+        const cType = res.headers.get('content-type') || 'unknown';
+
+        let isValid = res.ok || res.status === 206 || res.status === 200;
+        let details = `HTTP ${res.status} · ${latency}ms · ${cType}`;
+
+        if (res.status === 403) {
+            details += ` ${C.red}(Bloqueo 403: Requiere Referer correcto)${C.reset}`;
+            isValid = false;
+        } else if (res.status === 404) {
+            details += ` ${C.red}(404: Enlace caído o expirado)${C.reset}`;
+            isValid = false;
+        }
+
+        return {
+            isValid,
+            status: res.status,
+            latency,
+            cType,
+            details
+        };
+    } catch (e) {
+        return {
+            isValid: false,
+            status: 0,
+            latency: Date.now() - startTime,
+            details: `Error de red: ${e.name === 'AbortError' ? 'Timeout (6s)' : e.message}`
+        };
+    }
+}
+
+// 4. Ejecución de la prueba
+async function runTests() {
+    console.log(`\n${C.cyan}${C.bright}================================================================${C.reset}`);
+    console.log(`${C.cyan}${C.bright}🧪 NUVIO MEDIA HUB — RUNNER & AUDITOR DE PROVEEDORES${C.reset}`);
+    console.log(`${C.cyan}${C.bright}================================================================${C.reset}`);
+    console.log(`🎯 TMDB ID:     ${C.bright}${tmdbId}${C.reset}`);
+    console.log(`🎬 Tipo:        ${C.bright}${mediaType.toUpperCase()}${isTv ? ` (Temporada ${season} · Episodio ${episode})` : ''}${C.reset}`);
+    console.log(`📦 Proveedores: ${C.bright}${providersToTest.join(', ')}${C.reset}\n`);
+
+    for (const pName of providersToTest) {
+        const filePath = path.join(providersDir, `${pName}.js`);
+        if (!fs.existsSync(filePath)) {
+            console.log(`${C.red}❌ Proveedor '${pName}' no encontrado en /providers/${pName}.js${C.reset}\n`);
+            continue;
+        }
+
+        console.log(`----------------------------------------------------------------`);
+        console.log(`▶ Probando: ${C.magenta}${C.bright}${pName.toUpperCase()}${C.reset}`);
+        console.log(`----------------------------------------------------------------`);
+
+        const providerModule = require(filePath);
+        if (typeof providerModule.getStreams !== 'function') {
+            console.log(`${C.red}❌ El archivo no exporta la función getStreams()${C.reset}\n`);
+            continue;
+        }
+
+        const pStartTime = Date.now();
+        try {
+            const streams = await providerModule.getStreams(tmdbId, mediaType, season, episode);
+            const pDuration = Date.now() - pStartTime;
+
+            if (!Array.isArray(streams) || streams.length === 0) {
+                console.log(`${C.red}❌ 0 streams encontrados (${pDuration}ms)${C.reset}\n`);
+                continue;
+            }
+
+            console.log(`⚡ Scraper finalizado en ${C.bright}${pDuration}ms${C.reset}. Validando ${streams.length} stream(s) en vivo...\n`);
+
+            for (let i = 0; i < streams.length; i++) {
+                const s = streams[i];
+                const probe = await probeStreamUrl(s);
+
+                const icon = probe.isValid ? `${C.green}✓${C.reset}` : `${C.red}✗${C.reset}`;
+                const qualBadge = `${C.bright}[${s.quality || 'Auto'}]${C.reset}`;
+
+                console.log(`  [${i + 1}] ${icon} ${qualBadge} ${C.bright}${s.title || s.name}${C.reset}`);
+                console.log(`      ${C.dim}URL:${C.reset}     ${s.url}`);
+                if (s.headers && Object.keys(s.headers).length > 0) {
+                    console.log(`      ${C.dim}Headers:${C.reset} ${JSON.stringify(s.headers)}`);
+                }
+                console.log(`      ${C.dim}Estado:${C.reset}  ${probe.isValid ? C.green : C.red}${probe.details}${C.reset}`);
+                console.log();
+            }
+
+        } catch (err) {
+            console.log(`${C.red}💥 Error general en ${pName}: ${err.message}${C.reset}\n`);
+        }
+    }
+
+    console.log(`${C.cyan}======================= FIN DE PRUEBAS =======================${C.reset}\n`);
+}
+
+runTests();
