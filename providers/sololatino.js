@@ -21,14 +21,6 @@ function decodeB64ToBytes(b64) {
     return new Uint8Array(output);
 }
 
-function decodeB64(input) {
-    if (!input) return null;
-    var bytes = decodeB64ToBytes(input);
-    var str = "";
-    for (var i = 0; i < bytes.length; i++) str += String.fromCharCode(bytes[i]);
-    return str;
-}
-
 function stringToUtf8Bytes(str) {
     var bytes = [];
     for (var i = 0; i < str.length; i++) {
@@ -312,7 +304,7 @@ function unpackJS(packed) {
 }
 
 // ==========================================
-// 5. RESOLVERS INDIVIDUALES (PROMISE BASED)
+// 5. RESOLVERS DE STREAMING (PROMISE BASED)
 // ==========================================
 function resolveVidHide(url) {
     return fetch(url, {
@@ -334,7 +326,6 @@ function resolveVidHide(url) {
 }
 
 function resolveStreamWish(url) {
-    // Extraer el ID del video para saltar la página puente
     var id = url.replace(/\/$/, "").split("/").pop();
     var targetUrl = "https://hlswish.com/e/" + id;
 
@@ -362,9 +353,9 @@ function resolveStreamWish(url) {
 }
 
 // ==========================================
-// 6. TMDB METADATA
+// 6. TMDB METADATA (Con Fallback de Episodio)
 // ==========================================
-function getMediaData(tmdbId, mediaType) {
+function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
     var isTv = mediaType === "tv" || mediaType === "series";
     var type = isTv ? "tv" : "movie";
     var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=external_ids";
@@ -372,10 +363,38 @@ function getMediaData(tmdbId, mediaType) {
     return fetch(url)
         .then(function(res) { return res.json(); })
         .then(function(data) {
+            var imdbId = (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null;
+
+            if (!imdbId && isTv) {
+                // Fallback para series: consultar los external_ids del episodio específico
+                var s = parseInt(seasonNum || 1, 10);
+                var e = parseInt(episodeNum || 1, 10);
+                var epUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + s + "/episode/" + e + "/external_ids?api_key=" + TMDB_API_KEY;
+
+                return fetch(epUrl)
+                    .then(function(epRes) { return epRes.json(); })
+                    .then(function(epData) {
+                        return {
+                            title: data.name,
+                            year: (data.first_air_date || "").substring(0, 4),
+                            imdbId: epData.imdb_id || null,
+                            isEpisodeImdb: !!epData.imdb_id
+                        };
+                    })
+                    .catch(function() {
+                        return {
+                            title: data.name,
+                            year: (data.first_air_date || "").substring(0, 4),
+                            imdbId: null
+                        };
+                    });
+            }
+
             return {
-                title: data.title || data.name,
+                title: isTv ? data.name : data.title,
                 year: (data.release_date || data.first_air_date || "").substring(0, 4),
-                imdbId: (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null
+                imdbId: imdbId,
+                isEpisodeImdb: false
             };
         })
         .catch(function() { return null; });
@@ -402,13 +421,18 @@ function fetchAndDecryptEmbed69(targetUrl) {
         var salt = saltMatch ? saltMatch[1] : "";
         var dataLink = JSON.parse(dataLinkMatch[1]);
 
+        // Límite de seguridad anti-freeze
         var prefix = "0".repeat(difficulty);
         var nonce = 0;
-        while (true) {
+        var maxIterations = 200000;
+
+        while (nonce < maxIterations) {
             var hash = sha256Hex(challenge + nonce);
             if (hash.startsWith(prefix)) break;
             nonce++;
         }
+
+        if (nonce >= maxIterations) return [];
 
         var aesKey = sha256(challenge + nonce + salt);
         var embeds = [];
@@ -437,39 +461,46 @@ function fetchAndDecryptEmbed69(targetUrl) {
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
 
-    return getMediaData(tmdbId, mediaType).then(function(media) {
+    var isTv = mediaType === "tv" || mediaType === "series";
+    var s = parseInt(seasonNum || 1, 10);
+    var e = parseInt(episodeNum || 1, 10);
+
+    return getMediaData(tmdbId, mediaType, s, e).then(function(media) {
         if (!media || !media.imdbId) return [];
 
-        var isTv = mediaType === "tv" || mediaType === "series";
-        var targetUrl = "";
-
+        var candidateUrls = [];
         if (!isTv) {
-            targetUrl = BASE_URL + "/f/" + media.imdbId;
+            candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
         } else {
-            var s = parseInt(seasonNum || 1, 10);
-            var e = parseInt(episodeNum || 1, 10);
+            if (media.isEpisodeImdb) {
+                candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
+            }
             var epPadded = String(e).padStart(2, "0");
-            targetUrl = BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded;
+            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
+            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e);
+            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-s" + s + "e" + epPadded);
         }
 
-        return fetchAndDecryptEmbed69(targetUrl).then(function(embeds) {
-            if (embeds.length === 0 && isTv) {
-                var s = parseInt(seasonNum || 1, 10);
-                var e = parseInt(episodeNum || 1, 10);
-                var fallbackUrl = BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e;
-                return fetchAndDecryptEmbed69(fallbackUrl);
-            }
-            return embeds;
-        }).then(function(embedsToResolve) {
+        function tryNextUrl(idx) {
+            if (idx >= candidateUrls.length) return Promise.resolve([]);
+            var targetUrl = candidateUrls[idx];
+
+            return fetchAndDecryptEmbed69(targetUrl).then(function(embeds) {
+                if (embeds && embeds.length > 0) return embeds;
+                return tryNextUrl(idx + 1);
+            });
+        }
+
+        return tryNextUrl(0).then(function(embedsToResolve) {
             if (!embedsToResolve || embedsToResolve.length === 0) return [];
 
             var resolvePromises = embedsToResolve.map(function(item) {
                 var u = item.url.toLowerCase();
                 var promise = null;
 
-                if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1) {
+                if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) {
                     promise = resolveVidHide(item.url);
-                } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1) {
+                } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
                     promise = resolveStreamWish(item.url);
                 } else {
                     promise = Promise.resolve(null);
