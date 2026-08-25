@@ -29,9 +29,6 @@ Este proyecto proporciona scrapers de alto rendimiento para **Nuvio Media Hub**,
 | `animeav1` | **AnimeAV1** | ✅ | ✅ | ✅ | Sub / Latino | 🟢 100% Operativo |
 | `animejara` | **AnimeJara** | ✅ | ✅ | ✅ | Sub / Latino / Castellano | 🟢 100% Operativo |
 | `jkanime` | **JKAnime (AniList Engine)** | ✅ | ✅ | ✅ | Sub Español | 🟢 100% Operativo |
-| `detodopeliculas` | **DeTodoPeliculas** | ✅ | ✅ | ❌ | Latino | 🟡 En Migración |
-| `seriesmetro` | **SeriesMetro** | ❌ | ✅ | ❌ | Latino | 🟡 En Migración |
-| `seriesflix` | **SeriesFlix** | ❌ | ✅ | ❌ | Latino | 🟡 En Migración |
 
 ---
 
@@ -77,3 +74,19 @@ node test.js <TMDB_ID> tv <temporada> <episodio> <proveedor>
 
 # Probar TODOS los proveedores en paralelo simultáneamente
 node test.js <TMDB_ID> <movie|tv> [temporada] [episodio] all
+
+
+# Película: Deadpool & Wolverine (TMDB 533535) en LaMovie
+node test.js 533535 movie lamovie
+
+# Serie: Gravity Falls (TMDB 40075) S01E01 en CineCalidad
+node test.js 40075 tv 1 1 cinecalidad
+
+# Anime: Mushoku Tensei (TMDB 94664) S02E15 en AnimeJara
+node test.js 94664 tv 2 15 animejara
+
+# Anime: One Piece (TMDB 37854) S22E66 (Capítulo 1128) en JKAnime
+node test.js 37854 tv 22 66 jkanime
+
+# Auditoría General en todos los proveedores
+node test.js 533535 movie all
