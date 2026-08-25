@@ -61,18 +61,6 @@ function hasJapaneseChars(str) {
     return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
 }
 
-function isSlugSimilar(query, slug) {
-    if (!query || !slug) return false;
-    var cleanQ = cleanTitle(query).replace(/-/g, " ");
-    var cleanS = cleanTitle(slug).replace(/-/g, " ");
-    var qWords = cleanQ.split(/\s+/).filter(function(w) { return w.length > 2; });
-    if (qWords.length === 0) return cleanS.indexOf(cleanQ) !== -1;
-    for (var i = 0; i < qWords.length; i++) {
-        if (cleanS.indexOf(qWords[i]) !== -1) return true;
-    }
-    return false;
-}
-
 function unpackDeanEdwards(p, a, c, k) {
     var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     function decodeBase(val, radix) {
@@ -154,10 +142,9 @@ function fetchAniListMapping(searchName) {
     .catch(function() { return []; });
 }
 
-function resolveAniListTarget(aniListMedia, sNum, eNum) {
+function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
     if (!aniListMedia || aniListMedia.length === 0) return null;
 
-    // 1. Filtrar entradas por número de temporada
     var seasonKeywords = {
         1: ["season 1", "cour 1", "cour 2", "part 2", "2nd season", "1st season"],
         2: ["season 2", " ii ", "ii:", "ii ", "part 2", "cour 2", "2nd season"],
@@ -183,11 +170,16 @@ function resolveAniListTarget(aniListMedia, sNum, eNum) {
         return false;
     });
 
+    // 1. Caso Shonen Continuo (One Piece, Detective Conan, Naruto)
     if (matchingEntries.length === 0) {
-        matchingEntries = aniListMedia;
+        var baseEntry = aniListMedia[0];
+        return {
+            slug: cleanTitle(baseEntry.title.romaji),
+            targetEp: sNum > 1 ? absoluteEp : eNum
+        };
     }
 
-    // 2. Si hay múltiples partes para la misma temporada (Split-Cour)
+    // 2. Caso Split-Cour (Mushoku Tensei, Spy x Family)
     if (matchingEntries.length > 1) {
         var part1 = matchingEntries.find(function(m) {
             var f = (m.title.romaji + " " + m.title.english).toLowerCase();
@@ -203,25 +195,23 @@ function resolveAniListTarget(aniListMedia, sNum, eNum) {
             if (eNum > part1.episodes) {
                 return {
                     slug: cleanTitle(part2.title.romaji),
-                    targetEp: eNum - part1.episodes,
-                    synonyms: part2.synonyms || []
+                    targetEp: eNum - part1.episodes
                 };
             } else {
                 return {
                     slug: cleanTitle(part1.title.romaji),
-                    targetEp: eNum,
-                    synonyms: part1.synonyms || []
+                    targetEp: eNum
                 };
             }
         }
     }
 
-    // 3. Entrada directa
     var selected = matchingEntries[0];
+    var isContinuous = !selected.title.romaji.toLowerCase().includes("season") && !selected.title.romaji.toLowerCase().includes(" ii") && !selected.title.romaji.toLowerCase().includes(" iii");
+    
     return {
         slug: cleanTitle(selected.title.romaji),
-        targetEp: eNum,
-        synonyms: selected.synonyms || []
+        targetEp: (isContinuous && sNum > 1) ? absoluteEp : eNum
     };
 }
 
@@ -450,18 +440,15 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
 
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
-            var origTitle = isMovie ? meta.original_title : meta.original_name;
-
-            // Extraer palabras clave limpias para AniList
             var cleanT = cleanTitle(title).replace(/-/g, " ");
             var words = cleanT.split(/\s+/).filter(function(w) { return w.length > 2; });
             var searchKeyword = words.length >= 2 ? words.slice(0, 2).join(" ") : cleanT;
 
             var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
 
-            // 1. Consultar AniList GraphQL para resolver el slug exacto y desfase de Cour
+            // 1. Consultar AniList con mapeo Shonen Continuo / Split-Cour
             return fetchAniListMapping(searchKeyword).then(function(aniListMedia) {
-                var aniTarget = resolveAniListTarget(aniListMedia, sNum, eNum);
+                var aniTarget = resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp);
                 var pageUrlsToTry = [];
 
                 if (aniTarget && aniTarget.slug) {
@@ -469,7 +456,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     pageUrlsToTry.push(`${BASE_URL}/${aniTarget.slug}/${targetEp}/`);
                 }
 
-                // 2. Rutas alternativas y de respaldo (Shonen continuo / Fallback)
+                // 2. Respaldo por si el slug base directo difiere
                 var rawBaseSlug = cleanTitle(title);
                 if (isMovie) {
                     pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/pelicula/`);
@@ -481,7 +468,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/${eNum}/`);
                 }
 
-                // Deduplicar URLs a probar
                 var uniqueUrls = pageUrlsToTry.filter(function(item, pos, self) {
                     return item && self.indexOf(item) === pos;
                 });
