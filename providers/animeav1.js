@@ -17,6 +17,16 @@ const DEFAULT_HEADERS = {
 // UTILIDADES Y DESEMPAQUETADOR
 // ==========================================
 
+function normalizeSearchQuery(text) {
+    if (!text) return "";
+    return text
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-zA-Z0-9\s]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+}
+
 function normalizeText(text) {
     if (!text) return "";
     return text
@@ -27,10 +37,6 @@ function normalizeText(text) {
         .replace(/\s+/g, "-")
         .replace(/-+/g, "-")
         .trim();
-}
-
-function cleanSlug(text) {
-    return normalizeText(text);
 }
 
 function isLatinOnly(str) {
@@ -77,6 +83,25 @@ function probeM3u8Quality(m3u8Url, headers) {
             return "1080p";
         })
         .catch(function() { return "1080p"; });
+}
+
+function scoreSlugForSeason(slug, sNum) {
+    var s = slug.toLowerCase();
+    if (sNum === 1) {
+        if (s.includes("-ii") || s.includes("-iii") || s.includes("-iv") || s.includes("-2") || s.includes("-3") || s.includes("-beyond") || s.includes("-part-2")) return -10;
+        return 10;
+    }
+    var patterns = {
+        2: ["-ii", "-2", "-2nd", "-beyond", "-season-2", "-2nd-season", "-s2"],
+        3: ["-iii", "-3", "-3rd", "-part-2", "-part-ii", "-season-3", "-3rd-season", "-s3"],
+        4: ["-iv", "-4", "-4th", "-final-season", "-season-4"],
+        5: ["-v", "-5", "-5th", "-season-5"]
+    }[sNum] || [`-${sNum}`];
+
+    for (var i = 0; i < patterns.length; i++) {
+        if (s.includes(patterns[i])) return 20 - i;
+    }
+    return 0;
 }
 
 // ==========================================
@@ -142,12 +167,7 @@ function extractEmbedsFromSvelteKit(nodes) {
 // ==========================================
 
 function resolveZillaHls(url) {
-    // La URL directa del M3U8 es el endpoint sin '/play/'
     var directM3u8 = url.replace("/play/", "/");
-    if (!directM3u8.endsWith(".m3u8") && !directM3u8.includes(".m3u8")) {
-        directM3u8 = directM3u8;
-    }
-
     return probeM3u8Quality(directM3u8, { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }).then(function(q) {
         return {
             url: directM3u8,
@@ -260,7 +280,10 @@ function searchAnimeAV1(queries) {
                 }
             }
 
-            if (slugs.length > 0) return slugs;
+            if (slugs.length > 0) {
+                console.log(`[AnimeAV1] Slugs encontrados para "${q}": ${slugs.length}`);
+                return slugs;
+            }
             return tryNextQuery(index + 1);
         })
         .catch(function() {
@@ -283,7 +306,6 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
         .then(function(json) {
             var embeds = extractEmbedsFromSvelteKit(json.nodes);
             if (embeds.length === 0) {
-                console.log("[AnimeAV1] No se encontraron reproductores en el episodio");
                 return [];
             }
 
@@ -298,8 +320,7 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
         .then(function(results) {
             return results.filter(function(st) { return st !== null; });
         })
-        .catch(function(err) {
-            console.log(`[AnimeAV1] Error extrayendo capítulo: ${err.message}`);
+        .catch(function() {
             return [];
         });
 }
@@ -311,6 +332,7 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
 function getStreams(tmdbId, mediaType, season, episode) {
     console.log(`[AnimeAV1] Buscando TMDB ID ${tmdbId} (${mediaType})`);
     var isMovie = mediaType === "movie";
+    var sNum = parseInt(season, 10) || 1;
     var eNum = parseInt(episode, 10) || 1;
     var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
 
@@ -332,41 +354,47 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            var searchQueries = [];
+            var rawQueries = [];
 
             // 1. Extraer palabras clave de títulos alternativos (priorizando Romaji)
             var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
             for (var i = 0; i < altTitles.length; i++) {
                 var alt = altTitles[i].title || "";
                 if (isLatinOnly(alt)) {
-                    searchQueries.push(alt);
-                    var wordsA = alt.split(/\s+/);
-                    if (wordsA.length > 2) {
-                        searchQueries.push(wordsA.slice(0, 2).join(" "));
-                        searchQueries.push(wordsA.slice(0, 3).join(" "));
-                    }
+                    var cleanAlt = normalizeSearchQuery(alt);
+                    var wordsA = cleanAlt.split(/\s+/);
+                    if (wordsA.length >= 2) rawQueries.push(wordsA.slice(0, 2).join(" "));
+                    if (wordsA.length >= 3) rawQueries.push(wordsA.slice(0, 3).join(" "));
+                    rawQueries.push(cleanAlt);
                 }
             }
 
             if (origTitle && isLatinOnly(origTitle)) {
-                searchQueries.push(origTitle);
-                var wordsO = origTitle.split(/\s+/);
-                if (wordsO.length > 2) searchQueries.push(wordsO.slice(0, 2).join(" "));
+                var cleanO = normalizeSearchQuery(origTitle);
+                var wordsO = cleanO.split(/\s+/);
+                if (wordsO.length >= 2) rawQueries.push(wordsO.slice(0, 2).join(" "));
+                rawQueries.push(cleanO);
             }
 
             if (title && isLatinOnly(title)) {
-                searchQueries.push(title);
-                var wordsT = title.split(/\s+/);
-                if (wordsT.length > 2) searchQueries.push(wordsT.slice(0, 2).join(" "));
+                var cleanT = normalizeSearchQuery(title);
+                var wordsT = cleanT.split(/\s+/);
+                if (wordsT.length >= 2) rawQueries.push(wordsT.slice(0, 2).join(" "));
+                rawQueries.push(cleanT);
             }
 
             // Deduplicar búsquedas
-            searchQueries = searchQueries.filter(function(item, pos, self) {
-                return item && self.indexOf(item) === pos;
+            var searchQueries = rawQueries.filter(function(item, pos, self) {
+                return item && item.length > 2 && self.indexOf(item) === pos;
             });
 
             return searchAnimeAV1(searchQueries).then(function(slugs) {
                 if (slugs.length === 0) return [];
+
+                // Ordenar según temporada (sNum === 2 prioriza -ii / -2)
+                slugs.sort(function(a, b) {
+                    return scoreSlugForSeason(b, sNum) - scoreSlugForSeason(a, sNum);
+                });
 
                 function tryNextSlug(index) {
                     if (index >= slugs.length) return Promise.resolve([]);
