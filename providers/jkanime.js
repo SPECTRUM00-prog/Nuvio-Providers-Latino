@@ -108,18 +108,15 @@ function scoreSlugCandidate(slug, titles) {
     return score;
 }
 
-// Puntuador de temporadas universal
 function scoreSlugForSeason(slug, sNum, eNum) {
     var s = slug.toLowerCase();
     var isPart2Slug = s.includes("-part-2") || s.includes("-cour-2") || s.includes("-2nd-season");
     var hasSeasonIndicator = /(?:^|-)(ii|iii|iv|v|vi|2|3|4|5|6|season-|s2|s3|s4|part-|cour-|beyond|final)(?:-|$)/i.test(s);
 
-    // Caso 1: Anime continuo largo (como One Piece, Conan, Naruto) en slug base
     if (!hasSeasonIndicator && !isPart2Slug) {
-        return 50; // Siempre puntúa positivo para permitir cálculo de absoluteEp
+        return 50;
     }
 
-    // Caso 2: Anime con temporadas y split-cours
     var partBonus = (eNum > 11) ? (isPart2Slug ? 40 : -20) : (isPart2Slug ? -20 : 20);
 
     if (sNum === 1) {
@@ -314,10 +311,10 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
     if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("flaswish") || u.includes("fasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return resolveStreamWish(url);
-    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) return resolveVidHide(url);
+    if (u.includes("vidhide") || u.includes("vidhidevip") || u.includes("callistanise") || u.includes("minochinos") || u.includes("filelions")) return resolveVidHide(url);
     if (u.includes("mp4upload")) return resolveMp4upload(url);
     if (u.includes("streamtape")) return resolveStreamtape(url);
-    if (u.includes("/jkplayer/um") || u.includes("playmudos")) return resolveDesuMagi(url);
+    if (u.includes("/jkplayer/") || u.includes("playmudos")) return resolveDesuMagi(url);
     return Promise.resolve(null);
 }
 
@@ -374,7 +371,7 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 if (d && d.startsWith("http")) rawEmbeds.push(d);
             }
 
-            var umRegex = /https?:\/\/jkanime\.net\/jkplayer\/um[^\s"'<>]+/gi, umMatch;
+            var umRegex = /https?:\/\/jkanime\.net\/jkplayer\/(?:um|umv|uk)[^\s"'<>]+/gi, umMatch;
             while ((umMatch = umRegex.exec(html)) !== null) {
                 rawEmbeds.push(umMatch[0].replace(/&amp;/g, "&"));
             }
@@ -459,21 +456,20 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 return item && self.indexOf(item) === pos;
             });
 
+            // Extraer las dos primeras palabras clave raíz (ej. "Mushoku Tensei", "One Piece", "Kimetsu no Yaiba")
             var searchQueries = [];
-
-            // 1. Extraer palabras clave raíz prioritarias
-            for (var j = 0; j < uniqueTitles.length && searchQueries.length < 4; j++) {
+            for (var j = 0; j < uniqueTitles.length; j++) {
                 var rawT = uniqueTitles[j];
                 if (!rawT || hasJapaneseChars(rawT)) continue;
 
-                var clean = cleanTitle(rawT);
-                if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
-
+                var clean = cleanTitle(rawT).replace(/-/g, " ");
                 var words = clean.split(/\s+/).filter(function(w) { return w.length > 2; });
+
                 if (words.length >= 2) {
-                    var twoWords = words.slice(0, 2).join(" ");
+                    var twoWords = words[0] + " " + words[1];
                     if (searchQueries.indexOf(twoWords) === -1) searchQueries.push(twoWords);
                 }
+                if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
             }
 
             var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
@@ -481,12 +477,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return searchJkanime(searchQueries.slice(0, 3)).then(function(slugs) {
                 if (!slugs || slugs.length === 0) return [];
 
-                // 2. Filtrar y ordenar candidatos
+                // Filtrar y ordenar candidatos
                 var validSlugs = [];
                 for (var k = 0; k < slugs.length; k++) {
                     var sc = scoreSlugCandidate(slugs[k], uniqueTitles);
                     var seasonScore = scoreSlugForSeason(slugs[k], sNum, eNum);
-                    if (sc >= 25 && seasonScore >= 0) {
+                    if (sc >= 20 && seasonScore >= 0) {
                         validSlugs.push({ slug: slugs[k], score: sc + seasonScore });
                     }
                 }
@@ -510,14 +506,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/1/`);
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/ova/`);
                     } else {
-                        // 1. Caso Split-Cour (ej. Mushoku Tensei S2E15 en ficha Part 2 -> prueba /3/, /4/, /2/)
+                        // 1. Caso Split-Cour: si es Parte 2 y el episodio de TMDB es > 11 (ej. cap 15 -> /3/)
                         if (isPart2 && eNum > 11) {
                             pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 12}/`);
                             pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 11}/`);
                             pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 13}/`);
                         }
 
-                        // 2. Caso Shonen Continuo (ej. One Piece T22 E66 en slug "one-piece" -> /1128/)
+                        // 2. Caso Shonen Continuo: One Piece, Conan, Naruto (ej. T22 E66 -> /1128/)
                         if (!isSeasonSpecific && !isPart2 && sNum > 1 && absoluteEp !== eNum) {
                             pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${absoluteEp}/`);
                         }
@@ -525,7 +521,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         // 3. Caso Episodio Relativo directo
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum}/`);
 
-                        // 4. Fallback de episodio absoluto continuo
+                        // 4. Fallback de episodio absoluto
                         if (absoluteEp !== eNum && pageUrlsToTry.indexOf(`${BASE_URL}/${slugToTry}/${absoluteEp}/`) === -1) {
                             pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${absoluteEp}/`);
                         }
