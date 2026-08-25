@@ -44,14 +44,9 @@ function cleanTitle(str) {
         .trim();
 }
 
-function normalizeSlug(str) {
-    if (!str) return "";
-    return cleanTitle(str).replace(/\s+/g, "-");
-}
-
 function scoreCandidate(slug, titles, year) {
     if (!slug) return 0;
-    var cleanS = slug.toLowerCase().replace(/-/g, " ");
+    var cleanS = cleanTitle(slug);
     var score = 0;
 
     for (var i = 0; i < titles.length; i++) {
@@ -322,7 +317,9 @@ function resolvePlayerEndpoint(playerUrl) {
                 return null;
             });
         })
-        .catch(function() { return null; });
+        .catch(function() {
+            return null;
+        });
 }
 
 // ==========================================
@@ -341,39 +338,23 @@ function searchPelisplusSingle(query, isMovie) {
         }
     })
     .then(function(res) {
-        if (!res.ok) return "";
+        if (!res.ok) return [];
         return res.text();
     })
     .then(function(html) {
-        var targetPrefix = isMovie ? "/pelicula/" : "/serie/";
-        var regex = new RegExp(`href=["'](${targetPrefix}[^"']+)["']`, "gi");
+        var pattern = isMovie ? /href=["']((?:https?:\/\/[^"']*)?\/pelicula\/[^"']+)["']/gi
+                              : /href=["']((?:https?:\/\/[^"']*)?\/serie\/[^"']+)["']/gi;
         var matches = [];
         var match;
 
-        while ((match = regex.exec(html)) !== null) {
-            var path = match[1];
-            var slug = path.replace(targetPrefix, "").replace(/\/$/, "");
-            if (matches.indexOf(slug) === -1) {
+        while ((match = pattern.exec(html)) !== null) {
+            var fullPath = match[1];
+            var slug = fullPath.split(isMovie ? "/pelicula/" : "/serie/").pop().replace(/\/$/, "");
+            if (slug && matches.indexOf(slug) === -1) {
                 matches.push(slug);
             }
         }
-
-        if (matches.length > 0) return matches;
-
-        return fetch(`${BASE_URL}/search/${encodeURIComponent(query)}`, { headers: DEFAULT_HEADERS })
-            .then(function(r) { return r.text(); })
-            .then(function(altHtml) {
-                var altMatches = [];
-                var altMatch;
-                while ((altMatch = regex.exec(altHtml)) !== null) {
-                    var aPath = altMatch[1];
-                    var aSlug = aPath.replace(targetPrefix, "").replace(/\/$/, "");
-                    if (altMatches.indexOf(aSlug) === -1) {
-                        altMatches.push(aSlug);
-                    }
-                }
-                return altMatches;
-            });
+        return matches;
     })
     .catch(function() { return []; });
 }
@@ -472,7 +453,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             var titles = [];
             if (title) titles.push(title);
-            if (origTitle) titles.push(origTitle);
+            if (origTitle && origTitle !== title) titles.push(origTitle);
 
             var altArr = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
             for (var i = 0; i < altArr.length; i++) {
@@ -484,45 +465,35 @@ function getStreams(tmdbId, mediaType, season, episode) {
             });
 
             var searchQueries = [];
-            var directSlugs = [];
 
             for (var j = 0; j < uniqueTitles.length; j++) {
                 var rawT = uniqueTitles[j];
-                var cleanT = cleanTitle(rawT);
-                if (cleanT && searchQueries.indexOf(cleanT) === -1) searchQueries.push(cleanT);
+                if (!rawT) continue;
+
+                if (searchQueries.indexOf(rawT) === -1) searchQueries.push(rawT);
 
                 if (rawT.indexOf("&") !== -1) {
-                    var withY = cleanTitle(rawT.replace(/&/g, " y "));
-                    if (withY && searchQueries.indexOf(withY) === -1) searchQueries.push(withY);
+                    var withY = rawT.replace(/&/g, "y").replace(/\s+/g, " ").trim();
+                    if (searchQueries.indexOf(withY) === -1) searchQueries.push(withY);
 
-                    var withAnd = cleanTitle(rawT.replace(/&/g, " and "));
-                    if (withAnd && searchQueries.indexOf(withAnd) === -1) searchQueries.push(withAnd);
+                    var withAnd = rawT.replace(/&/g, "and").replace(/\s+/g, " ").trim();
+                    if (searchQueries.indexOf(withAnd) === -1) searchQueries.push(withAnd);
                 }
 
-                var shortT = cleanTitle(rawT.split(/[:\-\(]/)[0]);
+                var shortT = rawT.split(/[:\-\(]/)[0].trim();
                 if (shortT && searchQueries.indexOf(shortT) === -1) searchQueries.push(shortT);
-
-                var dSlug = normalizeSlug(rawT);
-                if (dSlug && directSlugs.indexOf(dSlug) === -1) directSlugs.push(dSlug);
             }
 
             return searchMultiQuery(searchQueries, isMovie).then(function(slugs) {
-                var candidateSlugs = slugs.slice();
+                if (!slugs || slugs.length === 0) return [];
 
-                for (var s = 0; s < directSlugs.length; s++) {
-                    var ds = directSlugs[s];
-                    if (candidateSlugs.indexOf(ds) === -1) candidateSlugs.push(ds);
-                }
-
-                if (candidateSlugs.length === 0) return [];
-
-                candidateSlugs.sort(function(a, b) {
+                slugs.sort(function(a, b) {
                     return scoreCandidate(b, uniqueTitles, year) - scoreCandidate(a, uniqueTitles, year);
                 });
 
                 function tryNextSlug(index) {
-                    if (index >= candidateSlugs.length) return Promise.resolve([]);
-                    var slug = candidateSlugs[index];
+                    if (index >= slugs.length) return Promise.resolve([]);
+                    var slug = slugs[index];
 
                     var pageUrlsToTry = [];
                     if (isMovie) {
