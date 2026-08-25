@@ -19,26 +19,23 @@ const DEFAULT_HEADERS = {
 
 function normalizeText(text) {
     if (!text) return "";
-    return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9\s-]/g, " ").replace(/\s+/g, "-").replace(/-+/g, "-").trim();
+    return text
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, " ")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
+        .trim();
 }
 
 function cleanSlug(text) {
     return normalizeText(text);
 }
 
-function hasJapaneseChars(str) {
-    return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
-}
-
-function isSlugSimilar(query, slug) {
-    if (!query || !slug) return false;
-    var cleanQ = normalizeText(query).replace(/-/g, " ");
-    var cleanS = normalizeText(slug).replace(/-/g, " ");
-    var qWords = cleanQ.split(/\s+/).filter(function(w) { return w.length > 2; });
-    for (var i = 0; i < qWords.length; i++) {
-        if (cleanS.includes(qWords[i])) return true;
-    }
-    return false;
+function isLatinOnly(str) {
+    if (!str) return false;
+    return /^[a-zA-Z0-9\s:!?,.'"\-_()]+$/.test(str);
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -60,13 +57,14 @@ function unpackDeanEdwards(p, a, c, k) {
 }
 
 function probeM3u8Quality(m3u8Url, headers) {
-    if (!m3u8Url || !m3u8Url.includes(".m3u8")) return Promise.resolve("720p");
+    if (!m3u8Url || !m3u8Url.includes(".m3u8")) return Promise.resolve("1080p");
     return fetch(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" })
         .then(function(res) { return res.ok ? res.text() : ""; })
         .then(function(text) {
             if (!text || !text.includes("#EXT-X-STREAM-INF")) {
                 if (m3u8Url.includes("1080")) return "1080p";
-                return "720p";
+                if (m3u8Url.includes("720")) return "720p";
+                return "1080p";
             }
             var maxH = 0, resRegex = /RESOLUTION=\d+x(\d+)/gi, match;
             while ((match = resRegex.exec(text)) !== null) {
@@ -76,9 +74,9 @@ function probeM3u8Quality(m3u8Url, headers) {
             if (maxH >= 1080) return "1080p";
             if (maxH >= 720) return "720p";
             if (maxH >= 480) return "480p";
-            return "720p";
+            return "1080p";
         })
-        .catch(function() { return "720p"; });
+        .catch(function() { return "1080p"; });
 }
 
 // ==========================================
@@ -144,33 +142,25 @@ function extractEmbedsFromSvelteKit(nodes) {
 // ==========================================
 
 function resolveZillaHls(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
-        redirect: "follow"
-    })
-    .then(function(res) {
-        var cType = res.headers.get("content-type") || "";
-        if (cType.includes("mpegurl") || res.url.includes(".m3u8")) {
-            return probeM3u8Quality(res.url, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
-                return { url: res.url, quality: q, headers: { "User-Agent": USER_AGENT, "Referer": url } };
-            });
-        }
-        return res.text().then(function(html) {
-            if (html.includes("#EXTM3U")) {
-                return { url: url, quality: "1080p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
-            }
-            var m3u8Match = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i) ||
-                            html.match(/file:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-            if (m3u8Match) {
-                var streamUrl = m3u8Match[1] || m3u8Match[0];
-                return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
-                    return { url: streamUrl, quality: q, headers: { "User-Agent": USER_AGENT, "Referer": url } };
-                });
-            }
-            return null;
-        });
-    })
-    .catch(function() { return null; });
+    // La URL directa del M3U8 es el endpoint sin '/play/'
+    var directM3u8 = url.replace("/play/", "/");
+    if (!directM3u8.endsWith(".m3u8") && !directM3u8.includes(".m3u8")) {
+        directM3u8 = directM3u8;
+    }
+
+    return probeM3u8Quality(directM3u8, { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }).then(function(q) {
+        return {
+            url: directM3u8,
+            quality: q || "1080p",
+            headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }
+        };
+    }).catch(function() {
+        return {
+            url: directM3u8,
+            quality: "1080p",
+            headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }
+        };
+    });
 }
 
 function resolveMp4upload(url) {
@@ -241,7 +231,7 @@ function searchAnimeAV1(queries) {
     function tryNextQuery(index) {
         if (index >= queryList.length) return Promise.resolve([]);
         var q = queryList[index];
-        if (!q || hasJapaneseChars(q)) return tryNextQuery(index + 1);
+        if (!q || !isLatinOnly(q)) return tryNextQuery(index + 1);
 
         console.log(`[AnimeAV1] Buscando: "${q}"`);
 
@@ -266,9 +256,7 @@ function searchAnimeAV1(queries) {
             for (var i = 0; i < json.length; i++) {
                 var item = json[i];
                 if (item && item.slug) {
-                    if (isSlugSimilar(q, item.slug) || isSlugSimilar(item.title, item.slug)) {
-                        slugs.push(item.slug);
-                    }
+                    slugs.push(item.slug);
                 }
             }
 
@@ -323,7 +311,6 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
 function getStreams(tmdbId, mediaType, season, episode) {
     console.log(`[AnimeAV1] Buscando TMDB ID ${tmdbId} (${mediaType})`);
     var isMovie = mediaType === "movie";
-    var sNum = parseInt(season, 10) || 1;
     var eNum = parseInt(episode, 10) || 1;
     var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
 
@@ -333,7 +320,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return res.json();
         })
         .then(function(meta) {
-            // Filtro estricto: Solo producciones de anime japonés
             var isJapanese = (meta.original_language === "ja") ||
                              (meta.origin_country && meta.origin_country.indexOf("JP") !== -1) ||
                              (meta.production_countries && meta.production_countries.some(function(c) { return c.iso_3166_1 === "JP"; }));
@@ -348,41 +334,43 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             var searchQueries = [];
 
-            if (title && !hasJapaneseChars(title)) {
+            // 1. Extraer palabras clave de títulos alternativos (priorizando Romaji)
+            var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
+            for (var i = 0; i < altTitles.length; i++) {
+                var alt = altTitles[i].title || "";
+                if (isLatinOnly(alt)) {
+                    searchQueries.push(alt);
+                    var wordsA = alt.split(/\s+/);
+                    if (wordsA.length > 2) {
+                        searchQueries.push(wordsA.slice(0, 2).join(" "));
+                        searchQueries.push(wordsA.slice(0, 3).join(" "));
+                    }
+                }
+            }
+
+            if (origTitle && isLatinOnly(origTitle)) {
+                searchQueries.push(origTitle);
+                var wordsO = origTitle.split(/\s+/);
+                if (wordsO.length > 2) searchQueries.push(wordsO.slice(0, 2).join(" "));
+            }
+
+            if (title && isLatinOnly(title)) {
                 searchQueries.push(title);
                 var wordsT = title.split(/\s+/);
                 if (wordsT.length > 2) searchQueries.push(wordsT.slice(0, 2).join(" "));
             }
 
-            var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
-            for (var i = 0; i < altTitles.length; i++) {
-                var alt = altTitles[i].title || "";
-                if (alt && !hasJapaneseChars(alt)) {
-                    searchQueries.push(alt);
-                    var wordsA = alt.split(/\s+/);
-                    if (wordsA.length > 2) searchQueries.push(wordsA.slice(0, 2).join(" "));
-                }
-            }
-
-            if (origTitle && origTitle !== title && !hasJapaneseChars(origTitle)) searchQueries.push(origTitle);
-
+            // Deduplicar búsquedas
             searchQueries = searchQueries.filter(function(item, pos, self) {
                 return item && self.indexOf(item) === pos;
             });
 
-            var cleanT = cleanSlug(title);
-
             return searchAnimeAV1(searchQueries).then(function(slugs) {
-                var candidateSlugs = slugs.slice();
-                if (cleanT && candidateSlugs.indexOf(cleanT) === -1 && isSlugSimilar(title, cleanT)) {
-                    candidateSlugs.push(cleanT);
-                }
-
-                if (candidateSlugs.length === 0) return [];
+                if (slugs.length === 0) return [];
 
                 function tryNextSlug(index) {
-                    if (index >= candidateSlugs.length) return Promise.resolve([]);
-                    var s = candidateSlugs[index];
+                    if (index >= slugs.length) return Promise.resolve([]);
+                    var s = slugs[index];
 
                     return extractStreamsFromEpisodeData(s, eNum).then(function(streams) {
                         if (streams && streams.length > 0) return streams;
