@@ -1,6 +1,6 @@
 {
   "name": "Latino Providers",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "scrapers": [
     {
       "id": "cinecalidad",
@@ -76,6 +76,17 @@
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/animeav1.js",
+      "enabled": true,
+      "contentLanguage": ["es", "ja"]
+    },
+    {
+      "id": "animejara",
+      "name": "AnimeJara",
+      "description": "Anime en emisión y finalizados en Sub, Latino y Castellano (StreamWish, Filemoon, VidHide, MP4Upload, Streamtape, YourUpload, Uqload, Mixdrop).",
+      "version": "1.0.0",
+      "author": "SPECTRUM00-prog",
+      "supportedTypes": ["movie", "tv", "series"],
+      "filename": "providers/animejara.js",
       "enabled": true,
       "contentLanguage": ["es", "ja"]
     },
