@@ -14,8 +14,13 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DECODIFICADOR BASE64 PURO
+// UTILIDADES Y ALGORITMO UNIVERSAL
 // ==========================================
+
+function toRoman(num) {
+    var romans = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
+    return romans[num] || String(num);
+}
 
 function decodeBase64Safe(input) {
     if (!input) return "";
@@ -107,49 +112,62 @@ function scoreSlugCandidate(slug, titles) {
     return score;
 }
 
-function scoreSlugForSeason(slug, sNum) {
+// Puntuador universal de temporadas y split-cours
+function scoreSlugForSeason(slug, sNum, eNum) {
     var s = slug.toLowerCase();
+    var roman = toRoman(sNum);
+    var isPart2Slug = s.includes("-part-2") || s.includes("-cour-2") || s.includes("-2nd-season");
+
+    // Si el episodio es > 12, priorizar fuertemente las fichas de Parte 2
+    var partBonus = 0;
+    if (eNum > 11) {
+        partBonus = isPart2Slug ? 30 : -20;
+    } else {
+        partBonus = isPart2Slug ? -25 : 15;
+    }
 
     if (sNum === 1) {
         if (/(?:^|-)(ii|iii|iv|v|2|3|4|5|season-2|season-3|season-4|beyond|final)(?:-|$)/i.test(s)) {
-            if (s.includes("-2nd-season") && !s.includes("-ii")) return 15;
+            if (s.includes("-2nd-season") && !s.includes("-ii")) return 15 + partBonus;
             return -40;
         }
-        return 30;
+        return 30 + partBonus;
     }
 
     if (sNum === 2) {
         if (/(?:^|-)(iii|iv|v|3|4|5|season-3|season-4)(?:-|$)/i.test(s)) return -40;
-        if (/(?:^|-)(ii|2nd|season-2|s2|2|beyond)(?:-|$)/i.test(s)) return 50;
-        return 0;
+        if (/(?:^|-)(ii|2nd|season-2|s2|2|beyond)(?:-|$)/i.test(s)) return 50 + partBonus;
+        return partBonus;
     }
 
     if (sNum === 3) {
         if (/(?:^|-)(iv|v|4|5|season-4|final)(?:-|$)/i.test(s)) return -40;
-        if (/(?:^|-)(iii|3rd|season-3|s3|3)(?:-|$)/i.test(s)) return 60;
-        return 0;
+        if (/(?:^|-)(iii|3rd|season-3|s3|3)(?:-|$)/i.test(s)) return 60 + partBonus;
+        return partBonus;
     }
 
     if (sNum === 4) {
-        if (/(?:^|-)(iv|4th|season-4|s4|4|final-season)(?:-|$)/i.test(s)) return 60;
-        return 0;
+        if (/(?:^|-)(iv|4th|season-4|s4|4|final-season)(?:-|$)/i.test(s)) return 60 + partBonus;
+        return partBonus;
     }
 
-    return 0;
+    return partBonus;
 }
 
 function getSeasonSlugVariants(baseSlug, sNum) {
-    if (sNum === 1) return [baseSlug, `${baseSlug}-2nd-season`];
-    var suffixes = [
-        sNum === 2 ? "-ii" : (sNum === 3 ? "-iii" : (sNum === 4 ? "-iv" : `-${sNum}`)),
-        sNum === 2 ? "-2nd-season" : (sNum === 3 ? "-3rd-season" : `-${sNum}th-season`),
-        `-season-${sNum}`,
-        `-s${sNum}`,
-        `-${sNum}`,
-        sNum === 2 ? "-part-2" : (sNum === 3 ? "-part-3" : `-${sNum}`),
-        sNum === 2 ? "-beyond" : `-${sNum}`
+    if (sNum === 1) return [baseSlug, `${baseSlug}-2nd-season`, `${baseSlug}-part-2`];
+    var roman = toRoman(sNum);
+    var numOrdinal = sNum === 2 ? "2nd" : (sNum === 3 ? "3rd" : sNum + "th");
+
+    return [
+        `${baseSlug}-${roman}`,
+        `${baseSlug}-${roman}-part-2`,
+        `${baseSlug}-${numOrdinal}-season`,
+        `${baseSlug}-season-${sNum}`,
+        `${baseSlug}-${sNum}`,
+        `${baseSlug}-s${sNum}`,
+        `${baseSlug}-part-${sNum}`
     ];
-    return suffixes.map(function(suf) { return baseSlug + suf; });
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -480,7 +498,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 if (sNum > 1 && !isMovie) {
                     searchQueries.push(`${clean} ${sNum}`);
                     searchQueries.push(`${clean} Season ${sNum}`);
-                    searchQueries.push(`${clean} Part ${sNum}`);
                 }
 
                 var baseSlug = cleanSlug(rawT);
@@ -501,11 +518,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                // Filtrar por coincidencia real (score >= 35) y temporada correcta
+                // Filtrar por coincidencia real (score >= 35) y temporada/cour adecuado
                 var validSlugs = [];
                 for (var k = 0; k < candidateSlugs.length; k++) {
                     var sc = scoreSlugCandidate(candidateSlugs[k], uniqueTitles);
-                    var seasonScore = scoreSlugForSeason(candidateSlugs[k], sNum);
+                    var seasonScore = scoreSlugForSeason(candidateSlugs[k], sNum, eNum);
                     if (sc >= 35 && seasonScore >= 0) {
                         validSlugs.push({ slug: candidateSlugs[k], score: sc + seasonScore });
                     }
@@ -530,6 +547,15 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/1/`);
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/ova/`);
                     } else {
+                        // 1. Si es una Parte 2 y el episodio es > 11, probar desfases universales de Cour
+                        var isPart2 = slugToTry.includes("-part-2") || slugToTry.includes("-2nd-season") || slugToTry.includes("-cour-2");
+                        if (isPart2 && eNum > 11) {
+                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 12}/`);
+                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 11}/`);
+                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 13}/`);
+                        }
+
+                        // 2. Probar episodio directo
                         pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${targetEp}/`);
                         if (targetEp !== eNum) {
                             pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum}/`);
