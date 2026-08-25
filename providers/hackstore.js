@@ -16,7 +16,7 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DESEMPAQUETADOR
+// UTILIDADES Y NORMALIZACIÓN
 // ==========================================
 
 function normalizeText(text) {
@@ -28,6 +28,17 @@ function normalizeText(text) {
         .replace(/[^a-z0-9\s-]/g, " ")
         .replace(/\s+/g, "-")
         .replace(/-+/g, "-")
+        .trim();
+}
+
+function cleanTitle(str) {
+    if (!str) return "";
+    return str
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9\s]+/g, " ")
+        .replace(/\s+/g, " ")
         .trim();
 }
 
@@ -115,7 +126,7 @@ function resolveVimeos(url) {
     .then(function(html) {
         var packMatch = html.match(/eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
+            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8Match) {
                 var streamUrl = m3u8Match[1];
@@ -157,7 +168,7 @@ function resolveGoodStream(url) {
         }
         var packMatch = html.match(/eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
+            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
             var m3u8 = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8) {
                 return {
@@ -187,7 +198,7 @@ function resolveStreamWish(url) {
     .then(function(html) {
         var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-z]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
+            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8Match) {
                 return {
@@ -219,7 +230,7 @@ function resolveVidHide(url) {
     .then(function(html) {
         var packMatch = html.match(/eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
+            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8Match) {
                 return {
@@ -243,7 +254,7 @@ function resolveFilemoon(url) {
     .then(function(html) {
         var packMatch = html.match(/eval\(function\(p,a,c,k,e,[dr]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2]), parseInt(packMatch[3]), packMatch[4].split("|"));
+            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
             if (m3u8Match) {
                 return {
@@ -321,6 +332,37 @@ function getPostId(slugs, postType) {
     return tryNext(0);
 }
 
+function searchHackstoreApi(queries) {
+    var qList = Array.isArray(queries) ? queries : [queries];
+    
+    function tryNext(index) {
+        if (index >= qList.length) return Promise.resolve([]);
+        var q = qList[index];
+        var searchUrl = `${API_URL}/search?q=${encodeURIComponent(q)}`;
+
+        return fetch(searchUrl, { headers: DEFAULT_HEADERS })
+            .then(function(res) {
+                if (!res.ok) return [];
+                return res.json();
+            })
+            .then(function(json) {
+                var items = (json && json.data && Array.isArray(json.data)) ? json.data : [];
+                var slugs = [];
+                for (var i = 0; i < items.length; i++) {
+                    var s = items[i].slug || items[i].post_name;
+                    if (s && slugs.indexOf(s) === -1) slugs.push(s);
+                }
+                if (slugs.length > 0) return slugs;
+                return tryNext(index + 1);
+            })
+            .catch(function() {
+                return tryNext(index + 1);
+            });
+    }
+
+    return tryNext(0);
+}
+
 function getPlayerEmbeds(postId) {
     var endpoint = `${API_URL}/player?post_id=${postId}`;
     return fetch(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" })
@@ -341,7 +383,10 @@ function getPlayerEmbeds(postId) {
 function getStreams(tmdbId, mediaType, season, episode) {
     console.log(`[Hackstore] Buscando TMDB ID ${tmdbId} (${mediaType})`);
     var isMovie = mediaType === "movie";
-    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX`;
+    var sNum = parseInt(season, 10) || 1;
+    var eNum = parseInt(episode, 10) || 1;
+    var epPadded = String(eNum).padStart(2, "0");
+    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
 
     return fetch(tmdbUrl)
         .then(function(res) {
@@ -353,28 +398,87 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var origTitle = isMovie ? meta.original_title : meta.original_name;
             var year = (isMovie ? meta.release_date : meta.first_air_date || "").slice(0, 4);
 
-            var slugClean = normalizeText(title);
-            var origSlugClean = normalizeText(origTitle);
+            var titles = [];
+            if (title) titles.push(title);
+            if (origTitle && origTitle !== title) titles.push(origTitle);
 
-            var candidateSlugs = [];
-
-            if (isMovie) {
-                candidateSlugs.push(slugClean);
-                if (year) candidateSlugs.push(`${slugClean}-${year}`);
-                if (origSlugClean && origSlugClean !== slugClean) {
-                    candidateSlugs.push(origSlugClean);
-                    if (year) candidateSlugs.push(`${origSlugClean}-${year}`);
-                }
-                return getPostId(candidateSlugs, "movies");
-            } else {
-                candidateSlugs.push(`${slugClean}-temporada-${season}-episodio-${episode}`);
-                candidateSlugs.push(`${slugClean}-temporada-${season}-capitulo-${episode}`);
-                candidateSlugs.push(`${slugClean}-${season}x${episode}`);
-                if (origSlugClean && origSlugClean !== slugClean) {
-                    candidateSlugs.push(`${origSlugClean}-temporada-${season}-episodio-${episode}`);
-                }
-                return getPostId(candidateSlugs, "episodes");
+            var altArr = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
+            for (var i = 0; i < altArr.length; i++) {
+                if (altArr[i].title) titles.push(altArr[i].title);
             }
+
+            var uniqueTitles = titles.filter(function(item, pos, self) {
+                return item && self.indexOf(item) === pos;
+            });
+
+            var searchQueries = [];
+            var baseSlugs = [];
+
+            for (var j = 0; j < uniqueTitles.length; j++) {
+                var rawT = uniqueTitles[j];
+                if (!rawT) continue;
+
+                var clean = cleanTitle(rawT);
+                if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
+
+                var sNorm = normalizeText(rawT);
+                if (sNorm && baseSlugs.indexOf(sNorm) === -1) baseSlugs.push(sNorm);
+
+                if (rawT.indexOf("&") !== -1) {
+                    var withY = normalizeText(rawT.replace(/&/g, " y "));
+                    if (withY && baseSlugs.indexOf(withY) === -1) baseSlugs.push(withY);
+
+                    var withAnd = normalizeText(rawT.replace(/&/g, " and "));
+                    if (withAnd && baseSlugs.indexOf(withAnd) === -1) baseSlugs.push(withAnd);
+                }
+
+                var shortNorm = normalizeText(rawT.split(/[:\-\(]/)[0]);
+                if (shortNorm && baseSlugs.indexOf(shortNorm) === -1) baseSlugs.push(shortNorm);
+            }
+
+            // Construir candidatos directos según tipo
+            var candidateSlugs = [];
+            for (var b = 0; b < baseSlugs.length; b++) {
+                var bSlug = baseSlugs[b];
+                if (isMovie) {
+                    candidateSlugs.push(bSlug);
+                    if (year) candidateSlugs.push(`${bSlug}-${year}`);
+                } else {
+                    candidateSlugs.push(`${bSlug}-temporada-${sNum}-episodio-${eNum}`);
+                    candidateSlugs.push(`${bSlug}-temporada-${sNum}-capitulo-${eNum}`);
+                    candidateSlugs.push(`${bSlug}-temporada-${sNum}-episodio-${epPadded}`);
+                    candidateSlugs.push(`${bSlug}-temporada-${sNum}-capitulo-${epPadded}`);
+                    candidateSlugs.push(`${bSlug}-${sNum}x${eNum}`);
+                    candidateSlugs.push(`${bSlug}-${sNum}x${epPadded}`);
+                }
+            }
+
+            // Primero intentar con los slugs directos
+            var postType = isMovie ? "movies" : "episodes";
+            return getPostId(candidateSlugs, postType).then(function(postId) {
+                if (postId) return postId;
+
+                // Fallback: Si no coincide ningún slug, consultar API de búsqueda
+                return searchHackstoreApi(searchQueries).then(function(foundSlugs) {
+                    if (!foundSlugs.length) return null;
+
+                    var fallbackSlugs = [];
+                    for (var f = 0; f < foundSlugs.length; f++) {
+                        var fSlug = foundSlugs[f];
+                        if (isMovie) {
+                            fallbackSlugs.push(fSlug);
+                            if (year) fallbackSlugs.push(`${fSlug}-${year}`);
+                        } else {
+                            fallbackSlugs.push(`${fSlug}-temporada-${sNum}-episodio-${eNum}`);
+                            fallbackSlugs.push(`${fSlug}-temporada-${sNum}-capitulo-${eNum}`);
+                            fallbackSlugs.push(`${fSlug}-temporada-${sNum}-episodio-${epPadded}`);
+                            fallbackSlugs.push(`${fSlug}-${sNum}x${eNum}`);
+                        }
+                    }
+
+                    return getPostId(fallbackSlugs, postType);
+                });
+            });
         })
         .then(function(postId) {
             if (!postId) {
