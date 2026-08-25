@@ -14,22 +14,40 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DESEMPAQUETADOR
+// UTILIDADES Y NORMALIZACIÓN
 // ==========================================
 
-function normalizeSearchQuery(text) {
+function normalizeText(text) {
     if (!text) return "";
     return text
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-zA-Z0-9\s]/g, " ")
-        .replace(/\s+/g, " ")
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, " ")
+        .replace(/\s+/g, "-")
+        .replace(/-+/g, "-")
         .trim();
 }
 
-function hasValidChars(str) {
-    if (!str || str.length < 2) return false;
-    return /[a-zA-Z0-9]/.test(str);
+function cleanSlug(text) {
+    return normalizeText(text);
+}
+
+function hasJapaneseChars(str) {
+    if (!str) return false;
+    return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
+}
+
+function isSlugSimilar(query, slug) {
+    if (!query || !slug) return false;
+    var cleanQ = normalizeText(query).replace(/-/g, " ");
+    var cleanS = normalizeText(slug).replace(/-/g, " ");
+    var qWords = cleanQ.split(/\s+/).filter(function(w) { return w.length > 2; });
+    if (qWords.length === 0) return cleanS.includes(cleanQ);
+    for (var i = 0; i < qWords.length; i++) {
+        if (cleanS.includes(qWords[i])) return true;
+    }
+    return false;
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -51,14 +69,13 @@ function unpackDeanEdwards(p, a, c, k) {
 }
 
 function probeM3u8Quality(m3u8Url, headers) {
-    if (!m3u8Url || !m3u8Url.includes(".m3u8")) return Promise.resolve("1080p");
+    if (!m3u8Url || !m3u8Url.includes(".m3u8")) return Promise.resolve("720p");
     return fetch(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" })
         .then(function(res) { return res.ok ? res.text() : ""; })
         .then(function(text) {
             if (!text || !text.includes("#EXT-X-STREAM-INF")) {
                 if (m3u8Url.includes("1080")) return "1080p";
-                if (m3u8Url.includes("720")) return "720p";
-                return "1080p";
+                return "720p";
             }
             var maxH = 0, resRegex = /RESOLUTION=\d+x(\d+)/gi, match;
             while ((match = resRegex.exec(text)) !== null) {
@@ -68,28 +85,22 @@ function probeM3u8Quality(m3u8Url, headers) {
             if (maxH >= 1080) return "1080p";
             if (maxH >= 720) return "720p";
             if (maxH >= 480) return "480p";
-            return "1080p";
+            return "720p";
         })
-        .catch(function() { return "1080p"; });
+        .catch(function() { return "720p"; });
 }
 
-function scoreSlugForSeason(slug, sNum) {
-    var s = slug.toLowerCase();
-    if (sNum === 1) {
-        if (s.includes("-ii") || s.includes("-iii") || s.includes("-iv") || s.includes("-2") || s.includes("-3") || s.includes("-beyond") || s.includes("-part-2")) return -10;
-        return 10;
-    }
-    var patterns = {
-        2: ["-ii", "-2", "-2nd", "-beyond", "-season-2", "-2nd-season", "-s2"],
-        3: ["-iii", "-3", "-3rd", "-part-2", "-part-ii", "-season-3", "-3rd-season", "-s3"],
-        4: ["-iv", "-4", "-4th", "-final-season", "-season-4"],
-        5: ["-v", "-5", "-5th", "-season-5"]
-    }[sNum] || [`-${sNum}`];
-
-    for (var i = 0; i < patterns.length; i++) {
-        if (s.includes(patterns[i])) return 20 - i;
-    }
-    return 0;
+function getSeasonSlugVariants(baseSlug, sNum) {
+    if (sNum === 1) return [baseSlug];
+    var suffixes = [
+        `-${sNum}`,
+        `-season-${sNum}`,
+        `-s${sNum}`,
+        sNum === 2 ? "-2nd-season" : (sNum === 3 ? "-3rd-season" : `-${sNum}th-season`),
+        sNum === 2 ? "-ii" : (sNum === 3 ? "-iii" : (sNum === 4 ? "-iv" : `-${sNum}`)),
+        sNum === 2 ? "-part-2" : (sNum === 3 ? "-part-3" : `-${sNum}`)
+    ];
+    return suffixes.map(function(suf) { return baseSlug + suf; });
 }
 
 // ==========================================
@@ -110,31 +121,38 @@ function extractEmbedsFromSvelteKit(nodes) {
             if (item && typeof item === "object" && typeof item.embeds === "number") {
                 var embedsObj = dataArr[item.embeds];
                 if (embedsObj && typeof embedsObj === "object") {
-                    
-                    // Extraer idiomas soportados (SUB, DUB/LAT, ESP, etc.)
-                    var langKeys = Object.keys(embedsObj);
-                    for (var l = 0; l < langKeys.length; l++) {
-                        var lKey = langKeys[l];
-                        var langLabel = (lKey === "DUB" || lKey === "LAT") ? "LAT" : "SUB";
-                        var listIdx = embedsObj[lKey];
-
-                        if (typeof listIdx === "number") {
-                            var srvList = dataArr[listIdx];
-                            if (Array.isArray(srvList)) {
-                                for (var j = 0; j < srvList.length; j++) {
-                                    var srvItem = dataArr[srvList[j]];
-                                    if (srvItem && typeof srvItem === "object") {
-                                        var sName = dataArr[srvItem.server] || "HLS";
-                                        var sUrl = dataArr[srvItem.url] || "";
-                                        if (sUrl && typeof sUrl === "string" && sUrl.startsWith("http")) {
-                                            results.push({ lang: langLabel, server: sName, url: sUrl });
-                                        }
+                    // 1. Extraer SUB
+                    if (typeof embedsObj.SUB === "number") {
+                        var subList = dataArr[embedsObj.SUB];
+                        if (Array.isArray(subList)) {
+                            for (var j = 0; j < subList.length; j++) {
+                                var srvItem = dataArr[subList[j]];
+                                if (srvItem && typeof srvItem === "object") {
+                                    var sName = dataArr[srvItem.server] || "HLS";
+                                    var sUrl = dataArr[srvItem.url] || "";
+                                    if (sUrl && typeof sUrl === "string" && sUrl.startsWith("http")) {
+                                        results.push({ lang: "SUB", server: sName, url: sUrl });
                                     }
                                 }
                             }
                         }
                     }
-
+                    // 2. Extraer DUB (Latino)
+                    if (typeof embedsObj.DUB === "number") {
+                        var dubList = dataArr[embedsObj.DUB];
+                        if (Array.isArray(dubList)) {
+                            for (var k = 0; k < dubList.length; k++) {
+                                var dItem = dataArr[dubList[k]];
+                                if (dItem && typeof dItem === "object") {
+                                    var dName = dataArr[dItem.server] || "HLS";
+                                    var dUrl = dataArr[dItem.url] || "";
+                                    if (dUrl && typeof dUrl === "string" && dUrl.startsWith("http")) {
+                                        results.push({ lang: "LAT", server: dName, url: dUrl });
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -148,20 +166,33 @@ function extractEmbedsFromSvelteKit(nodes) {
 // ==========================================
 
 function resolveZillaHls(url) {
-    var directM3u8 = url.replace("/play/", "/");
-    return probeM3u8Quality(directM3u8, { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }).then(function(q) {
-        return {
-            url: directM3u8,
-            quality: q || "1080p",
-            headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }
-        };
-    }).catch(function() {
-        return {
-            url: directM3u8,
-            quality: "1080p",
-            headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }
-        };
-    });
+    return fetch(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
+        redirect: "follow"
+    })
+    .then(function(res) {
+        var cType = res.headers.get("content-type") || "";
+        if (cType.includes("mpegurl") || res.url.includes(".m3u8")) {
+            return probeM3u8Quality(res.url, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
+                return { url: res.url, quality: q, headers: { "User-Agent": USER_AGENT, "Referer": url } };
+            });
+        }
+        return res.text().then(function(html) {
+            if (html.includes("#EXTM3U")) {
+                return { url: url, quality: "1080p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+            }
+            var m3u8Match = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i) ||
+                            html.match(/file:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+            if (m3u8Match) {
+                var streamUrl = m3u8Match[1] || m3u8Match[0];
+                return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
+                    return { url: streamUrl, quality: q, headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                });
+            }
+            return null;
+        });
+    })
+    .catch(function() { return null; });
 }
 
 function resolveMp4upload(url) {
@@ -214,25 +245,6 @@ function resolveStreamWish(url) {
         .catch(function() { return null; });
 }
 
-function resolveVidHide(url) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` } })
-        .then(function(res) { return res.text(); })
-        .then(function(html) {
-            var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-            if (packMatch) {
-                var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-                var m3uMatch = unpacked.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
-                if (m3uMatch) {
-                    return probeM3u8Quality(m3uMatch[0]).then(function(q) {
-                        return { url: m3uMatch[0], quality: q || "1080p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
-                    });
-                }
-            }
-            return null;
-        })
-        .catch(function() { return null; });
-}
-
 function dispatchResolver(embed) {
     if (!embed || !embed.url) return Promise.resolve(null);
     var u = embed.url.toLowerCase();
@@ -276,19 +288,6 @@ function dispatchResolver(embed) {
         });
     }
 
-    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) {
-        return resolveVidHide(embed.url).then(function(res) {
-            if (!res) return null;
-            return {
-                name: "AnimeAV1",
-                title: `${res.quality || "1080p"} · ${embed.lang} · VidHide`,
-                quality: res.quality || "1080p",
-                url: res.url,
-                headers: res.headers || {}
-            };
-        });
-    }
-
     return Promise.resolve(null);
 }
 
@@ -302,7 +301,7 @@ function searchAnimeAV1(queries) {
     function tryNextQuery(index) {
         if (index >= queryList.length) return Promise.resolve([]);
         var q = queryList[index];
-        if (!q || !hasValidChars(q)) return tryNextQuery(index + 1);
+        if (!q || hasJapaneseChars(q)) return tryNextQuery(index + 1);
 
         console.log(`[AnimeAV1] Buscando: "${q}"`);
 
@@ -327,14 +326,13 @@ function searchAnimeAV1(queries) {
             for (var i = 0; i < json.length; i++) {
                 var item = json[i];
                 if (item && item.slug) {
-                    slugs.push(item.slug);
+                    if (isSlugSimilar(q, item.slug) || isSlugSimilar(item.title, item.slug)) {
+                        slugs.push(item.slug);
+                    }
                 }
             }
 
-            if (slugs.length > 0) {
-                console.log(`[AnimeAV1] Slugs encontrados para "${q}": ${slugs.length}`);
-                return slugs;
-            }
+            if (slugs.length > 0) return slugs;
             return tryNextQuery(index + 1);
         })
         .catch(function() {
@@ -357,6 +355,7 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
         .then(function(json) {
             var embeds = extractEmbedsFromSvelteKit(json.nodes);
             if (embeds.length === 0) {
+                console.log("[AnimeAV1] No se encontraron reproductores en el episodio");
                 return [];
             }
 
@@ -371,7 +370,8 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
         .then(function(results) {
             return results.filter(function(st) { return st !== null; });
         })
-        .catch(function() {
+        .catch(function(err) {
+            console.log(`[AnimeAV1] Error extrayendo capítulo: ${err.message}`);
             return [];
         });
 }
@@ -405,59 +405,68 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            var rawQueries = [];
+            var searchQueries = [];
+            var directSlugs = [];
 
-            // 1. Títulos alternativos (Romaji / Inglés)
+            // 1. Título principal
+            if (title && !hasJapaneseChars(title)) {
+                searchQueries.push(title);
+                var wordsT = title.split(/\s+/);
+                if (wordsT.length > 2) searchQueries.push(wordsT.slice(0, 2).join(" "));
+                
+                var baseSlugT = cleanSlug(title);
+                if (baseSlugT) {
+                    directSlugs = directSlugs.concat(getSeasonSlugVariants(baseSlugT, sNum));
+                }
+            }
+
+            // 2. Títulos alternativos (Romaji / Inglés)
             var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
             for (var i = 0; i < altTitles.length; i++) {
                 var alt = altTitles[i].title || "";
-                var cleanAlt = normalizeSearchQuery(alt);
-                if (hasValidChars(cleanAlt)) {
-                    var wordsA = cleanAlt.split(/\s+/);
-                    if (wordsA.length >= 2) rawQueries.push(wordsA.slice(0, 2).join(" "));
-                    if (wordsA.length >= 3) rawQueries.push(wordsA.slice(0, 3).join(" "));
-                    rawQueries.push(cleanAlt);
+                if (alt && !hasJapaneseChars(alt)) {
+                    searchQueries.push(alt);
+                    var wordsA = alt.split(/\s+/);
+                    if (wordsA.length > 2) searchQueries.push(wordsA.slice(0, 2).join(" "));
+                    
+                    var baseSlugAlt = cleanSlug(alt);
+                    if (baseSlugAlt) {
+                        directSlugs = directSlugs.concat(getSeasonSlugVariants(baseSlugAlt, sNum));
+                    }
                 }
             }
 
-            // 2. Título Original
-            if (origTitle) {
-                var cleanO = normalizeSearchQuery(origTitle);
-                if (hasValidChars(cleanO)) {
-                    var wordsO = cleanO.split(/\s+/);
-                    if (wordsO.length >= 2) rawQueries.push(wordsO.slice(0, 2).join(" "));
-                    rawQueries.push(cleanO);
+            // 3. Título Original
+            if (origTitle && origTitle !== title && !hasJapaneseChars(origTitle)) {
+                searchQueries.push(origTitle);
+                var baseSlugO = cleanSlug(origTitle);
+                if (baseSlugO) {
+                    directSlugs = directSlugs.concat(getSeasonSlugVariants(baseSlugO, sNum));
                 }
             }
 
-            // 3. Título Localizado en Español
-            if (title) {
-                var cleanT = normalizeSearchQuery(title);
-                if (hasValidChars(cleanT)) {
-                    var wordsT = cleanT.split(/\s+/);
-                    if (wordsT.length >= 2) rawQueries.push(wordsT.slice(0, 2).join(" "));
-                    rawQueries.push(cleanT);
-                }
-            }
-
-            // Deduplicar búsquedas
-            var searchQueries = rawQueries.filter(function(item, pos, self) {
-                return item && item.length > 2 && self.indexOf(item) === pos;
+            searchQueries = searchQueries.filter(function(item, pos, self) {
+                return item && self.indexOf(item) === pos;
             });
 
             return searchAnimeAV1(searchQueries).then(function(slugs) {
-                if (slugs.length === 0) return [];
+                var candidateSlugs = slugs.slice();
 
-                // Ordenar según temporada
-                slugs.sort(function(a, b) {
-                    return scoreSlugForSeason(b, sNum) - scoreSlugForSeason(a, sNum);
-                });
+                // Incorporar slugs directos al final de la lista si no estaban
+                for (var s = 0; s < directSlugs.length; s++) {
+                    var dSlug = directSlugs[s];
+                    if (dSlug && candidateSlugs.indexOf(dSlug) === -1) {
+                        candidateSlugs.push(dSlug);
+                    }
+                }
+
+                if (candidateSlugs.length === 0) return [];
 
                 function tryNextSlug(index) {
-                    if (index >= slugs.length) return Promise.resolve([]);
-                    var s = slugs[index];
+                    if (index >= candidateSlugs.length) return Promise.resolve([]);
+                    var slugToTry = candidateSlugs[index];
 
-                    return extractStreamsFromEpisodeData(s, eNum).then(function(streams) {
+                    return extractStreamsFromEpisodeData(slugToTry, eNum).then(function(streams) {
                         if (streams && streams.length > 0) return streams;
                         return tryNextSlug(index + 1);
                     });
