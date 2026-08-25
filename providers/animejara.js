@@ -140,11 +140,12 @@ function getServerLabel(url) {
     if (!url) return "Online";
     var u = url.toLowerCase();
     if (u.includes("byse") || u.includes("filemoon")) return "Filemoon";
-    if (u.includes("hgcloud") || u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish")) return "StreamWish";
+    if (u.includes("hgcloud") || u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("audinifer") || u.includes("vibuxer")) return "StreamWish";
     if (u.includes("vidhide") || u.includes("filelions") || u.includes("minochinos") || u.includes("callistanise")) return "VidHide";
     if (u.includes("mp4upload")) return "MP4Upload";
     if (u.includes("streamtape")) return "Streamtape";
     if (u.includes("yourupload")) return "YourUpload";
+    if (u.includes("uqload")) return "Uqload";
     return "Online";
 }
 
@@ -300,16 +301,30 @@ function resolveYourUpload(url) {
         .catch(function() { return null; });
 }
 
+function resolveUqload(url) {
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" })
+        .then(function(res) { return res.text(); })
+        .then(function(html) {
+            var direct = html.match(/sources:\s*\[["'](https?:\/\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i);
+            if (direct) {
+                return { url: direct[1], quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+            }
+            return null;
+        })
+        .catch(function() { return null; });
+}
+
 function dispatchResolver(rawUrl) {
     if (!rawUrl) return Promise.resolve(null);
     var u = rawUrl.toLowerCase();
 
-    if (u.includes("hgcloud") || u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish")) return resolveStreamWish(rawUrl);
+    if (u.includes("hgcloud") || u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("audinifer") || u.includes("vibuxer")) return resolveStreamWish(rawUrl);
     if (u.includes("byse") || u.includes("filemoon")) return resolveFilemoon(rawUrl);
     if (u.includes("vidhide") || u.includes("filelions") || u.includes("minochinos") || u.includes("callistanise")) return resolveVidHide(rawUrl);
     if (u.includes("mp4upload")) return resolveMp4upload(rawUrl);
     if (u.includes("streamtape")) return resolveStreamtape(rawUrl);
     if (u.includes("yourupload")) return resolveYourUpload(rawUrl);
+    if (u.includes("uqload")) return resolveUqload(rawUrl);
 
     return Promise.resolve(null);
 }
@@ -356,8 +371,8 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
     if (isMovie) {
         pageUrls.push(`${BASE_URL}/movie/${animeItem.slug}`);
     } else {
-        pageUrls.push(`${BASE_URL}/episode/${animeItem.slug}-${sNum}x${eNum}`);
         pageUrls.push(`${BASE_URL}/episode/${animeItem.slug}-${sNum}x${eNum}/`);
+        pageUrls.push(`${BASE_URL}/episode/${animeItem.slug}-${sNum}x${eNum}`);
         pageUrls.push(`${BASE_URL}/anime/${animeItem.slug}`);
     }
 
@@ -367,7 +382,7 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
 
         return fetch(targetPage, { headers: DEFAULT_HEADERS })
             .then(function(res) {
-                // Leer el HTML incluso si el servidor responde con 404 (el HTML trae el iframe)
+                // Leer HTML sin importar status 200 o 404
                 return res.text();
             })
             .then(function(html) {
@@ -383,7 +398,7 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
                     if (multiplayers.indexOf(fullUrl) === -1) multiplayers.push(fullUrl);
                 }
 
-                // 2. Extraer todos los idanime que aparecen en los botones de idiomas / descargas
+                // 2. Extraer idanime de descargas o data
                 var idRegex = /(?:idanime=|data-idanime=)(\d+)/gi;
                 var idMatch;
                 while ((idMatch = idRegex.exec(html)) !== null) {
@@ -421,12 +436,12 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
         if (tUpper.indexOf("LATINO") !== -1 || tUpper.indexOf("LAT") !== -1) lang = "LAT";
         else if (tUpper.indexOf("CASTELLANO") !== -1 || tUpper.indexOf("CAS") !== -1) lang = "CAS";
 
-        // Extraer servidores playVideo
+        // Regex universal para capturar URLs completas sin importar parámetros con &
         var serverUrls = [];
-        var playRegex = /playVideo\((?:&quot;|["'])(https?:\/\/[^"'\s&]+)(?:&quot;|["'])\)/gi;
+        var playRegex = /playVideo\((?:&quot;|["'])(https?:\/\/[^"'\s<>]+?)(?:&quot;|["'])\)/gi;
         var pMatch;
         while ((pMatch = playRegex.exec(html)) !== null) {
-            var sUrl = pMatch[1];
+            var sUrl = pMatch[1].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
             if (sUrl && serverUrls.indexOf(sUrl) === -1) {
                 serverUrls.push(sUrl);
             }
