@@ -17,9 +17,19 @@ var DEFAULT_HEADERS = {
 // 1. HELPERS & STRINGS (HERMES SAFE)
 // ==========================================
 
-function cleanTitle(str) {
+function decodeHtmlEntities(str) {
     if (!str) return "";
     return str
+        .replace(/&amp;/gi, " y ")
+        .replace(/&quot;/gi, '"')
+        .replace(/&#039;/gi, "'")
+        .replace(/&lt;/gi, "<")
+        .replace(/&gt;/gi, ">");
+}
+
+function cleanTitle(str) {
+    if (!str) return "";
+    return decodeHtmlEntities(str)
         .toLowerCase()
         .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
@@ -66,10 +76,11 @@ function scorePost(post, titles, year, isTv) {
         }
     }
 
-    // 3. Coincidencia de año
-    var postYear = String(post.year || post.release_date || post.date || "").substring(0, 4);
-    if (year && postYear && postYear === String(year)) {
-        score += 15;
+    // 3. Coincidencia de año (Filtro vital para sagas como Deadpool 2016 vs 2018 vs 2024)
+    var postYear = String(post.year || post.release_date || post.date || post.title || "").match(/\b(19\d\d|20\d\d)\b/);
+    var extractedYear = postYear ? postYear[1] : "";
+    if (year && extractedYear && extractedYear === String(year)) {
+        score += 25;
     }
 
     return score;
@@ -246,7 +257,7 @@ function getTMDBInfo(tmdbId, mediaType) {
 
 function searchMedia(query) {
     if (!query) return Promise.resolve([]);
-    var searchUrl = FAST_API + "/search?postType=any&q=" + encodeURIComponent(query) + "&postsPerPage=10";
+    var searchUrl = FAST_API + "/search?postType=any&q=" + encodeURIComponent(query) + "&postsPerPage=15";
     return fetch(searchUrl, { headers: DEFAULT_HEADERS })
         .then(function(res) { return res.json(); })
         .then(function(json) {
@@ -333,13 +344,35 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         if (!media || !media.titles || media.titles.length === 0) return [];
 
         var searchQueries = [];
+
         for (var i = 0; i < media.titles.length; i++) {
             var raw = media.titles[i];
             var clean = cleanTitle(raw);
             if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
 
+            // 1. Variante con "y" (para títulos con & como Deadpool & Wolverine -> Deadpool y Wolverine)
+            if (raw.indexOf("&") !== -1) {
+                var withY = cleanTitle(raw.replace(/&/g, " y "));
+                if (withY && searchQueries.indexOf(withY) === -1) searchQueries.push(withY);
+
+                var withAnd = cleanTitle(raw.replace(/&/g, " and "));
+                if (withAnd && searchQueries.indexOf(withAnd) === -1) searchQueries.push(withAnd);
+            }
+
+            // 2. Variante sin subtítulo (antes de dos puntos o guiones)
             var shortT = cleanTitle(raw.split(/[:\-\(]/)[0]);
             if (shortT && searchQueries.indexOf(shortT) === -1) searchQueries.push(shortT);
+
+            // 3. Palabra clave raíz (ej. "Deadpool" de "Deadpool & Wolverine")
+            var words = clean.split(/\s+/).filter(function(w) { return w.length > 3; });
+            if (words.length > 0) {
+                var mainWord = words[0];
+                if (searchQueries.indexOf(mainWord) === -1) searchQueries.push(mainWord);
+                if (words.length >= 2) {
+                    var twoWords = words[0] + " " + words[1];
+                    if (searchQueries.indexOf(twoWords) === -1) searchQueries.push(twoWords);
+                }
+            }
         }
 
         return searchMultiQuery(searchQueries).then(function(posts) {
@@ -350,7 +383,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                 return scorePost(b, media.titles, media.year, isTv) - scorePost(a, media.titles, media.year, isTv);
             });
 
-            // Probar candidatos hasta extraer streams
+            // Probar candidatos en cascada
             function tryCandidates(cIdx) {
                 if (cIdx >= posts.length) return Promise.resolve([]);
                 var currentPost = posts[cIdx];
