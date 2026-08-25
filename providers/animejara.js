@@ -84,10 +84,6 @@ function scoreAnime(item, titles, year) {
     return score;
 }
 
-/**
- * Soporta invocación tanto con 1 parámetro unpackDeanEdwards(html)
- * como con 4 parámetros unpackDeanEdwards(p, a, c, k).
- */
 function unpackDeanEdwards(p, a, c, k) {
     if (arguments.length === 1 && typeof p === "string") {
         var html = p;
@@ -167,8 +163,9 @@ function getServerLabel(url) {
     if (u.indexOf("vidhide") !== -1 || u.indexOf("filelions") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) return "VidHide";
     if (u.indexOf("mp4upload") !== -1) return "MP4Upload";
     if (u.indexOf("streamtape") !== -1) return "Streamtape";
-    if (u.indexOf("yourupload") !== -1) return "YourUpload";
+    if (u.indexOf("yourupload") !== -1 || u.indexOf("nyuu.streamhj") !== -1) return "YourUpload";
     if (u.indexOf("uqload") !== -1) return "Uqload";
+    if (u.indexOf("mixdrop") !== -1 || u.indexOf("mxdrop") !== -1 || u.indexOf("miixdrop") !== -1) return "Mixdrop";
     return "Online";
 }
 
@@ -261,33 +258,52 @@ function resolveVidHide(url) {
 }
 
 function resolveMp4upload(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" },
+    var embedUrl = url;
+    if (embedUrl.indexOf("embed-") === -1) {
+        var idMatch = embedUrl.match(/mp4upload\.com\/(?:embed-|v\/)?([a-zA-Z0-9]+)/);
+        if (idMatch) {
+            embedUrl = "https://www.mp4upload.com/embed-" + idMatch[1] + ".html";
+        }
+    }
+
+    return fetch(embedUrl, {
+        headers: {
+            "User-Agent": USER_AGENT,
+            "Referer": "https://www.mp4upload.com/"
+        },
         redirect: "follow"
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var quality = "1080p";
-        if (html.indexOf("FHD") !== -1 || html.indexOf("1080") !== -1) {
+        if (!html) return null;
+
+        var quality = "720p";
+        if (html.indexOf("FHD") !== -1 || html.indexOf("fhd.png") !== -1 || html.indexOf("1080") !== -1) {
             quality = "1080p";
-        } else if (html.indexOf("HD") !== -1 || html.indexOf("720") !== -1) {
+        } else if (html.indexOf("HD") !== -1 || html.indexOf("hd.png") !== -1 || html.indexOf("720") !== -1) {
             quality = "720p";
         } else if (html.indexOf("SD") !== -1 || html.indexOf("480") !== -1) {
             quality = "480p";
         }
 
+        // 1. Detección en script desempaquetado
         var unpacked = unpackDeanEdwards(html);
         if (unpacked) {
             var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
-                           unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
+                           unpacked.match(/(?:src|file)\s*:\s*["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
+                           unpacked.match(/["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
             if (srcMatch) {
-                return { url: srcMatch[1], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                return { url: srcMatch[1], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
             }
         }
-        var directMatch = html.match(/https?:\/\/[a-zA-Z0-9.-]+\.mp4upload\.com(?::\d+)?\/[a-zA-Z0-9/._-]+\.mp4/i);
+
+        // 2. Detección directa en HTML
+        var directMatch = html.match(/(?:src|file)\s*:\s*["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i) ||
+                          html.match(/["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i);
         if (directMatch) {
-            return { url: directMatch[0], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": url } };
+            return { url: directMatch[1], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
         }
+
         return null;
     })
     .catch(function() { return null; });
@@ -296,6 +312,7 @@ function resolveMp4upload(url) {
 function resolveStreamtape(url) {
     var targetUrl = url.replace("/v/", "/e/");
     if (targetUrl.indexOf("http") !== 0) targetUrl = "https://" + targetUrl.replace(/^\/\//, "");
+
     return fetch(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" })
         .then(function(res) { return res.text(); })
         .then(function(html) {
@@ -310,13 +327,20 @@ function resolveStreamtape(url) {
 }
 
 function resolveYourUpload(url) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }, redirect: "follow" })
+    var realUrl = url;
+    if (realUrl.indexOf("go.php?v=") !== -1) {
+        var vPart = realUrl.split("go.php?v=")[1];
+        if (vPart) realUrl = decodeURIComponent(vPart);
+    }
+
+    return fetch(realUrl, { headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }, redirect: "follow" })
         .then(function(res) { return res.text(); })
         .then(function(html) {
             var fileMatch = html.match(/file:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
-                            html.match(/property=["']og:video["']\s*content=["']([^"']+)["']/i);
+                            html.match(/property=["']og:video["']\s*content=["']([^"']+)["']/i) ||
+                            html.match(/<source[^>]+src=["']([^"']+\.mp4[^"']*)["']/i);
             if (fileMatch) {
-                return { url: fileMatch[1], quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                return { url: fileMatch[1], quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": realUrl } };
             }
             return null;
         })
@@ -327,13 +351,46 @@ function resolveUqload(url) {
     return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" })
         .then(function(res) { return res.text(); })
         .then(function(html) {
-            var direct = html.match(/sources:\s*\[["'](https?:\/\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i);
+            var direct = html.match(/sources:\s*\[["'](https?:\/\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i) ||
+                         html.match(/sources:\s*\[\{\s*file:\s*["']([^"']+\.mp4[^"']*)["']/i);
             if (direct) {
                 return { url: direct[1], quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
             }
             return null;
         })
         .catch(function() { return null; });
+}
+
+function resolveMixdrop(url) {
+    var embedUrl = url.replace("/f/", "/e/");
+    if (embedUrl.indexOf("http") !== 0) embedUrl = "https:" + embedUrl;
+
+    return fetch(embedUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": embedUrl },
+        redirect: "follow"
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        if (!html) return null;
+        var directMatch = html.match(/MDCore\.(?:wurl|vurl)\s*=\s*["']([^"']+)["']/i);
+        if (directMatch) {
+            var vUrl = directMatch[1];
+            if (vUrl.indexOf("//") === 0) vUrl = "https:" + vUrl;
+            return { url: vUrl, quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
+        }
+        var unpacked = unpackDeanEdwards(html);
+        if (unpacked) {
+            var match = unpacked.match(/MDCore\.(?:wurl|vurl)\s*=\s*["']([^"']+)["']/i) ||
+                        unpacked.match(/["'](https?:\/\/[a-zA-Z0-9.-]+(?:\.delivery\.mxcontent\.net|\.mixdrop)[^"'\s<>]+\.mp4[^"'\s<>]*)["']/i);
+            if (match) {
+                var finalUrl = match[1];
+                if (finalUrl.indexOf("//") === 0) finalUrl = "https:" + finalUrl;
+                return { url: finalUrl, quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
+            }
+        }
+        return null;
+    })
+    .catch(function() { return null; });
 }
 
 function dispatchResolver(rawUrl) {
@@ -345,8 +402,9 @@ function dispatchResolver(rawUrl) {
     if (u.indexOf("vidhide") !== -1 || u.indexOf("filelions") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) return resolveVidHide(rawUrl);
     if (u.indexOf("mp4upload") !== -1) return resolveMp4upload(rawUrl);
     if (u.indexOf("streamtape") !== -1) return resolveStreamtape(rawUrl);
-    if (u.indexOf("yourupload") !== -1) return resolveYourUpload(rawUrl);
+    if (u.indexOf("yourupload") !== -1 || u.indexOf("nyuu.streamhj") !== -1) return resolveYourUpload(rawUrl);
     if (u.indexOf("uqload") !== -1) return resolveUqload(rawUrl);
+    if (u.indexOf("mixdrop") !== -1 || u.indexOf("mxdrop") !== -1 || u.indexOf("miixdrop") !== -1) return resolveMixdrop(rawUrl);
 
     return Promise.resolve(null);
 }
@@ -399,7 +457,6 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
         pageUrls.push(`${BASE_URL}/pelicula/${slug}/`);
         pageUrls.push(`${BASE_URL}/anime/${slug}`);
     } else {
-        // Formatos estándar y alternativos de WordPress
         pageUrls.push(`${BASE_URL}/episode/${slug}-${sNum}x${eNum}/`);
         pageUrls.push(`${BASE_URL}/episode/${slug}-${sNum}x${eNum}`);
         pageUrls.push(`${BASE_URL}/episode/${slug}-${eNum}/`);
@@ -419,15 +476,14 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
 
         return fetch(targetPage, { headers: DEFAULT_HEADERS, redirect: "follow" })
             .then(function(res) {
-                // Lectura incondicional sin verificar res.ok para soportar respuestas 404 con HTML
                 return res.text();
             })
             .then(function(html) {
-                if (!html || html.length < 200) return tryNextPage(pIdx + 1);
+                if (!html || html.length < 150) return tryNextPage(pIdx + 1);
 
                 var multiplayers = [];
 
-                // 1. Extraer URLs completas de multiplayer StreamHJ
+                // 1. Extraer todos los iframes a multiplayer.streamhj.top
                 var multiRegex = /https?:\/\/multiplayer\.streamhj\.top\/player\/multiplayer\/embed\.php\?[^"'\s<>]+/gi;
                 var mMatch;
                 while ((mMatch = multiRegex.exec(html)) !== null) {
@@ -435,14 +491,15 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
                     if (multiplayers.indexOf(fullUrl) === -1) multiplayers.push(fullUrl);
                 }
 
-                // 2. Extraer parámetros idanime / idcapitulo de variables o atributos data
-                var idAnimeMatch = html.match(/(?:idanime=|data-idanime=|idanime\s*:\s*["']?|postid\s*:\s*["']?)(\d+)/i);
-                if (idAnimeMatch && idAnimeMatch[1]) {
-                    var builtUrl = `https://${MULTIPLAYER_HOST}/player/multiplayer/embed.php?idanime=${idAnimeMatch[1]}&idcapitulo=${eNum}`;
+                // 2. Extraer TODOS los idanime presentes (captura pestañas de SUB y CAS/LAT simultáneas)
+                var idAnimeGlobalRegex = /(?:idanime=|data-idanime=|idanime\s*:\s*["']?|postid\s*:\s*["']?)(\d+)/gi;
+                var idMatch;
+                while ((idMatch = idAnimeGlobalRegex.exec(html)) !== null) {
+                    var builtUrl = `https://${MULTIPLAYER_HOST}/player/multiplayer/embed.php?idanime=${idMatch[1]}&idcapitulo=${eNum}`;
                     if (multiplayers.indexOf(builtUrl) === -1) multiplayers.push(builtUrl);
                 }
 
-                // 3. Si estamos en la página del anime (/anime/slug), buscar el enlace al episodio específico
+                // 3. Fallback en caso de estar en /anime/{slug}
                 if (targetPage.indexOf("/anime/") !== -1 && multiplayers.length === 0) {
                     var epLinkRegex = new RegExp('href=["\']([^"\']*(?:episode|ver)\/[^"\']*(?:-' + sNum + 'x' + eNum + '|-' + eNum + '|-episodio-' + eNum + ')[^"\']*)["\']', 'i');
                     var epMatch = html.match(epLinkRegex);
@@ -458,9 +515,8 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie) {
                                     var fUrl = mMatch[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
                                     if (multiplayers.indexOf(fUrl) === -1) multiplayers.push(fUrl);
                                 }
-                                var epIdMatch = epHtml.match(/(?:idanime=|data-idanime=|idanime\s*:\s*["']?)(\d+)/i);
-                                if (epIdMatch && epIdMatch[1]) {
-                                    var bUrl = `https://${MULTIPLAYER_HOST}/player/multiplayer/embed.php?idanime=${epIdMatch[1]}&idcapitulo=${eNum}`;
+                                while ((idMatch = idAnimeGlobalRegex.exec(epHtml)) !== null) {
+                                    var bUrl = `https://${MULTIPLAYER_HOST}/player/multiplayer/embed.php?idanime=${idMatch[1]}&idcapitulo=${eNum}`;
                                     if (multiplayers.indexOf(bUrl) === -1) multiplayers.push(bUrl);
                                 }
                                 if (multiplayers.length > 0) return multiplayers;
@@ -496,66 +552,38 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
     .then(function(html) {
         if (!html || html.length < 50) return [];
 
-        var items = [];
+        // Detectar idioma a partir del encabezado del reproductor
+        var lang = "SUB";
+        var titleHeaderMatch = html.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
+        var headerText = titleHeaderMatch ? titleHeaderMatch[1].toUpperCase() : html.toUpperCase();
+
+        if (headerText.indexOf("LATINO") !== -1 || headerText.indexOf(" LAT ") !== -1 || headerText.indexOf("- LAT") !== -1) {
+            lang = "LAT";
+        } else if (headerText.indexOf("CASTELLANO") !== -1 || headerText.indexOf(" CAS ") !== -1 || headerText.indexOf("ESP") !== -1) {
+            lang = "CAS";
+        } else if (headerText.indexOf("SUB") !== -1 || headerText.indexOf("JAPONES") !== -1) {
+            lang = "SUB";
+        }
+
+        var serverUrls = [];
         var playRegex = /playVideo\((?:&quot;|["'])(https?:\/\/[^"'\s<>]+?)(?:&quot;|["'])\)/gi;
-
-        // Separación estructurada por pestañas o bloques de idioma
-        var langBlocks = html.split(/(?=<div[^>]+(?:class=["'][^"']*tab-pane|id=["'](?:sub|lat|cas|esp|jap|opt\d+|pane\d+|con\d+))|<li[^>]+data-lang)/i);
-
-        if (langBlocks && langBlocks.length > 1) {
-            for (var b = 0; b < langBlocks.length; b++) {
-                var blockHtml = langBlocks[b];
-                var blockLang = "SUB";
-                var blockUpper = blockHtml.toUpperCase();
-
-                if (blockUpper.indexOf("LATINO") !== -1 || blockUpper.indexOf('DATA-LANG="LAT"') !== -1 || blockUpper.indexOf('ID="LAT') !== -1) {
-                    blockLang = "LAT";
-                } else if (blockUpper.indexOf("CASTELLANO") !== -1 || blockUpper.indexOf('DATA-LANG="CAS"') !== -1 || blockUpper.indexOf('ID="CAS') !== -1 || blockUpper.indexOf("ESPAÑOL") !== -1) {
-                    blockLang = "CAS";
-                } else if (blockUpper.indexOf("JAPONES") !== -1 || blockUpper.indexOf("SUBTITULADO") !== -1 || blockUpper.indexOf('DATA-LANG="SUB"') !== -1) {
-                    blockLang = "SUB";
-                }
-
-                var pMatch;
-                while ((pMatch = playRegex.exec(blockHtml)) !== null) {
-                    var sUrl = pMatch[1].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
-                    if (sUrl) {
-                        items.push({ url: sUrl, lang: blockLang });
-                    }
-                }
+        var pMatch;
+        while ((pMatch = playRegex.exec(html)) !== null) {
+            var sUrl = pMatch[1].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
+            if (sUrl && serverUrls.indexOf(sUrl) === -1) {
+                serverUrls.push(sUrl);
             }
         }
 
-        // Fallback si no se detectaron bloques divididos
-        if (items.length === 0) {
-            var defaultLang = "SUB";
-            var tUpper = html.toUpperCase();
-            if (tUpper.indexOf("LATINO") !== -1 || tUpper.indexOf("AUDIO LATINO") !== -1) defaultLang = "LAT";
-            else if (tUpper.indexOf("CASTELLANO") !== -1) defaultLang = "CAS";
+        if (serverUrls.length === 0) return [];
 
-            var fallbackMatch;
-            while ((fallbackMatch = playRegex.exec(html)) !== null) {
-                var cleanU = fallbackMatch[1].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
-                if (cleanU) {
-                    items.push({ url: cleanU, lang: defaultLang });
-                }
-            }
-        }
-
-        if (items.length === 0) return [];
-
-        // Deduplicar URLs por idioma
-        var uniqueItems = items.filter(function(item, idx, self) {
-            return self.findIndex(function(x) { return x.url === item.url && x.lang === item.lang; }) === idx;
-        });
-
-        var resolvePromises = uniqueItems.map(function(item) {
-            var sName = getServerLabel(item.url);
-            return dispatchResolver(item.url).then(function(res) {
+        var resolvePromises = serverUrls.map(function(sUrl) {
+            var sName = getServerLabel(sUrl);
+            return dispatchResolver(sUrl).then(function(res) {
                 if (res && res.url) {
                     return {
                         name: "AnimeJara",
-                        title: `${res.quality || "1080p"} · ${item.lang} · ${sName}`,
+                        title: `${res.quality || "1080p"} · ${lang} · ${sName}`,
                         quality: res.quality || "1080p",
                         url: res.url,
                         headers: res.headers || {}
@@ -589,15 +617,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return res.json();
         })
         .then(function(meta) {
-            var isJapanese = (meta.original_language === "ja") ||
-                             (meta.origin_country && meta.origin_country.indexOf("JP") !== -1) ||
-                             (meta.production_countries && meta.production_countries.some(function(c) { return c.iso_3166_1 === "JP"; }));
-
-            if (!isJapanese) {
-                console.log("[AnimeJara] Contenido no japonés. Abortando.");
-                return [];
-            }
-
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
             var year = (isMovie ? meta.release_date : meta.first_air_date || "").slice(0, 4);
