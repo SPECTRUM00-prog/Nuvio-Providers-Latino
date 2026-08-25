@@ -1,9 +1,10 @@
 /**
- * Provider: JKAnime (Anime Series y Películas)
+ * Provider: JKAnime (Anime Series y Películas) con Mapeo Inteligente AniList
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+const ANILIST_GRAPHQL = "https://graphql.anilist.co";
 const BASE_URL = "https://jkanime.net";
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -14,13 +15,8 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y ALGORITMO UNIVERSAL
+// UTILIDADES Y DECODIFICADOR BASE64 PURO
 // ==========================================
-
-function toRoman(num) {
-    var romans = ["", "i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"];
-    return romans[num] || String(num);
-}
 
 function decodeBase64Safe(input) {
     if (!input) return "";
@@ -77,76 +73,6 @@ function isSlugSimilar(query, slug) {
     return false;
 }
 
-function scoreSlugCandidate(slug, titles) {
-    if (!slug) return 0;
-    var cleanS = cleanTitle(slug).replace(/-/g, " ");
-    var score = 0;
-
-    for (var i = 0; i < titles.length; i++) {
-        var t = cleanTitle(titles[i]).replace(/-/g, " ");
-        if (!t) continue;
-
-        if (cleanS === t) {
-            score = Math.max(score, 100);
-            continue;
-        }
-
-        var words = t.split(/\s+/).filter(function(w) { return w.length > 2; });
-        var matches = 0;
-        for (var j = 0; j < words.length; j++) {
-            if (cleanS.indexOf(words[j]) !== -1) {
-                matches++;
-            }
-        }
-
-        if (words.length > 0 && matches > 0) {
-            var ratio = (matches / words.length) * 75;
-            score = Math.max(score, ratio);
-        }
-    }
-
-    return score;
-}
-
-function scoreSlugForSeason(slug, sNum, eNum) {
-    var s = slug.toLowerCase();
-    var isPart2Slug = s.includes("-part-2") || s.includes("-cour-2") || s.includes("-2nd-season");
-    var hasSeasonIndicator = /(?:^|-)(ii|iii|iv|v|vi|2|3|4|5|6|season-|s2|s3|s4|part-|cour-|beyond|final)(?:-|$)/i.test(s);
-
-    if (!hasSeasonIndicator && !isPart2Slug) {
-        return 50;
-    }
-
-    var partBonus = (eNum > 11) ? (isPart2Slug ? 40 : -20) : (isPart2Slug ? -20 : 20);
-
-    if (sNum === 1) {
-        if (/(?:^|-)(ii|iii|iv|v|2|3|4|5|season-2|season-3|season-4|beyond|final)(?:-|$)/i.test(s)) {
-            if (s.includes("-2nd-season") && !s.includes("-ii")) return 20 + partBonus;
-            return -40;
-        }
-        return 30 + partBonus;
-    }
-
-    if (sNum === 2) {
-        if (/(?:^|-)(iii|iv|v|3|4|5|season-3|season-4)(?:-|$)/i.test(s)) return -40;
-        if (/(?:^|-)(ii|2nd|season-2|s2|2|beyond)(?:-|$)/i.test(s)) return 60 + partBonus;
-        return 10;
-    }
-
-    if (sNum === 3) {
-        if (/(?:^|-)(iv|v|4|5|season-4|final)(?:-|$)/i.test(s)) return -40;
-        if (/(?:^|-)(iii|3rd|season-3|s3|3)(?:-|$)/i.test(s)) return 60 + partBonus;
-        return 10;
-    }
-
-    if (sNum >= 4) {
-        if (/(?:^|-)(final-season|the-final-season|season-4|s4|4|iv)(?:-|$)/i.test(s)) return 60 + partBonus;
-        return 10;
-    }
-
-    return 20;
-}
-
 function unpackDeanEdwards(p, a, c, k) {
     var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     function decodeBase(val, radix) {
@@ -186,6 +112,117 @@ function probeM3u8Quality(m3u8Url, headers) {
             return "720p";
         })
         .catch(function() { return "720p"; });
+}
+
+// ==========================================
+// CONSULTAS GRAPHQL A ANILIST
+// ==========================================
+
+function fetchAniListMapping(searchName) {
+    if (!searchName || hasJapaneseChars(searchName)) return Promise.resolve([]);
+
+    var gqlQuery = `
+    query ($search: String) {
+      Page(page: 1, perPage: 8) {
+        media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
+          id
+          title {
+            romaji
+            english
+          }
+          synonyms
+          episodes
+          seasonYear
+          format
+        }
+      }
+    }
+    `;
+
+    return fetch(ANILIST_GRAPHQL, {
+        method: "POST",
+        headers: {
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        },
+        body: JSON.stringify({ query: gqlQuery, variables: { search: searchName } })
+    })
+    .then(function(res) { return res.json(); })
+    .then(function(json) {
+        return (json && json.data && json.data.Page && json.data.Page.media) || [];
+    })
+    .catch(function() { return []; });
+}
+
+function resolveAniListTarget(aniListMedia, sNum, eNum) {
+    if (!aniListMedia || aniListMedia.length === 0) return null;
+
+    // 1. Filtrar entradas por número de temporada
+    var seasonKeywords = {
+        1: ["season 1", "cour 1", "cour 2", "part 2", "2nd season", "1st season"],
+        2: ["season 2", " ii ", "ii:", "ii ", "part 2", "cour 2", "2nd season"],
+        3: ["season 3", " iii ", "iii:", "iii ", "3rd season"],
+        4: ["season 4", " iv ", "iv:", "iv ", "final season", "4th season"]
+    }[sNum] || [`season ${sNum}`];
+
+    var matchingEntries = aniListMedia.filter(function(m) {
+        var r = (m.title.romaji || "").toLowerCase();
+        var e = (m.title.english || "").toLowerCase();
+        var full = r + " " + e;
+
+        if (sNum === 1) {
+            if (full.includes("season 2") || full.includes("season 3") || full.includes("season 4") || full.includes(" ii") || full.includes(" iii")) {
+                return false;
+            }
+            return true;
+        }
+
+        for (var i = 0; i < seasonKeywords.length; i++) {
+            if (full.includes(seasonKeywords[i])) return true;
+        }
+        return false;
+    });
+
+    if (matchingEntries.length === 0) {
+        matchingEntries = aniListMedia;
+    }
+
+    // 2. Si hay múltiples partes para la misma temporada (Split-Cour)
+    if (matchingEntries.length > 1) {
+        var part1 = matchingEntries.find(function(m) {
+            var f = (m.title.romaji + " " + m.title.english).toLowerCase();
+            return !f.includes("part 2") && !f.includes("cour 2") && !f.includes("2nd season");
+        });
+
+        var part2 = matchingEntries.find(function(m) {
+            var f = (m.title.romaji + " " + m.title.english).toLowerCase();
+            return f.includes("part 2") || f.includes("cour 2") || f.includes("2nd season");
+        });
+
+        if (part1 && part2 && part1.episodes) {
+            if (eNum > part1.episodes) {
+                return {
+                    slug: cleanTitle(part2.title.romaji),
+                    targetEp: eNum - part1.episodes,
+                    synonyms: part2.synonyms || []
+                };
+            } else {
+                return {
+                    slug: cleanTitle(part1.title.romaji),
+                    targetEp: eNum,
+                    synonyms: part1.synonyms || []
+                };
+            }
+        }
+    }
+
+    // 3. Entrada directa
+    var selected = matchingEntries[0];
+    return {
+        slug: cleanTitle(selected.title.romaji),
+        targetEp: eNum,
+        synonyms: selected.synonyms || []
+    };
 }
 
 // ==========================================
@@ -318,34 +355,6 @@ function dispatchResolver(url) {
     return Promise.resolve(null);
 }
 
-// ==========================================
-// BÚSQUEDA Y EXTRACCIÓN
-// ==========================================
-
-function searchJkanime(queries) {
-    var queryList = Array.isArray(queries) ? queries : [queries];
-    function tryNextQuery(index) {
-        if (index >= queryList.length) return Promise.resolve([]);
-        var q = queryList[index];
-        if (!q || hasJapaneseChars(q)) return tryNextQuery(index + 1);
-
-        return fetch(`${BASE_URL}/buscar/${encodeURIComponent(q)}/`, { headers: DEFAULT_HEADERS })
-            .then(function(res) { return res.ok ? res.text() : ""; })
-            .then(function(html) {
-                var regex = /href=["']https?:\/\/jkanime\.net\/([^"'/]+)\/["']/gi, matches = [], match;
-                while ((match = regex.exec(html)) !== null) {
-                    var slug = match[1];
-                    if (slug && slug !== "buscar" && slug !== "horario" && slug !== "top" && slug !== "directorio" && matches.indexOf(slug) === -1) {
-                        if (isSlugSimilar(q, slug)) matches.push(slug);
-                    }
-                }
-                if (matches.length > 0) return matches;
-                return tryNextQuery(index + 1);
-            }).catch(function() { return tryNextQuery(index + 1); });
-    }
-    return tryNextQuery(0);
-}
-
 function extractStreamsFromEpisodePage(pageUrl) {
     return fetch(pageUrl, { headers: DEFAULT_HEADERS })
         .then(function(res) { return res.ok ? res.text() : ""; })
@@ -443,104 +452,51 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            var titles = [];
-            if (title) titles.push(title);
-            if (origTitle && origTitle !== title) titles.push(origTitle);
-
-            var altArr = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
-            for (var i = 0; i < altArr.length; i++) {
-                if (altArr[i].title) titles.push(altArr[i].title);
-            }
-
-            var uniqueTitles = titles.filter(function(item, pos, self) {
-                return item && self.indexOf(item) === pos;
-            });
-
-            // Extraer las dos primeras palabras clave raíz (ej. "Mushoku Tensei", "One Piece", "Kimetsu no Yaiba")
-            var searchQueries = [];
-            for (var j = 0; j < uniqueTitles.length; j++) {
-                var rawT = uniqueTitles[j];
-                if (!rawT || hasJapaneseChars(rawT)) continue;
-
-                var clean = cleanTitle(rawT).replace(/-/g, " ");
-                var words = clean.split(/\s+/).filter(function(w) { return w.length > 2; });
-
-                if (words.length >= 2) {
-                    var twoWords = words[0] + " " + words[1];
-                    if (searchQueries.indexOf(twoWords) === -1) searchQueries.push(twoWords);
-                }
-                if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
-            }
+            // Extraer palabras clave limpias para AniList
+            var cleanT = cleanTitle(title).replace(/-/g, " ");
+            var words = cleanT.split(/\s+/).filter(function(w) { return w.length > 2; });
+            var searchKeyword = words.length >= 2 ? words.slice(0, 2).join(" ") : cleanT;
 
             var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
 
-            return searchJkanime(searchQueries.slice(0, 3)).then(function(slugs) {
-                if (!slugs || slugs.length === 0) return [];
+            // 1. Consultar AniList GraphQL para resolver el slug exacto y desfase de Cour
+            return fetchAniListMapping(searchKeyword).then(function(aniListMedia) {
+                var aniTarget = resolveAniListTarget(aniListMedia, sNum, eNum);
+                var pageUrlsToTry = [];
 
-                // Filtrar y ordenar candidatos
-                var validSlugs = [];
-                for (var k = 0; k < slugs.length; k++) {
-                    var sc = scoreSlugCandidate(slugs[k], uniqueTitles);
-                    var seasonScore = scoreSlugForSeason(slugs[k], sNum, eNum);
-                    if (sc >= 20 && seasonScore >= 0) {
-                        validSlugs.push({ slug: slugs[k], score: sc + seasonScore });
-                    }
+                if (aniTarget && aniTarget.slug) {
+                    var targetEp = isMovie ? 1 : aniTarget.targetEp;
+                    pageUrlsToTry.push(`${BASE_URL}/${aniTarget.slug}/${targetEp}/`);
                 }
 
-                if (validSlugs.length === 0) return [];
+                // 2. Rutas alternativas y de respaldo (Shonen continuo / Fallback)
+                var rawBaseSlug = cleanTitle(title);
+                if (isMovie) {
+                    pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/pelicula/`);
+                    pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/1/`);
+                } else {
+                    if (sNum > 1 && absoluteEp !== eNum) {
+                        pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/${absoluteEp}/`);
+                    }
+                    pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/${eNum}/`);
+                }
 
-                validSlugs.sort(function(a, b) {
-                    return b.score - a.score;
+                // Deduplicar URLs a probar
+                var uniqueUrls = pageUrlsToTry.filter(function(item, pos, self) {
+                    return item && self.indexOf(item) === pos;
                 });
 
-                function tryNextSlug(index) {
-                    if (index >= validSlugs.length) return Promise.resolve([]);
-                    var slugToTry = validSlugs[index].slug;
+                function tryPageUrls(pIdx) {
+                    if (pIdx >= uniqueUrls.length) return Promise.resolve([]);
+                    var targetUrl = uniqueUrls[pIdx];
 
-                    var isPart2 = slugToTry.includes("-part-2") || slugToTry.includes("-2nd-season") || slugToTry.includes("-cour-2");
-                    var isSeasonSpecific = slugToTry.includes("-ii") || slugToTry.includes("-iii") || slugToTry.includes("-iv") || slugToTry.includes("-v") || slugToTry.includes("-season-") || slugToTry.includes("-s2") || slugToTry.includes("-s3");
-
-                    var pageUrlsToTry = [];
-                    if (isMovie) {
-                        pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/pelicula/`);
-                        pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/1/`);
-                        pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/ova/`);
-                    } else {
-                        // 1. Caso Split-Cour: si es Parte 2 y el episodio de TMDB es > 11 (ej. cap 15 -> /3/)
-                        if (isPart2 && eNum > 11) {
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 12}/`);
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 11}/`);
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum - 13}/`);
-                        }
-
-                        // 2. Caso Shonen Continuo: One Piece, Conan, Naruto (ej. T22 E66 -> /1128/)
-                        if (!isSeasonSpecific && !isPart2 && sNum > 1 && absoluteEp !== eNum) {
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${absoluteEp}/`);
-                        }
-
-                        // 3. Caso Episodio Relativo directo
-                        pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${eNum}/`);
-
-                        // 4. Fallback de episodio absoluto
-                        if (absoluteEp !== eNum && pageUrlsToTry.indexOf(`${BASE_URL}/${slugToTry}/${absoluteEp}/`) === -1) {
-                            pageUrlsToTry.push(`${BASE_URL}/${slugToTry}/${absoluteEp}/`);
-                        }
-                    }
-
-                    function tryPageUrls(pIdx) {
-                        if (pIdx >= pageUrlsToTry.length) return tryNextSlug(index + 1);
-                        var targetUrl = pageUrlsToTry[pIdx];
-
-                        return extractStreamsFromEpisodePage(targetUrl).then(function(streams) {
-                            if (streams && streams.length > 0) return streams;
-                            return tryPageUrls(pIdx + 1);
-                        });
-                    }
-
-                    return tryPageUrls(0);
+                    return extractStreamsFromEpisodePage(targetUrl).then(function(streams) {
+                        if (streams && streams.length > 0) return streams;
+                        return tryPageUrls(pIdx + 1);
+                    });
                 }
 
-                return tryNextSlug(0);
+                return tryPageUrls(0);
             });
         })
         .then(function(streams) {
