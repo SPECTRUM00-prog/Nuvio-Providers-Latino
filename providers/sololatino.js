@@ -304,21 +304,72 @@ function unpackJS(packed) {
 }
 
 // ==========================================
-// 5. RESOLVERS DE STREAMING (PROMISE BASED)
+// 5. DETECCIÓN DINÁMICA DE RESOLUCIÓN REAL
+// ==========================================
+function probeM3u8Quality(m3u8Url, headers) {
+    if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
+
+    return fetch(m3u8Url, {
+        headers: headers || { "User-Agent": USER_AGENT },
+        redirect: "follow"
+    })
+    .then(function(res) {
+        if (!res.ok) return "720p";
+        return res.text();
+    })
+    .then(function(text) {
+        if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
+            if (/1080/i.test(m3u8Url)) return "1080p";
+            if (/720/i.test(m3u8Url)) return "720p";
+            return "720p";
+        }
+
+        var maxH = 0;
+        var resRegex = /RESOLUTION=\d+x(\d+)/gi;
+        var match;
+        while ((match = resRegex.exec(text)) !== null) {
+            var h = parseInt(match[1], 10);
+            if (h > maxH) maxH = h;
+        }
+
+        if (maxH >= 2160) return "4K";
+        if (maxH >= 1080) return "1080p";
+        if (maxH >= 720) return "720p";
+        if (maxH >= 480) return "480p";
+        return "720p";
+    })
+    .catch(function() {
+        return "720p";
+    });
+}
+
+// ==========================================
+// 6. RESOLVERS DE STREAMING (PROMISE BASED)
 // ==========================================
 function resolveVidHide(url) {
     return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" }
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" },
+        redirect: "follow"
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
+        var streamUrl = null;
         var direct = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-        if (direct) return { url: direct[1], quality: "1080p", server: "VidHide" };
+        if (direct) streamUrl = direct[1].replace(/\\/g, "");
 
-        var unpacked = unpackJS(html);
-        if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-            if (m3u8) return { url: m3u8[0].replace(/\\/g, ""), quality: "1080p", server: "VidHide" };
+        if (!streamUrl) {
+            var unpacked = unpackJS(html);
+            if (unpacked) {
+                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
+                if (m3u8) streamUrl = m3u8[0].replace(/\\/g, "");
+            }
+        }
+
+        if (streamUrl) {
+            var headers = { "User-Agent": USER_AGENT, "Referer": url };
+            return probeM3u8Quality(streamUrl, headers).then(function(q) {
+                return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: headers };
+            });
         }
         return null;
     })
@@ -330,22 +381,30 @@ function resolveStreamWish(url) {
     var targetUrl = "https://hlswish.com/e/" + id;
 
     return fetch(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
+        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
+        redirect: "follow"
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
+        var streamUrl = null;
         var directMatch = html.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
                           html.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-        if (directMatch) return { url: directMatch[1], quality: "1080p", server: "StreamWish" };
+        if (directMatch) streamUrl = directMatch[1].replace(/\\/g, "");
 
-        var unpacked = unpackJS(html);
-        if (unpacked) {
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i) ||
-                       unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-            if (m3u8) {
-                var streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
-                return { url: streamUrl, quality: "1080p", server: "StreamWish" };
+        if (!streamUrl) {
+            var unpacked = unpackJS(html);
+            if (unpacked) {
+                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i) ||
+                           unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+                if (m3u8) streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
             }
+        }
+
+        if (streamUrl) {
+            var headers = { "User-Agent": USER_AGENT, "Referer": targetUrl };
+            return probeM3u8Quality(streamUrl, headers).then(function(q) {
+                return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: headers };
+            });
         }
         return null;
     })
@@ -353,7 +412,7 @@ function resolveStreamWish(url) {
 }
 
 // ==========================================
-// 6. TMDB METADATA (Con Fallback de Episodio)
+// 7. TMDB METADATA (Con Fallback de Episodio)
 // ==========================================
 function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
     var isTv = mediaType === "tv" || mediaType === "series";
@@ -366,7 +425,6 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
             var imdbId = (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null;
 
             if (!imdbId && isTv) {
-                // Fallback para series: consultar los external_ids del episodio específico
                 var s = parseInt(seasonNum || 1, 10);
                 var e = parseInt(episodeNum || 1, 10);
                 var epUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + s + "/episode/" + e + "/external_ids?api_key=" + TMDB_API_KEY;
@@ -401,13 +459,16 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
 }
 
 // ==========================================
-// 7. OBTENER Y DESCIFRAR EMBEDS DE EMBED69
+// 8. OBTENER Y DESCIFRAR EMBEDS DE EMBED69
 // ==========================================
 function fetchAndDecryptEmbed69(targetUrl) {
     return fetch(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
     })
-    .then(function(res) { return res.text(); })
+    .then(function(res) {
+        if (!res.ok) return [];
+        return res.text();
+    })
     .then(function(html) {
         var challengeMatch = html.match(/const\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/);
         var difficultyMatch = html.match(/const\s+POW_DIFFICULTY\s*=\s*(\d+)/);
@@ -421,7 +482,6 @@ function fetchAndDecryptEmbed69(targetUrl) {
         var salt = saltMatch ? saltMatch[1] : "";
         var dataLink = JSON.parse(dataLinkMatch[1]);
 
-        // Límite de seguridad anti-freeze
         var prefix = "0".repeat(difficulty);
         var nonce = 0;
         var maxIterations = 200000;
@@ -456,7 +516,7 @@ function fetchAndDecryptEmbed69(targetUrl) {
 }
 
 // ==========================================
-// 8. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// 9. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
@@ -466,7 +526,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     var e = parseInt(episodeNum || 1, 10);
 
     return getMediaData(tmdbId, mediaType, s, e).then(function(media) {
-        if (!media || !media.imdbId) return [];
+        if (!media || !media.imdbId || !/^tt\d+$/.test(media.imdbId)) return [];
 
         var candidateUrls = [];
         if (!isTv) {
@@ -513,7 +573,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                             title: res.quality + " · " + res.server + " (" + item.lang + ")",
                             url: res.url,
                             quality: res.quality,
-                            headers: {
+                            headers: res.headers || {
                                 "User-Agent": USER_AGENT,
                                 "Referer": item.url
                             }
