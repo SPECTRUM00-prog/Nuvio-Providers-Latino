@@ -5,11 +5,9 @@
 
 ---
 
-## 📖 Manifiesto & Filosofía
+## 📖 Manifiesto
 
-En una era donde las plataformas digitales revocan licencias, fragmentan catálogos y aumentan tarifas de forma abusiva, este repositorio nace con la convicción de que **la cultura, el cine y la animación deben ser accesibles, preservables y libres de barreras artificiales**.
-
-Este proyecto proporciona scrapers de alto rendimiento para **Nuvio Media Hub**, diseñados con ingeniería inversa limpia, resolución de streams en paralelo y compatibilidad estricta con dispositivos de bajos recursos.
+Este proyecto proporciona scrapers de alto rendimiento para **Nuvio Media Hub** con varias resolución de streams en paralelo y compatibilidad estricta con diferentes dispositivos.
 
 ---
 
@@ -25,9 +23,6 @@ Este proyecto proporciona scrapers de alto rendimiento para **Nuvio Media Hub**,
 | `animeav1` | **AnimeAV1** | ✅ | ✅ | ✅ | Sub / Latino | 🟢 100% Operativo |
 | `animejara` | **AnimeJara** | ✅ | ✅ | ✅ | Sub / Latino / Castellano | 🟢 100% Operativo |
 | `jkanime` | **JKAnime (AniList Engine)** | ✅ | ✅ | ✅ | Sub Español | 🟢 100% Operativo |
-| `detodopeliculas` | **DeTodoPeliculas** | ✅ | ✅ | ❌ | Latino | 🟡 En Migración |
-| `seriesmetro` | **SeriesMetro** | ❌ | ✅ | ❌ | Latino | 🟡 En Migración |
-| `seriesflix` | **SeriesFlix** | ❌ | ✅ | ❌ | Latino | 🟡 En Migración |
 
 ---
 
@@ -65,20 +60,20 @@ Los plugins de este repositorio cumplen estrictamente las restricciones del moto
 El repositorio incluye un **Runner & Auditor de Streams** que valida conectividad en vivo, mide latencia en milisegundos y verifica la respuesta `HTTP 200/206` de cada CDN.
 
 ```bash
-# Probar Película (Deadpool & Wolverine en LaMovie)
-node test.js 533535 movie lamovie
 
-# Probar Serie (Gravity Falls S01E01 en CineCalidad)
-node test.js 40075 tv 1 1 cinecalidad
+# Probar una película con un proveedor
+node test.js <TMDB_ID> movie <proveedor>
 
-# Probar Anime Split-Cour (Mushoku Tensei S02E15 en AnimeJara)
-node test.js 94664 tv 2 15 animejara
+# Probar una serie con temporada y episodio
+node test.js <TMDB_ID> tv <temporada> <episodio> <proveedor>
 
-# Probar Anime Continuo (One Piece S22E66 / Cap 1128 en JKAnime)
-node test.js 37854 tv 22 66 jkanime
+# Probar TODOS los proveedores en paralelo simultáneamente
+node test.js <TMDB_ID> <movie|tv> [temporada] [episodio] all
 
 # Probar TODOS los proveedores en paralelo simultáneamente
 node test.js 533535 movie all
+
+```
 
 🔗 URL del Manifest para Nuvio Media Hub:
 
@@ -89,9 +84,7 @@ https://raw.githubusercontent.com/SPECTRUM00-prog/Nuvio-Providers-Latino/main/ma
 
 ⚖️ Disclaimer
 
-Este proyecto fue desarrollado exclusivamente con fines educativos y de
-investigación sobre interoperabilidad de software, optimización de motores
-JavaScript ligeros (Hermes) y preservación de medios. El software no almacena,
-hostea ni transmite ningún archivo multimedia; únicamente indexa información
-disponible públicamente en la web.
-
+- **Ningún contenido es alojado ni almacenado por este repositorio.**
+- Los proveedores (scrapers) únicamente indexan y obtienen enlaces de contenido disponible públicamente en sitios web de terceros.
+- Los usuarios finales son los únicos responsables del uso del software y del cumplimiento de las leyes locales aplicables en su región.
+- Para asuntos, reclamaciones o avisos relacionados con derechos de autor (DMCA), comuníquese directamente con los servidores y servicios web donde se encuentra alojado el contenido real.
