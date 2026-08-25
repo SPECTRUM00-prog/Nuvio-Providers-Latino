@@ -1,4 +1,3 @@
-```markdown
 # 🌌 Nuvio-Spectrum-Latino
 
 > *"Si comprar no es poseer, el acceso libre y la preservación digital son una necesidad."*  
@@ -80,17 +79,19 @@ node test.js 37854 tv 22 66 jkanime
 
 # Probar TODOS los proveedores en paralelo simultáneamente
 node test.js 533535 movie all
-```
 
-### 🔗 URL del Manifest para Nuvio Media Hub:
-Para instalar o actualizar este repositorio en **Nuvio Media Hub**, agrega la siguiente URL en la sección de Plugins:
-```text
+🔗 URL del Manifest para Nuvio Media Hub:
+
+Para instalar o actualizar este repositorio en Nuvio Media Hub, agrega la
+siguiente URL en la sección de Plugins:
+
 https://raw.githubusercontent.com/SPECTRUM00-prog/Nuvio-Providers-Latino/main/manifest.json
-```
 
----
+⚖️ Disclaimer
 
-## ⚖️ Disclaimer
+Este proyecto fue desarrollado exclusivamente con fines educativos y de
+investigación sobre interoperabilidad de software, optimización de motores
+JavaScript ligeros (Hermes) y preservación de medios. El software no almacena,
+hostea ni transmite ningún archivo multimedia; únicamente indexa información
+disponible públicamente en la web.
 
-Este proyecto fue desarrollado exclusivamente con fines educativos y de investigación sobre interoperabilidad de software, optimización de motores JavaScript ligeros (Hermes) y preservación de medios. El software no almacena, hostea ni transmite ningún archivo multimedia; únicamente indexa información disponible públicamente en la web.
-```
