@@ -1,12 +1,12 @@
 {
   "name": "Latino Providers",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "scrapers": [
     {
       "id": "cinecalidad",
       "name": "CineCalidad",
-      "description": "Películas y Series en Latino Full HD desde CineCalidad. Vimeos, GoodStream, StreamWish, Filemoon.",
-      "version": "2.2.0",
+      "description": "Películas y Series en Latino Full HD desde CineCalidad (Vimeos, GoodStream, StreamWish, Filemoon).",
+      "version": "2.3.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/cinecalidad.js",
@@ -16,8 +16,8 @@
     {
       "id": "lamovie",
       "name": "LaMovie",
-      "description": "Películas y Series en Español Latino desde LaMovie.",
-      "version": "2.1.0",
+      "description": "Películas y Series en Español Latino desde LaMovie (Vimeos, GoodStream, StreamWish).",
+      "version": "2.2.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/lamovie.js",
@@ -27,8 +27,8 @@
     {
       "id": "sololatino",
       "name": "SoloLatino",
-      "description": "Películas y Series en Español Latino desde SoloLatino (VidHide, StreamWish).",
-      "version": "1.1.0",
+      "description": "Películas y Series en Español Latino desde SoloLatino / Embed69 (VidHide, StreamWish).",
+      "version": "1.2.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/sololatino.js",
@@ -38,8 +38,8 @@
     {
       "id": "hackstore",
       "name": "HackStore",
-      "description": "Películas y Series en Español Latino desde HackStore2.",
-      "version": "2.1.0",
+      "description": "Películas y Series en Español Latino desde HackStore2 (Vimeos, GoodStream, StreamWish, VidHide).",
+      "version": "2.2.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/hackstore.js",
@@ -49,8 +49,8 @@
     {
       "id": "pelisplus",
       "name": "PelisPlus",
-      "description": "Películas y Series en Español Latino desde PelisPlus / TioPlus (VidHide, Turbovid).",
-      "version": "1.0.0",
+      "description": "Películas y Series en Español Latino desde PelisPlus / TioPlus (VidHide, Turbovid, StreamWish).",
+      "version": "1.1.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/pelisplus.js",
@@ -60,13 +60,24 @@
     {
       "id": "jkanime",
       "name": "JKAnime",
-      "description": "Anime en emisión y finalizados en Sub Español desde JKAnime (Desu, VidHide, StreamWish, Mp4upload, Streamtape).",
-      "version": "1.0.0",
+      "description": "Anime en emisión y finalizados en Sub Español desde JKAnime (Desu, VidHide, StreamWish, MP4Upload, Streamtape).",
+      "version": "1.1.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/jkanime.js",
       "enabled": true,
-      "contentLanguage": ["es"]
+      "contentLanguage": ["es", "ja"]
+    },
+    {
+      "id": "animeav1",
+      "name": "AnimeAV1",
+      "description": "Anime en Sub Español y Doblaje Latino en Full HD 1080p (Zilla HLS, MP4Upload, StreamWish).",
+      "version": "1.0.0",
+      "author": "SPECTRUM00-prog",
+      "supportedTypes": ["movie", "tv", "series"],
+      "filename": "providers/animeav1.js",
+      "enabled": true,
+      "contentLanguage": ["es", "ja"]
     },
     {
       "id": "detodopeliculas",
@@ -76,7 +87,7 @@
       "author": "KennethJYS",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/detodopeliculas.js",
-      "enabled": true,
+      "enabled": false,
       "contentLanguage": ["es"]
     },
     {
