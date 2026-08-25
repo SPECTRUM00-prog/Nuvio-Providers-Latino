@@ -1,7 +1,7 @@
 /**
  * Provider: AnimeJara (Anime Series y Películas en Sub, Latino y Castellano)
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
- * Rendimiento: Ultra-rápido (<1.5s), Zero-Dependencies, Timeout Seguro.
+ * Rendimiento: Multi-Server Exhaustivo, Zero-Dependencies, Fast Timeout.
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -188,7 +188,7 @@ function getServerLabel(url) {
     if (u.indexOf("hgcloud") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("flaswish") !== -1 || u.indexOf("audinifer") !== -1 || u.indexOf("vibuxer") !== -1) return "StreamWish";
     if (u.indexOf("vidhide") !== -1 || u.indexOf("filelions") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) return "VidHide";
     if (u.indexOf("mp4upload") !== -1) return "MP4Upload";
-    if (u.indexOf("streamtape") !== -1) return "Streamtape";
+    if (u.indexOf("streamtape") !== -1 || u.indexOf("tapecontent") !== -1) return "Streamtape";
     if (u.indexOf("yourupload") !== -1 || u.indexOf("nyuu.streamhj") !== -1) return "YourUpload";
     if (u.indexOf("uqload") !== -1) return "Uqload";
     if (u.indexOf("mixdrop") !== -1 || u.indexOf("mxdrop") !== -1 || u.indexOf("miixdrop") !== -1) return "Mixdrop";
@@ -407,7 +407,7 @@ function dispatchResolver(rawUrl) {
     if (u.indexOf("byse") !== -1 || u.indexOf("filemoon") !== -1) return resolveFilemoon(rawUrl);
     if (u.indexOf("vidhide") !== -1 || u.indexOf("filelions") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) return resolveVidHide(rawUrl);
     if (u.indexOf("mp4upload") !== -1) return resolveMp4upload(rawUrl);
-    if (u.indexOf("streamtape") !== -1) return resolveStreamtape(rawUrl);
+    if (u.indexOf("streamtape") !== -1 || u.indexOf("tapecontent") !== -1) return resolveStreamtape(rawUrl);
     if (u.indexOf("yourupload") !== -1 || u.indexOf("nyuu.streamhj") !== -1) return resolveYourUpload(rawUrl);
     if (u.indexOf("uqload") !== -1) return resolveUqload(rawUrl);
     if (u.indexOf("mixdrop") !== -1 || u.indexOf("mxdrop") !== -1 || u.indexOf("miixdrop") !== -1) return resolveMixdrop(rawUrl);
@@ -445,7 +445,6 @@ function searchMultiQuery(queries) {
     function tryNext(idx) {
         if (idx >= queries.length) return Promise.resolve([]);
         return searchAnimeJara(queries[idx]).then(function(animes) {
-            // Early-exit: si la primera consulta devuelve resultados, no saturar con más peticiones
             if (animes && animes.length > 0) return animes;
             return tryNext(idx + 1);
         });
@@ -500,18 +499,18 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) 
         pageUrls.push(`${BASE_URL}/movie/${slug}/`);
         pageUrls.push(`${BASE_URL}/anime/${slug}`);
     } else {
-        // 1. Ruta canónica estándar directa
+        // Rutas canónicas directas
         pageUrls.push(`${BASE_URL}/episode/${slug}-${sNum}x${eNum}/`);
+        pageUrls.push(`${BASE_URL}/episode/${slug}-${sNum}x${eNum}`);
 
-        // 2. Ruta alternativa para animes de emisión continua / absoluta (ej. One Piece)
         if (absoluteEp && absoluteEp !== eNum) {
             pageUrls.push(`${BASE_URL}/episode/${slug}-1x${absoluteEp}/`);
             pageUrls.push(`${BASE_URL}/episode/${slug}-${absoluteEp}/`);
         } else {
             pageUrls.push(`${BASE_URL}/episode/${slug}-${eNum}/`);
+            pageUrls.push(`${BASE_URL}/episode/${slug}-episodio-${eNum}/`);
         }
 
-        // 3. Fallback directo a la página principal del anime
         pageUrls.push(`${BASE_URL}/anime/${slug}`);
     }
 
@@ -567,9 +566,12 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
     .then(function(html) {
         if (!html || html.length < 50) return [];
 
+        // Normalizar y desescapar barras invertidas JSON (\/)
+        var cleanHtml = decodeHtmlEntities(html).replace(/\\\//g, "/");
+
         var lang = "SUB";
-        var titleHeaderMatch = html.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
-        var headerText = titleHeaderMatch ? titleHeaderMatch[1].toUpperCase() : html.toUpperCase();
+        var titleHeaderMatch = cleanHtml.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
+        var headerText = titleHeaderMatch ? titleHeaderMatch[1].toUpperCase() : cleanHtml.toUpperCase();
 
         if (headerText.indexOf("LATINO") !== -1 || headerText.indexOf(" LAT ") !== -1 || headerText.indexOf("- LAT") !== -1) {
             lang = "LAT";
@@ -580,12 +582,34 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
         }
 
         var serverUrls = [];
+
+        // 1. playVideo con URLs simples o escapadas
         var playRegex = /playVideo\((?:&quot;|["'])(https?:\/\/[^"'\s<>]+?)(?:&quot;|["'])\)/gi;
         var pMatch;
-        while ((pMatch = playRegex.exec(html)) !== null) {
+        while ((pMatch = playRegex.exec(cleanHtml)) !== null) {
             var sUrl = pMatch[1].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
             if (sUrl && serverUrls.indexOf(sUrl) === -1) {
                 serverUrls.push(sUrl);
+            }
+        }
+
+        // 2. Escáner universal de enlaces directos a lockers en el HTML
+        var lockerRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:streamwish|hlswish|flaswish|hgcloud|audinifer|vibuxer|filemoon|byse|bysekoze|vidhide|filelions|minochinos|callistanise|mp4upload|streamtape|tapecontent|yourupload|uqload|mixdrop|mxdrop|miixdrop)\.[a-z]{2,8}(?::\d+)?\/[^\s"'<>]+/gi;
+        var lMatch;
+        while ((lMatch = lockerRegex.exec(cleanHtml)) !== null) {
+            var directLocker = lMatch[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&").replace(/\\/g, "");
+            if (directLocker && serverUrls.indexOf(directLocker) === -1) {
+                serverUrls.push(directLocker);
+            }
+        }
+
+        // 3. Enlaces puente de YourUpload
+        var puenteRegex = /nyuu\.streamhj\.top\/go\.php\?v=(https?:\/\/[^\s"'<>]+)/gi;
+        var puMatch;
+        while ((puMatch = puenteRegex.exec(cleanHtml)) !== null) {
+            var unwrapped = decodeURIComponent(puMatch[1]);
+            if (unwrapped && serverUrls.indexOf(unwrapped) === -1) {
+                serverUrls.push(unwrapped);
             }
         }
 
@@ -680,7 +704,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     return b.score - a.score;
                 });
 
-                // Limitar a los 2 mejores candidatos para evitar cuellos de botella
                 var topCandidates = scored.slice(0, 2);
 
                 function tryNextAnime(aIdx) {
