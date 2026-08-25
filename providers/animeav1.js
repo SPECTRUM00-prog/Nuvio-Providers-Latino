@@ -69,13 +69,14 @@ function unpackDeanEdwards(p, a, c, k) {
 }
 
 function probeM3u8Quality(m3u8Url, headers) {
-    if (!m3u8Url || !m3u8Url.includes(".m3u8")) return Promise.resolve("720p");
+    if (!m3u8Url || !m3u8Url.includes(".m3u8")) return Promise.resolve("1080p");
     return fetch(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" })
         .then(function(res) { return res.ok ? res.text() : ""; })
         .then(function(text) {
             if (!text || !text.includes("#EXT-X-STREAM-INF")) {
                 if (m3u8Url.includes("1080")) return "1080p";
-                return "720p";
+                if (m3u8Url.includes("720")) return "720p";
+                return "1080p";
             }
             var maxH = 0, resRegex = /RESOLUTION=\d+x(\d+)/gi, match;
             while ((match = resRegex.exec(text)) !== null) {
@@ -85,9 +86,9 @@ function probeM3u8Quality(m3u8Url, headers) {
             if (maxH >= 1080) return "1080p";
             if (maxH >= 720) return "720p";
             if (maxH >= 480) return "480p";
-            return "720p";
+            return "1080p";
         })
-        .catch(function() { return "720p"; });
+        .catch(function() { return "1080p"; });
 }
 
 function getSeasonSlugVariants(baseSlug, sNum) {
@@ -121,38 +122,30 @@ function extractEmbedsFromSvelteKit(nodes) {
             if (item && typeof item === "object" && typeof item.embeds === "number") {
                 var embedsObj = dataArr[item.embeds];
                 if (embedsObj && typeof embedsObj === "object") {
-                    // 1. Extraer SUB
-                    if (typeof embedsObj.SUB === "number") {
-                        var subList = dataArr[embedsObj.SUB];
-                        if (Array.isArray(subList)) {
-                            for (var j = 0; j < subList.length; j++) {
-                                var srvItem = dataArr[subList[j]];
-                                if (srvItem && typeof srvItem === "object") {
-                                    var sName = dataArr[srvItem.server] || "HLS";
-                                    var sUrl = dataArr[srvItem.url] || "";
-                                    if (sUrl && typeof sUrl === "string" && sUrl.startsWith("http")) {
-                                        results.push({ lang: "SUB", server: sName, url: sUrl });
+                    
+                    var langKeys = Object.keys(embedsObj);
+                    for (var l = 0; l < langKeys.length; l++) {
+                        var lKey = langKeys[l];
+                        var langLabel = (lKey === "DUB" || lKey === "LAT") ? "LAT" : "SUB";
+                        var listIdx = embedsObj[lKey];
+
+                        if (typeof listIdx === "number") {
+                            var srvList = dataArr[listIdx];
+                            if (Array.isArray(srvList)) {
+                                for (var j = 0; j < srvList.length; j++) {
+                                    var srvItem = dataArr[srvList[j]];
+                                    if (srvItem && typeof srvItem === "object") {
+                                        var sName = dataArr[srvItem.server] || "HLS";
+                                        var sUrl = dataArr[srvItem.url] || "";
+                                        if (sUrl && typeof sUrl === "string" && sUrl.startsWith("http")) {
+                                            results.push({ lang: langLabel, server: sName, url: sUrl });
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                    // 2. Extraer DUB (Latino)
-                    if (typeof embedsObj.DUB === "number") {
-                        var dubList = dataArr[embedsObj.DUB];
-                        if (Array.isArray(dubList)) {
-                            for (var k = 0; k < dubList.length; k++) {
-                                var dItem = dataArr[dubList[k]];
-                                if (dItem && typeof dItem === "object") {
-                                    var dName = dataArr[dItem.server] || "HLS";
-                                    var dUrl = dataArr[dItem.url] || "";
-                                    if (dUrl && typeof dUrl === "string" && dUrl.startsWith("http")) {
-                                        results.push({ lang: "LAT", server: dName, url: dUrl });
-                                    }
-                                }
-                            }
-                        }
-                    }
+
                 }
             }
         }
@@ -166,33 +159,29 @@ function extractEmbedsFromSvelteKit(nodes) {
 // ==========================================
 
 function resolveZillaHls(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
-        redirect: "follow"
-    })
-    .then(function(res) {
-        var cType = res.headers.get("content-type") || "";
-        if (cType.includes("mpegurl") || res.url.includes(".m3u8")) {
-            return probeM3u8Quality(res.url, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
-                return { url: res.url, quality: q, headers: { "User-Agent": USER_AGENT, "Referer": url } };
-            });
-        }
-        return res.text().then(function(html) {
-            if (html.includes("#EXTM3U")) {
-                return { url: url, quality: "1080p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
-            }
-            var m3u8Match = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i) ||
-                            html.match(/file:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-            if (m3u8Match) {
-                var streamUrl = m3u8Match[1] || m3u8Match[0];
-                return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
-                    return { url: streamUrl, quality: q, headers: { "User-Agent": USER_AGENT, "Referer": url } };
-                });
-            }
-            return null;
-        });
-    })
-    .catch(function() { return null; });
+    var idMatch = url.match(/\/play\/([a-fA-F0-9]{32})/i) || url.match(/\/([a-fA-F0-9]{32})/i);
+    var id = idMatch ? idMatch[1] : null;
+    var directM3u8 = id ? `https://player.zilla-networks.com/m3u8/${id}` : url.replace("/play/", "/m3u8/");
+
+    var requestHeaders = {
+        "User-Agent": USER_AGENT,
+        "Referer": `${BASE_URL}/`,
+        "Origin": BASE_URL
+    };
+
+    return probeM3u8Quality(directM3u8, requestHeaders).then(function(q) {
+        return {
+            url: directM3u8,
+            quality: q || "1080p",
+            headers: requestHeaders
+        };
+    }).catch(function() {
+        return {
+            url: directM3u8,
+            quality: "1080p",
+            headers: requestHeaders
+        };
+    });
 }
 
 function resolveMp4upload(url) {
@@ -202,18 +191,28 @@ function resolveMp4upload(url) {
     })
     .then(function(res) { return res.text(); })
     .then(function(html) {
+        // Detección precisa de calidad FHD (1080p) vs HD (720p)
+        var quality = "1080p";
+        if (html.includes("FHD") || html.includes("1080")) {
+            quality = "1080p";
+        } else if (html.includes("HD") || html.includes("720")) {
+            quality = "720p";
+        } else if (html.includes("SD") || html.includes("480")) {
+            quality = "480p";
+        }
+
         var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
         if (packMatch) {
             var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
             var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
                            unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
             if (srcMatch) {
-                return { url: srcMatch[1], quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                return { url: srcMatch[1], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": url } };
             }
         }
         var directMatch = html.match(/https?:\/\/[a-zA-Z0-9.-]+\.mp4upload\.com(?::\d+)?\/[a-zA-Z0-9/._-]+\.mp4/i);
         if (directMatch) {
-            return { url: directMatch[0], quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+            return { url: directMatch[0], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": url } };
         }
         return null;
     })
@@ -267,8 +266,8 @@ function dispatchResolver(embed) {
             if (!res) return null;
             return {
                 name: "AnimeAV1",
-                title: `${res.quality || "720p"} · ${embed.lang} · MP4Upload`,
-                quality: res.quality || "720p",
+                title: `${res.quality || "1080p"} · ${embed.lang} · MP4Upload`,
+                quality: res.quality || "1080p",
                 url: res.url,
                 headers: res.headers || {}
             };
@@ -452,7 +451,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return searchAnimeAV1(searchQueries).then(function(slugs) {
                 var candidateSlugs = slugs.slice();
 
-                // Incorporar slugs directos al final de la lista si no estaban
                 for (var s = 0; s < directSlugs.length; s++) {
                     var dSlug = directSlugs[s];
                     if (dSlug && candidateSlugs.indexOf(dSlug) === -1) {
