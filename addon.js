@@ -12,7 +12,7 @@ const animejara = require("./providers/animejara.js");
 
 const manifest = {
     id: "org.spectrum.latino",
-    version: "1.0.0",
+    version: "1.0.1",
     name: "Spectrum Latino",
     description: "Películas, Series y Anime en Latino, Castellano y Sub Español en 1080p y 4K.",
     resources: ["stream"],
@@ -24,20 +24,29 @@ const manifest = {
 const builder = new addonBuilder(manifest);
 
 const providers = [
-    { name: "CineCalidad", mod: cinecalidad },
-    { name: "LaMovie", mod: lamovie },
-    { name: "SoloLatino", mod: sololatino },
-    { name: "HackStore", mod: hackstore },
-    { name: "PelisPlus", mod: pelisplus },
-    { name: "JKAnime", mod: jkanime },
-    { name: "AnimeAV1", mod: animeav1 },
-    { name: "AnimeJara", mod: animejara }
+    { name: "CineCalidad", mod: cinecalidad, isAnime: false },
+    { name: "LaMovie",     mod: lamovie,     isAnime: false },
+    { name: "SoloLatino",  mod: sololatino,  isAnime: false },
+    { name: "HackStore",   mod: hackstore,   isAnime: false },
+    { name: "PelisPlus",   mod: pelisplus,   isAnime: false },
+    { name: "JKAnime",     mod: jkanime,     isAnime: true },
+    { name: "AnimeAV1",    mod: animeav1,    isAnime: true },
+    { name: "AnimeJara",   mod: animejara,   isAnime: true }
 ];
 
 function timeoutPromise(ms) {
     return new Promise(function(resolve) {
         setTimeout(function() { resolve([]); }, ms);
     });
+}
+
+function getQualityWeight(quality) {
+    var q = (quality || "").toLowerCase();
+    if (q.indexOf("4k") !== -1 || q.indexOf("2160") !== -1) return 4;
+    if (q.indexOf("1080") !== -1) return 3;
+    if (q.indexOf("720") !== -1) return 2;
+    if (q.indexOf("480") !== -1) return 1;
+    return 0;
 }
 
 builder.defineStreamHandler(function(args) {
@@ -54,12 +63,18 @@ builder.defineStreamHandler(function(args) {
 
         console.log(`[Stremio] Consultando TMDB ID ${target.tmdbId} (${target.mediaType}) S:${target.season || '-'} E:${target.episode || '-'}`);
 
-        // Ejecutar los 8 scrapers en paralelo con tope de 6 segundos por scraper
-        var promises = providers.map(function(p) {
+        var isJapanese = target.originalLanguage === "ja";
+
+        var activeProviders = providers.filter(function(p) {
+            if (p.isAnime && !isJapanese) return false;
+            return true;
+        });
+
+        var promises = activeProviders.map(function(p) {
             var scraperPromise = p.mod.getStreams(target.tmdbId, target.mediaType, target.season, target.episode)
                 .catch(function() { return []; });
 
-            return Promise.race([scraperPromise, timeoutPromise(6500)]).then(function(res) {
+            return Promise.race([scraperPromise, timeoutPromise(4800)]).then(function(res) {
                 var list = Array.isArray(res) ? res : [];
                 console.log(`  [${p.name}] -> ${list.length} streams`);
                 return list;
@@ -78,6 +93,7 @@ builder.defineStreamHandler(function(args) {
                             name: `[${st.name || "Latino"}]\n${st.quality || "1080p"}`,
                             title: `${st.title || st.name}\n🔗 Servidor Directo`,
                             url: st.url,
+                            quality: st.quality || "1080p",
                             behaviorHints: {
                                 notWebReady: false,
                                 proxyHeaders: {
@@ -88,6 +104,10 @@ builder.defineStreamHandler(function(args) {
                     }
                 }
             }
+
+            allStreams.sort(function(a, b) {
+                return getQualityWeight(b.quality) - getQualityWeight(a.quality);
+            });
 
             console.log(`[Stremio] ✓ Total entregado: ${allStreams.length} stream(s)`);
             return { streams: allStreams };
