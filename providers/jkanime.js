@@ -15,7 +15,7 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y DECODIFICADOR BASE64 PURO
+// UTILIDADES Y ALGORITMO UNIVERSAL
 // ==========================================
 
 function decodeBase64Safe(input) {
@@ -111,7 +111,7 @@ function fetchAniListMapping(searchName) {
 
     var gqlQuery = `
     query ($search: String) {
-      Page(page: 1, perPage: 8) {
+      Page(page: 1, perPage: 6) {
         media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
           id
           title {
@@ -170,7 +170,6 @@ function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
         return false;
     });
 
-    // 1. Caso Shonen Continuo (One Piece, Detective Conan, Naruto)
     if (matchingEntries.length === 0) {
         var baseEntry = aniListMedia[0];
         return {
@@ -179,7 +178,6 @@ function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
         };
     }
 
-    // 2. Caso Split-Cour (Mushoku Tensei, Spy x Family)
     if (matchingEntries.length > 1) {
         var part1 = matchingEntries.find(function(m) {
             var f = (m.title.romaji + " " + m.title.english).toLowerCase();
@@ -220,33 +218,33 @@ function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
 // ==========================================
 
 function resolveStreamWish(url) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }, redirect: "follow" })
-        .then(function(res) {
-            var hostMatch = (res.url || url).match(/^(https?:\/\/[^/]+)/i);
-            var host = hostMatch ? hostMatch[1] : "https://flaswish.com";
-            return res.text().then(function(html) {
-                var streamUrl = null;
-                var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-                if (packMatch) {
-                    var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-                    var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
-                    if (m3u8Match) {
-                        streamUrl = m3u8Match[1].startsWith("/") ? host + m3u8Match[1] : m3u8Match[1];
-                    }
-                }
-                if (!streamUrl) {
-                    var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
-                    if (directMatch) streamUrl = directMatch[0];
-                }
+    var idMatch = url.match(/\/(?:e|v|f)\/([a-zA-Z0-9]+)/);
+    var targetUrl = idMatch ? "https://hlswish.com/e/" + idMatch[1] : url;
 
-                if (streamUrl) {
-                    return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
-                        return { url: streamUrl, serverName: "StreamWish", quality: q || "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
-                    });
-                }
-                return null;
+    return fetch(targetUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
+        redirect: "follow"
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+        if (direct) {
+            return probeM3u8Quality(direct[1], { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
+                return { url: direct[1], serverName: "StreamWish", quality: q, headers: { "User-Agent": USER_AGENT, "Referer": targetUrl } };
             });
-        }).catch(function() { return null; });
+        }
+        var unpacked = unpackDeanEdwards(html);
+        if (unpacked) {
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
+            if (m3u8) {
+                return probeM3u8Quality(m3u8[0], { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
+                    return { url: m3u8[0], serverName: "StreamWish", quality: q, headers: { "User-Agent": USER_AGENT, "Referer": targetUrl } };
+                });
+            }
+        }
+        return null;
+    })
+    .catch(function() { return null; });
 }
 
 function resolveVidHide(url) {
@@ -270,7 +268,7 @@ function resolveVidHide(url) {
                 if (streamUrl) {
                     if (streamUrl.startsWith("/")) streamUrl = host + streamUrl;
                     return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": finalUrl }).then(function(q) {
-                        return { url: streamUrl, serverName: "VidHide", quality: q || "720p", headers: { "User-Agent": USER_AGENT, "Referer": finalUrl } };
+                        return { url: streamUrl, serverName: "VidHide", quality: q, headers: { "User-Agent": USER_AGENT, "Referer": finalUrl } };
                     });
                 }
                 return null;
@@ -446,7 +444,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
 
-            // 1. Consultar AniList con mapeo Shonen Continuo / Split-Cour
+            // 1. Consultar AniList GraphQL
             return fetchAniListMapping(searchKeyword).then(function(aniListMedia) {
                 var aniTarget = resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp);
                 var pageUrlsToTry = [];
@@ -456,7 +454,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     pageUrlsToTry.push(`${BASE_URL}/${aniTarget.slug}/${targetEp}/`);
                 }
 
-                // 2. Respaldo por si el slug base directo difiere
                 var rawBaseSlug = cleanTitle(title);
                 if (isMovie) {
                     pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/pelicula/`);
