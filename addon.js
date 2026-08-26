@@ -12,7 +12,7 @@ const animejara = require("./providers/animejara.js");
 
 const manifest = {
     id: "org.spectrum.latino",
-    version: "1.0.2",
+    version: "1.0.4",
     name: "Spectrum Latino",
     description: "Películas, Series y Anime en Latino, Castellano y Sub Español en 1080p y 4K.",
     resources: ["stream"],
@@ -26,11 +26,11 @@ const builder = new addonBuilder(manifest);
 const DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 const providers = [
-    { name: "CineCalidad", mod: cinecalidad, isAnime: false },
-    { name: "LaMovie",     mod: lamovie,     isAnime: false },
     { name: "SoloLatino",  mod: sololatino,  isAnime: false },
-    { name: "HackStore",   mod: hackstore,   isAnime: false },
     { name: "PelisPlus",   mod: pelisplus,   isAnime: false },
+    { name: "HackStore",   mod: hackstore,   isAnime: false },
+    { name: "LaMovie",     mod: lamovie,     isAnime: false },
+    { name: "CineCalidad", mod: cinecalidad, isAnime: false },
     { name: "JKAnime",     mod: jkanime,     isAnime: true },
     { name: "AnimeAV1",    mod: animeav1,    isAnime: true },
     { name: "AnimeJara",   mod: animejara,   isAnime: true }
@@ -40,6 +40,25 @@ function timeoutPromise(ms) {
     return new Promise(function(resolve) {
         setTimeout(function() { resolve([]); }, ms);
     });
+}
+
+function sanitizeHeaders(headers, defaultReferer) {
+    var clean = {
+        "User-Agent": DEFAULT_UA
+    };
+    if (headers && typeof headers === "object") {
+        if (headers.Referer || headers.referer) {
+            clean["Referer"] = headers.Referer || headers.referer;
+        } else if (defaultReferer) {
+            clean["Referer"] = defaultReferer;
+        }
+        if (headers.Origin || headers.origin) {
+            clean["Origin"] = headers.Origin || headers.origin;
+        }
+    } else if (defaultReferer) {
+        clean["Referer"] = defaultReferer;
+    }
+    return clean;
 }
 
 function getQualityWeight(quality) {
@@ -88,8 +107,7 @@ builder.defineStreamHandler(function(args) {
                 for (var s = 0; s < streamList.length; s++) {
                     var st = streamList[s];
                     if (st && st.url) {
-                        var reqHeaders = st.headers || {};
-                        if (!reqHeaders["User-Agent"]) reqHeaders["User-Agent"] = DEFAULT_UA;
+                        var cleanHeaders = sanitizeHeaders(st.headers, st.referer);
 
                         allStreams.push({
                             name: `[${st._provider || "Latino"}]\n${st.quality || "1080p"}`,
@@ -99,7 +117,7 @@ builder.defineStreamHandler(function(args) {
                             behaviorHints: {
                                 notWebReady: false,
                                 proxyHeaders: {
-                                    request: reqHeaders
+                                    request: cleanHeaders
                                 }
                             }
                         });
