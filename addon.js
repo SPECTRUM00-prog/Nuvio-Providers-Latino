@@ -1,7 +1,6 @@
-const { addonBuilder } = require("stremio-addon-sdk");
+﻿const { addonBuilder } = require("stremio-addon-sdk");
 const { resolveToTmdb } = require("./helpers/tmdb.js");
 
-// Importar los 8 proveedores de Nuvio
 const cinecalidad = require("./providers/cinecalidad.js");
 const lamovie = require("./providers/lamovie.js");
 const sololatino = require("./providers/sololatino.js");
@@ -24,7 +23,6 @@ const manifest = {
 
 const builder = new addonBuilder(manifest);
 
-// Lista de proveedores activos
 const providers = [
     { name: "CineCalidad", mod: cinecalidad },
     { name: "LaMovie", mod: lamovie },
@@ -36,27 +34,36 @@ const providers = [
     { name: "AnimeJara", mod: animejara }
 ];
 
+function timeoutPromise(ms) {
+    return new Promise(function(resolve) {
+        setTimeout(function() { resolve([]); }, ms);
+    });
+}
+
 builder.defineStreamHandler(function(args) {
     var type = args.type;
     var id = args.id;
 
-    console.log(`[Stremio] Petición de stream: Tipo = ${type}, ID = ${id}`);
+    console.log(`[Stremio] Peticion: ${type} ${id}`);
 
     return resolveToTmdb(id, type).then(function(target) {
         if (!target || !target.tmdbId) {
-            console.log("[Stremio] No se pudo resolver a TMDB ID");
+            console.log("[Stremio] TMDB ID no encontrado.");
             return { streams: [] };
         }
 
-        console.log(`[Stremio] Resuelto a TMDB ID ${target.tmdbId} (${target.mediaType}) S:${target.season} E:${target.episode}`);
+        console.log(`[Stremio] Consultando TMDB ID ${target.tmdbId} (${target.mediaType}) S:${target.season || '-'} E:${target.episode || '-'}`);
 
-        // Ejecutar los 8 scrapers concurrentemente en paralelo
+        // Ejecutar los 8 scrapers en paralelo con tope de 6 segundos por scraper
         var promises = providers.map(function(p) {
-            return p.mod.getStreams(target.tmdbId, target.mediaType, target.season, target.episode)
-                .catch(function(err) {
-                    console.log(`[Stremio] Error en ${p.name}: ${err.message}`);
-                    return [];
-                });
+            var scraperPromise = p.mod.getStreams(target.tmdbId, target.mediaType, target.season, target.episode)
+                .catch(function() { return []; });
+
+            return Promise.race([scraperPromise, timeoutPromise(6500)]).then(function(res) {
+                var list = Array.isArray(res) ? res : [];
+                console.log(`  [${p.name}] -> ${list.length} streams`);
+                return list;
+            });
         });
 
         return Promise.all(promises).then(function(results) {
@@ -64,31 +71,29 @@ builder.defineStreamHandler(function(args) {
 
             for (var r = 0; r < results.length; r++) {
                 var streamList = results[r];
-                if (Array.isArray(streamList)) {
-                    for (var s = 0; s < streamList.length; s++) {
-                        var st = streamList[s];
-                        if (st && st.url) {
-                            allStreams.push({
-                                name: `[${st.name || "Latino"}]\n${st.quality || "1080p"}`,
-                                title: `${st.title || st.name}\n🔗 Servidor Directo`,
-                                url: st.url,
-                                behaviorHints: {
-                                    notWebReady: false,
-                                    proxyHeaders: {
-                                        request: st.headers || {} // Inyecta Referer y User-Agent en el reproductor de Stremio
-                                    }
+                for (var s = 0; s < streamList.length; s++) {
+                    var st = streamList[s];
+                    if (st && st.url) {
+                        allStreams.push({
+                            name: `[${st.name || "Latino"}]\n${st.quality || "1080p"}`,
+                            title: `${st.title || st.name}\n🔗 Servidor Directo`,
+                            url: st.url,
+                            behaviorHints: {
+                                notWebReady: false,
+                                proxyHeaders: {
+                                    request: st.headers || {}
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                 }
             }
 
-            console.log(`[Stremio] Entregando ${allStreams.length} stream(s) a Stremio`);
+            console.log(`[Stremio] ✓ Total entregado: ${allStreams.length} stream(s)`);
             return { streams: allStreams };
         });
     }).catch(function(err) {
-        console.log(`[Stremio] Error general: ${err.message}`);
+        console.log(`[Stremio] Error: ${err.message}`);
         return { streams: [] };
     });
 });
