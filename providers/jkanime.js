@@ -15,7 +15,7 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y ALGORITMO UNIVERSAL
+// UTILIDADES Y DECODIFICADOR BASE64 PURO
 // ==========================================
 
 function decodeBase64Safe(input) {
@@ -111,7 +111,7 @@ function fetchAniListMapping(searchName) {
 
     var gqlQuery = `
     query ($search: String) {
-      Page(page: 1, perPage: 6) {
+      Page(page: 1, perPage: 8) {
         media(search: $search, type: ANIME, sort: SEARCH_MATCH) {
           id
           title {
@@ -170,6 +170,7 @@ function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
         return false;
     });
 
+    // 1. Caso Shonen Continuo (One Piece, Detective Conan, Naruto)
     if (matchingEntries.length === 0) {
         var baseEntry = aniListMedia[0];
         return {
@@ -178,6 +179,7 @@ function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
         };
     }
 
+    // 2. Caso Split-Cour (Mushoku Tensei, Spy x Family)
     if (matchingEntries.length > 1) {
         var part1 = matchingEntries.find(function(m) {
             var f = (m.title.romaji + " " + m.title.english).toLowerCase();
@@ -454,6 +456,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     pageUrlsToTry.push(`${BASE_URL}/${aniTarget.slug}/${targetEp}/`);
                 }
 
+                // 2. Prioridad de Respaldo: Si es Shonen Continuo (One Piece), probar absoluteEp antes de eNum
                 var rawBaseSlug = cleanTitle(title);
                 if (isMovie) {
                     pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/pelicula/`);
