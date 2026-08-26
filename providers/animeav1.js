@@ -1,13 +1,13 @@
 /**
  * Provider: AnimeAV1 (Anime en Sub Español y Doblaje Latino)
- * Motor: AniList GraphQL Engine + SvelteKit Tree Parser
+ * Motor: AniList GraphQL Engine + Algoritmo Universal de Temporadas y SvelteKit Tree Parser
  * Arquitectura: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const BASE_URL = "https://animeav1.com";
 const ANILIST_URL = "https://graphql.anilist.co";
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 const DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -16,7 +16,7 @@ const DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES Y NORMALIZACIÓN
+// 1. ALGORITMOS MATEMÁTICOS Y NORMALIZACIÓN
 // ==========================================
 
 function normalizeText(text) {
@@ -40,16 +40,104 @@ function hasJapaneseChars(str) {
     return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
 }
 
-function isSlugSimilar(query, slug) {
-    if (!query || !slug) return false;
-    var cleanQ = normalizeText(query).replace(/-/g, " ");
-    var cleanS = normalizeText(slug).replace(/-/g, " ");
-    var qWords = cleanQ.split(/\s+/).filter(function(w) { return w.length > 2; });
-    if (qWords.length === 0) return cleanS.indexOf(cleanQ) !== -1;
-    for (var i = 0; i < qWords.length; i++) {
-        if (cleanS.indexOf(qWords[i]) !== -1) return true;
+function toRoman(num) {
+    var val = [100, 90, 50, 40, 10, 9, 5, 4, 1];
+    var syms = ["c", "xc", "l", "xl", "x", "ix", "v", "iv", "i"];
+    var roman = "";
+    var n = parseInt(num, 10) || 1;
+    for (var i = 0; i < val.length; i++) {
+        while (n >= val[i]) {
+            roman += syms[i];
+            n -= val[i];
+        }
     }
-    return false;
+    return roman || "i";
+}
+
+function toOrdinal(num) {
+    var n = parseInt(num, 10) || 1;
+    var s = ["th", "st", "nd", "rd"];
+    var v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+function getUniversalSeasonVariants(baseSlug, sNum, isMovie) {
+    if (!baseSlug) return [];
+    if (isMovie) {
+        return [
+            baseSlug,
+            baseSlug + "-movie",
+            baseSlug + "-the-movie",
+            baseSlug + "-la-pelicula",
+            baseSlug + "-pelicula"
+        ];
+    }
+
+    var num = parseInt(sNum, 10) || 1;
+    var roman = toRoman(num);
+    var ordinal = toOrdinal(num);
+
+    var list = [];
+    if (num === 1) {
+        list.push(baseSlug + "-s1");
+        list.push(baseSlug);
+        list.push(baseSlug + "-season-1");
+        list.push(baseSlug + "-1st-season");
+    } else {
+        list.push(baseSlug + "-s" + num);
+        list.push(baseSlug + "-" + num);
+        list.push(baseSlug + "-" + ordinal + "-season");
+        list.push(baseSlug + "-season-" + num);
+        list.push(baseSlug + "-" + roman);
+        list.push(baseSlug + "-part-" + num);
+        list.push(baseSlug + "-part-" + roman);
+        list.push(baseSlug + "-beyond");
+    }
+    return list;
+}
+
+function scoreSlugForSeason(slug, sNum, isMovie) {
+    var s = slug.toLowerCase();
+    if (isMovie) {
+        if (s.includes("movie") || s.includes("pelicula")) return 20;
+        return 5;
+    }
+
+    var num = parseInt(sNum, 10) || 1;
+    var roman = toRoman(num);
+    var ordinal = toOrdinal(num);
+
+    if (num === 1) {
+        if (s.includes("-s1") || s.includes("-season-1") || s.includes("-1st-season")) return 30;
+        // Penalizar temporadas superiores
+        if (s.includes("-s2") || s.includes("-s3") || s.includes("-s4") || s.includes("-2nd") || s.includes("-3rd") || s.includes("-ii") || s.includes("-iii") || s.includes("-iv") || s.includes("-part-2")) {
+            return -25;
+        }
+        return 15;
+    }
+
+    // Temporadas superiores (sNum >= 2)
+    var targetTokens = [
+        "-s" + num,
+        "-" + ordinal + "-season",
+        "-season-" + num,
+        "-" + roman,
+        "-part-" + num,
+        "-part-" + roman
+    ];
+
+    for (var i = 0; i < targetTokens.length; i++) {
+        if (s.includes(targetTokens[i])) {
+            return 30 - i;
+        }
+    }
+
+    // Penalizar si corresponde a la temporada 1 cuando se pidió otra temporada
+    if (s.includes("-s1") || (!s.includes("-" + num) && !s.includes("-" + roman))) {
+        return -20;
+    }
+
+    return 0;
 }
 
 function scoreSlugCandidate(slug, titles) {
@@ -125,42 +213,8 @@ function probeM3u8Quality(m3u8Url, headers) {
         .catch(function() { return "720p"; });
 }
 
-function scoreSlugForSeason(slug, sNum) {
-    var s = slug.toLowerCase();
-    if (sNum === 1) {
-        if (s.includes("-ii") || s.includes("-iii") || s.includes("-iv") || s.includes("-2") || s.includes("-3") || s.includes("-beyond") || s.includes("-part-2") || s.includes("-xx")) return -10;
-        return 10;
-    }
-    var patterns = {
-        2: ["-beyond", "-ii", "-2", "-2nd", "-season-2", "-2nd-season", "-s2", "-xx", "-part-2"],
-        3: ["-iii", "-3", "-3rd", "-part-2", "-part-ii", "-season-3", "-3rd-season", "-s3"],
-        4: ["-iv", "-4", "-4th", "-final-season", "-season-4"],
-        5: ["-v", "-5", "-5th", "-season-5"]
-    }[sNum] || [`-${sNum}`];
-
-    for (var i = 0; i < patterns.length; i++) {
-        if (s.includes(patterns[i])) return 20 - i;
-    }
-    return 0;
-}
-
-function getSeasonSlugVariants(baseSlug, sNum) {
-    if (sNum === 1) return [baseSlug];
-    var suffixes = [
-        `-${sNum}`,
-        `-season-${sNum}`,
-        `-s${sNum}`,
-        sNum === 2 ? "-2nd-season" : (sNum === 3 ? "-3rd-season" : `-${sNum}th-season`),
-        sNum === 2 ? "-ii" : (sNum === 3 ? "-iii" : (sNum === 4 ? "-iv" : `-${sNum}`)),
-        sNum === 2 ? "-part-2" : (sNum === 3 ? "-part-3" : `-${sNum}`),
-        sNum === 2 ? "-beyond" : `-${sNum}`,
-        sNum === 2 ? "-xx" : `-${sNum}`
-    ];
-    return suffixes.map(function(suf) { return baseSlug + suf; });
-}
-
 // ==========================================
-// MOTOR ANILIST GRAPHQL
+// 2. MOTOR ANILIST GRAPHQL UNIVERSAL
 // ==========================================
 
 function queryAniList(title) {
@@ -220,7 +274,7 @@ function queryAniList(title) {
 }
 
 // ==========================================
-// PARSER DEL ÁRBOL DE SVELTEKIT
+// 3. PARSER DEL ÁRBOL DE SVELTEKIT
 // ==========================================
 
 function extractEmbedsFromSvelteKit(nodes) {
@@ -270,7 +324,7 @@ function extractEmbedsFromSvelteKit(nodes) {
 }
 
 // ==========================================
-// RESOLVERS DE STREAMING
+// 4. RESOLVERS DE STREAMING
 // ==========================================
 
 function resolveZillaHls(url) {
@@ -405,7 +459,7 @@ function dispatchResolver(embed) {
 }
 
 // ==========================================
-// BÚSQUEDA Y EXTRACCIÓN
+// 5. BÚSQUEDA Y EXTRACCIÓN
 // ==========================================
 
 function searchAnimeAV1(queries) {
@@ -437,9 +491,7 @@ function searchAnimeAV1(queries) {
             for (var i = 0; i < json.length; i++) {
                 var item = json[i];
                 if (item && item.slug) {
-                    if (isSlugSimilar(q, item.slug) || isSlugSimilar(item.title, item.slug)) {
-                        slugs.push(item.slug);
-                    }
+                    slugs.push(item.slug);
                 }
             }
 
@@ -483,7 +535,7 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
 }
 
 // ==========================================
-// FUNCIÓN PRINCIPAL EXPORTADA
+// 6. FUNCIÓN PRINCIPAL EXPORTADA
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -523,7 +575,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            // Consultar AniList GraphQL para nombres en Romaji y Sinónimos
+            // Consultar AniList GraphQL
             var searchTitle = origTitle || title;
             return queryAniList(searchTitle).then(function(aniData) {
                 if (aniData) {
@@ -562,7 +614,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                     var baseSlug = cleanSlug(t);
                     if (baseSlug) {
-                        directSlugs = directSlugs.concat(getSeasonSlugVariants(baseSlug, sNum));
+                        directSlugs = directSlugs.concat(getUniversalSeasonVariants(baseSlug, sNum, isMovie));
                     }
                 }
 
@@ -581,7 +633,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     for (var k = 0; k < candidateSlugs.length; k++) {
                         var sc = scoreSlugCandidate(candidateSlugs[k], titles);
                         if (sc >= 35) {
-                            validSlugs.push({ slug: candidateSlugs[k], score: sc + scoreSlugForSeason(candidateSlugs[k], sNum) });
+                            validSlugs.push({ 
+                                slug: candidateSlugs[k], 
+                                score: sc + scoreSlugForSeason(candidateSlugs[k], sNum, isMovie) 
+                            });
                         }
                     }
 
