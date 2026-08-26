@@ -1,0 +1,12 @@
+{
+  "name": "stremio-spectrum-latino",
+  "version": "1.0.0",
+  "description": "Stremio Addon para películas, series y anime en Latino, Castellano y Subtitulado",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "stremio-addon-sdk": "^1.6.10"
+  }
+}
