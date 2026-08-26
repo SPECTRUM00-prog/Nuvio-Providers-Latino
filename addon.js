@@ -12,7 +12,7 @@ const animejara = require("./providers/animejara.js");
 
 const manifest = {
     id: "org.spectrum.latino",
-    version: "1.0.1",
+    version: "1.0.2",
     name: "Spectrum Latino",
     description: "Películas, Series y Anime en Latino, Castellano y Sub Español en 1080p y 4K.",
     resources: ["stream"],
@@ -22,6 +22,8 @@ const manifest = {
 };
 
 const builder = new addonBuilder(manifest);
+
+const DEFAULT_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 const providers = [
     { name: "CineCalidad", mod: cinecalidad, isAnime: false },
@@ -53,15 +55,10 @@ builder.defineStreamHandler(function(args) {
     var type = args.type;
     var id = args.id;
 
-    console.log(`[Stremio] Peticion: ${type} ${id}`);
-
     return resolveToTmdb(id, type).then(function(target) {
         if (!target || !target.tmdbId) {
-            console.log("[Stremio] TMDB ID no encontrado.");
             return { streams: [] };
         }
-
-        console.log(`[Stremio] Consultando TMDB ID ${target.tmdbId} (${target.mediaType}) S:${target.season || '-'} E:${target.episode || '-'}`);
 
         var isJapanese = target.originalLanguage === "ja";
 
@@ -76,8 +73,10 @@ builder.defineStreamHandler(function(args) {
 
             return Promise.race([scraperPromise, timeoutPromise(4800)]).then(function(res) {
                 var list = Array.isArray(res) ? res : [];
-                console.log(`  [${p.name}] -> ${list.length} streams`);
-                return list;
+                return list.map(function(st) {
+                    st._provider = p.name;
+                    return st;
+                });
             });
         });
 
@@ -89,15 +88,18 @@ builder.defineStreamHandler(function(args) {
                 for (var s = 0; s < streamList.length; s++) {
                     var st = streamList[s];
                     if (st && st.url) {
+                        var reqHeaders = st.headers || {};
+                        if (!reqHeaders["User-Agent"]) reqHeaders["User-Agent"] = DEFAULT_UA;
+
                         allStreams.push({
-                            name: `[${st.name || "Latino"}]\n${st.quality || "1080p"}`,
-                            title: `${st.title || st.name}\n🔗 Servidor Directo`,
+                            name: `[${st._provider || "Latino"}]\n${st.quality || "1080p"}`,
+                            title: `${st.title || st.name || "Servidor Directo"}\n⚡ ${st.quality || "HD"}`,
                             url: st.url,
                             quality: st.quality || "1080p",
                             behaviorHints: {
                                 notWebReady: false,
                                 proxyHeaders: {
-                                    request: st.headers || {}
+                                    request: reqHeaders
                                 }
                             }
                         });
@@ -109,11 +111,9 @@ builder.defineStreamHandler(function(args) {
                 return getQualityWeight(b.quality) - getQualityWeight(a.quality);
             });
 
-            console.log(`[Stremio] ✓ Total entregado: ${allStreams.length} stream(s)`);
             return { streams: allStreams };
         });
-    }).catch(function(err) {
-        console.log(`[Stremio] Error: ${err.message}`);
+    }).catch(function() {
         return { streams: [] };
     });
 });
