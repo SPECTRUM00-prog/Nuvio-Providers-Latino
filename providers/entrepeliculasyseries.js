@@ -10,7 +10,8 @@ const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 const DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
     "Referer": `${BASE_URL}/`
 };
 
@@ -625,7 +626,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
-    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
+    
+    // Inclusión obligatoria de external_ids para obtener imdb_id en Series y Películas
+    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles,external_ids`;
 
     return fetch(tmdbUrl)
         .then(function(res) {
@@ -633,6 +636,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return res.json();
         })
         .then(function(meta) {
+            var imdbId = meta.imdb_id || (meta.external_ids && meta.external_ids.imdb_id) || "";
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
 
@@ -670,57 +674,66 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                if (valid.length === 0) return [];
+                var playerPromises = [];
 
-                valid.sort(function(a, b) { return b.score - a.score; });
+                if (valid.length > 0) {
+                    valid.sort(function(a, b) { return b.score - a.score; });
+                    var targetItem = valid[0];
+                    var pageUrl = targetItem.url;
 
-                var targetItem = valid[0];
-                var pageUrl = targetItem.url;
+                    if (!isMovie) {
+                        var cleanBase = pageUrl.replace(/\/temporada\/\d+\/capitulo\/\d+/i, "").replace(/\/$/, "");
+                        pageUrl = `${cleanBase}/temporada/${sNum}/capitulo/${eNum}`;
+                    }
 
-                // Si es serie o anime, construir la URL del episodio
-                if (!isMovie) {
-                    var cleanBase = pageUrl.replace(/\/temporada\/\d+\/capitulo\/\d+/i, "").replace(/\/$/, "");
-                    pageUrl = `${cleanBase}/temporada/${sNum}/capitulo/${eNum}`;
+                    console.log(`[EntrePeliculasySeries] Consultando página: ${pageUrl}`);
+
+                    playerPromises.push(
+                        fetch(pageUrl, { headers: DEFAULT_HEADERS })
+                            .then(function(res) {
+                                if (!res.ok) throw new Error("HTTP " + res.status);
+                                return res.text();
+                            })
+                            .then(function(html) {
+                                return extractPlayerUrlsFromHtml(html);
+                            })
+                            .catch(function() { return []; })
+                    );
+                } else {
+                    playerPromises.push(Promise.resolve([]));
                 }
 
-                console.log(`[EntrePeliculasySeries] Consultando página: ${pageUrl}`);
+                return Promise.all(playerPromises).then(function(playerLists) {
+                    var playerUrls = [];
+                    for (var p = 0; p < playerLists.length; p++) {
+                        playerUrls = playerUrls.concat(playerLists[p]);
+                    }
 
-                return fetch(pageUrl, { headers: DEFAULT_HEADERS })
-                    .then(function(res) {
-                        if (!res.ok) throw new Error("HTTP " + res.status);
-                        return res.text();
-                    })
-                    .then(function(html) {
-                        var playerUrls = extractPlayerUrlsFromHtml(html);
+                    // Fallback directo por IMDb ID (Bypass si Cloudflare bloqueó la búsqueda web)
+                    if (playerUrls.length === 0 && imdbId) {
+                        var directEmbed = isMovie
+                            ? `https://embed69.org/f/${imdbId}`
+                            : `https://embed69.org/f/${imdbId}-${sNum}x${eNum}`;
+                        playerUrls.push(directEmbed);
+                    }
 
-                        // Fallback con Embed69 directo si el reproductor está integrado
-                        if (playerUrls.length === 0) {
-                            if (meta.imdb_id) {
-                                var embed69Url = isMovie
-                                    ? `https://embed69.org/f/${meta.imdb_id}`
-                                    : `https://embed69.org/f/${meta.imdb_id}-${sNum}x${eNum}`;
-                                playerUrls.push(embed69Url);
-                            }
-                        }
-
-                        var promises = playerUrls.map(function(u) {
-                            return dispatchDirectResolver(u, "LAT");
-                        });
-
-                        return Promise.all(promises);
-                    })
-                    .then(function(results) {
-                        var flat = [];
-                        for (var i = 0; i < results.length; i++) {
-                            var item = results[i];
-                            if (Array.isArray(item)) {
-                                flat = flat.concat(item);
-                            } else if (item && item.url) {
-                                flat.push(item);
-                            }
-                        }
-                        return flat;
+                    var resolvePromises = playerUrls.map(function(u) {
+                        return dispatchDirectResolver(u, "LAT");
                     });
+
+                    return Promise.all(resolvePromises);
+                });
+            }).then(function(results) {
+                var flat = [];
+                for (var i = 0; i < results.length; i++) {
+                    var item = results[i];
+                    if (Array.isArray(item)) {
+                        flat = flat.concat(item);
+                    } else if (item && item.url) {
+                        flat.push(item);
+                    }
+                }
+                return flat;
             });
         })
         .then(function(streams) {
