@@ -10,13 +10,12 @@ const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36
 
 const DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": `${BASE_URL}/`
 };
 
 // ============================================================================
-// 1. CRIPTOGRAFÍA EN JS PURO: SHA-256 Y AES-256-CBC (PARA EMBED69)
+// 1. CRIPTOGRAFÍA EN JS PURO: SHA-256 Y AES-256-CBC
 // ============================================================================
 
 function rotr(n, x) { return (x >>> n) | (x << (32 - n)); }
@@ -282,58 +281,8 @@ function decryptAes256Cbc(cipherBytes, keyBytes, ivBytes) {
 }
 
 // ============================================================================
-// 2. UTILIDADES DE NORMALIZACIÓN Y SCORING
+// 2. UTILIDADES Y PROBING
 // ============================================================================
-
-function normalizeText(text) {
-    if (!text) return "";
-    return text
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .toLowerCase()
-        .replace(/[^a-z0-9\s-]/g, " ")
-        .replace(/\s+/g, "-")
-        .replace(/-+/g, "-")
-        .trim();
-}
-
-function cleanSlug(urlOrSlug) {
-    if (!urlOrSlug) return "";
-    var path = urlOrSlug.replace(/^https?:\/\/[^/]+/i, "");
-    path = path.replace(/^\/(?:serie|pelicula|anime)\//i, "").replace(/\/.*$/, "");
-    return normalizeText(path);
-}
-
-function scoreSlugCandidate(slugOrTitle, titles) {
-    if (!slugOrTitle) return 0;
-    var cleanS = cleanSlug(slugOrTitle).replace(/-/g, " ");
-    var score = 0;
-
-    for (var i = 0; i < titles.length; i++) {
-        var t = normalizeText(titles[i]).replace(/-/g, " ");
-        if (!t) continue;
-
-        if (cleanS === t || cleanS.indexOf(t) === 0) {
-            score = Math.max(score, 100);
-            continue;
-        }
-
-        var words = t.split(/\s+/).filter(function(w) { return w.length > 2; });
-        var matches = 0;
-        for (var j = 0; j < words.length; j++) {
-            if (cleanS.indexOf(words[j]) !== -1) {
-                matches++;
-            }
-        }
-
-        if (words.length > 0 && matches > 0) {
-            var ratio = (matches / words.length) * 85;
-            score = Math.max(score, ratio);
-        }
-    }
-
-    return score;
-}
 
 function probeM3u8Quality(m3u8Url, headers) {
     if (!m3u8Url || !m3u8Url.includes(".m3u8")) return Promise.resolve("720p");
@@ -383,7 +332,10 @@ function unpackDeanEdwards(p, a, c, k) {
 
 function resolveEmbed69(embedUrl) {
     return fetch(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
-        .then(function(res) { return res.text(); })
+        .then(function(res) {
+            if (!res.ok) throw new Error("Embed69 HTTP " + res.status);
+            return res.text();
+        })
         .then(function(html) {
             var challengeMatch = html.match(/var\s+challenge\s*=\s*['"]([^'"]+)['"]/);
             var diffMatch = html.match(/var\s+difficulty\s*=\s*(\d+)/);
@@ -538,10 +490,6 @@ function dispatchDirectResolver(url, lang) {
                     return resolveEmbed69(res.url);
                 }
                 return res.text().then(function(html) {
-                    var iframes = extractPlayerUrlsFromHtml(html);
-                    if (iframes.length > 0) {
-                        return dispatchDirectResolver(iframes[0], lang);
-                    }
                     var match69 = html.match(/https?:\/\/embed69\.org\/[fe]\/[a-zA-Z0-9_-]+/i);
                     if (match69) {
                         return resolveEmbed69(match69[0]);
@@ -564,61 +512,7 @@ function dispatchDirectResolver(url, lang) {
 }
 
 // ============================================================================
-// 4. BÚSQUEDA Y PARSER UNIVERSAL DE TOROTAKU
-// ============================================================================
-
-function searchEntrePeliculas(query) {
-    var searchUrl = `${BASE_URL}/search?s=${encodeURIComponent(query)}`;
-
-    return fetch(searchUrl, { headers: DEFAULT_HEADERS })
-        .then(function(res) { return res.text(); })
-        .then(function(html) {
-            var results = [];
-            var seen = [];
-
-            var linkRegex = /<a\s+[^>]*href=["']((?:https?:\/\/[^"']*)?\/(?:serie|pelicula|anime)\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-            var match;
-
-            while ((match = linkRegex.exec(html)) !== null) {
-                var rawLink = match[1];
-                var innerHtml = match[2];
-
-                var link = rawLink.startsWith("http") ? rawLink : `${BASE_URL}${rawLink}`;
-                if (seen.indexOf(link) !== -1) continue;
-                seen.push(link);
-
-                var titleMatch = innerHtml.match(/<h[23][^>]*class=["'][^"']*title[^"']*["'][^>]*>([^<]+)<\/h[23]>/i) ||
-                                 innerHtml.match(/alt=["']([^"']+)["']/i) ||
-                                 innerHtml.match(/title=["']([^"']+)["']/i);
-
-                var title = titleMatch ? titleMatch[1].trim() : cleanSlug(link);
-                results.push({ url: link, title: title });
-            }
-
-            return results;
-        })
-        .catch(function() { return []; });
-}
-
-function extractPlayerUrlsFromHtml(html) {
-    var urls = [];
-    var iframeRegex = /<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi;
-    var match;
-
-    while ((match = iframeRegex.exec(html)) !== null) {
-        var src = match[1];
-        if (src.startsWith("//")) src = "https:" + src;
-        else if (src.startsWith("/")) src = BASE_URL + src;
-
-        if (src.startsWith("http") && urls.indexOf(src) === -1) {
-            urls.push(src);
-        }
-    }
-    return urls;
-}
-
-// ============================================================================
-// 5. FUNCIÓN PRINCIPAL EXPORTADA
+// 4. BÚSQUEDA Y EXTRACCIÓN
 // ============================================================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -627,8 +521,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
     var sNum = parseInt(season, 10) || 1;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
     
-    // Inclusión obligatoria de external_ids para obtener imdb_id en Series y Películas
-    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles,external_ids`;
+    var sPadded = sNum < 10 ? "0" + sNum : "" + sNum;
+    var ePadded = eNum < 10 ? "0" + eNum : "" + eNum;
+
+    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=external_ids`;
 
     return fetch(tmdbUrl)
         .then(function(res) {
@@ -637,104 +533,36 @@ function getStreams(tmdbId, mediaType, season, episode) {
         })
         .then(function(meta) {
             var imdbId = meta.imdb_id || (meta.external_ids && meta.external_ids.imdb_id) || "";
-            var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
-            var origTitle = isMovie ? meta.original_title : meta.original_name;
 
-            var titles = [];
-            if (title) titles.push(title);
-            if (origTitle && origTitle !== title) titles.push(origTitle);
+            var candidateEmbedUrls = [];
 
-            var altTitles = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
-            for (var i = 0; i < altTitles.length; i++) {
-                var alt = altTitles[i].title || "";
-                if (alt && titles.indexOf(alt) === -1) {
-                    titles.push(alt);
-                }
-            }
-
-            var queries = [];
-            if (title) queries.push(title);
-            if (origTitle && origTitle !== title) queries.push(origTitle);
-
-            function trySearch(idx) {
-                if (idx >= queries.length) return Promise.resolve([]);
-                return searchEntrePeliculas(queries[idx]).then(function(res) {
-                    if (res && res.length > 0) return res;
-                    return trySearch(idx + 1);
-                });
-            }
-
-            return trySearch(0).then(function(candidates) {
-                var valid = [];
-                for (var c = 0; c < candidates.length; c++) {
-                    var cand = candidates[c];
-                    var sc = Math.max(scoreSlugCandidate(cand.url, titles), scoreSlugCandidate(cand.title, titles));
-                    if (sc >= 35) {
-                        valid.push({ url: cand.url, title: cand.title, score: sc });
-                    }
-                }
-
-                var playerPromises = [];
-
-                if (valid.length > 0) {
-                    valid.sort(function(a, b) { return b.score - a.score; });
-                    var targetItem = valid[0];
-                    var pageUrl = targetItem.url;
-
-                    if (!isMovie) {
-                        var cleanBase = pageUrl.replace(/\/temporada\/\d+\/capitulo\/\d+/i, "").replace(/\/$/, "");
-                        pageUrl = `${cleanBase}/temporada/${sNum}/capitulo/${eNum}`;
-                    }
-
-                    console.log(`[EntrePeliculasySeries] Consultando página: ${pageUrl}`);
-
-                    playerPromises.push(
-                        fetch(pageUrl, { headers: DEFAULT_HEADERS })
-                            .then(function(res) {
-                                if (!res.ok) throw new Error("HTTP " + res.status);
-                                return res.text();
-                            })
-                            .then(function(html) {
-                                return extractPlayerUrlsFromHtml(html);
-                            })
-                            .catch(function() { return []; })
-                    );
+            if (imdbId) {
+                if (isMovie) {
+                    candidateEmbedUrls.push(`https://embed69.org/f/${imdbId}`);
+                    candidateEmbedUrls.push(`${BASE_URL}/vidurl/${imdbId}/`);
                 } else {
-                    playerPromises.push(Promise.resolve([]));
+                    // Formatos de serie probados por orden: 1x01, 1x1, 01x01
+                    candidateEmbedUrls.push(`https://embed69.org/f/${imdbId}-${sNum}x${ePadded}`);
+                    candidateEmbedUrls.push(`https://embed69.org/f/${imdbId}-${sNum}x${eNum}`);
+                    candidateEmbedUrls.push(`https://embed69.org/f/${imdbId}-${sPadded}x${ePadded}`);
+                    candidateEmbedUrls.push(`${BASE_URL}/vidurl/${imdbId}-${sNum}x${ePadded}/`);
                 }
+            }
 
-                return Promise.all(playerPromises).then(function(playerLists) {
-                    var playerUrls = [];
-                    for (var p = 0; p < playerLists.length; p++) {
-                        playerUrls = playerUrls.concat(playerLists[p]);
+            function tryNextEmbed(index) {
+                if (index >= candidateEmbedUrls.length) return Promise.resolve([]);
+                var targetUrl = candidateEmbedUrls[index];
+
+                return dispatchDirectResolver(targetUrl, "LAT").then(function(res) {
+                    var list = Array.isArray(res) ? res : (res && res.url ? [res] : []);
+                    if (list.length > 0) {
+                        return list;
                     }
-
-                    // Fallback directo por IMDb ID (Bypass si Cloudflare bloqueó la búsqueda web)
-                    if (playerUrls.length === 0 && imdbId) {
-                        var directEmbed = isMovie
-                            ? `https://embed69.org/f/${imdbId}`
-                            : `https://embed69.org/f/${imdbId}-${sNum}x${eNum}`;
-                        playerUrls.push(directEmbed);
-                    }
-
-                    var resolvePromises = playerUrls.map(function(u) {
-                        return dispatchDirectResolver(u, "LAT");
-                    });
-
-                    return Promise.all(resolvePromises);
+                    return tryNextEmbed(index + 1);
                 });
-            }).then(function(results) {
-                var flat = [];
-                for (var i = 0; i < results.length; i++) {
-                    var item = results[i];
-                    if (Array.isArray(item)) {
-                        flat = flat.concat(item);
-                    } else if (item && item.url) {
-                        flat.push(item);
-                    }
-                }
-                return flat;
-            });
+            }
+
+            return tryNextEmbed(0);
         })
         .then(function(streams) {
             console.log(`[EntrePeliculasySeries] ✓ ${streams.length} streams válidos extraídos`);
