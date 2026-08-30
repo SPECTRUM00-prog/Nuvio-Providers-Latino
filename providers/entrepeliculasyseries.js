@@ -59,7 +59,6 @@ function sha256Bytes(msgBytes) {
             W[t] = (gamma1(W[t - 2]) + W[t - 7] + gamma0(W[t - 15]) + W[t - 16]) | 0;
         }
 
-        var a = H[0], e = H[4], c = H[2], d = H[3], ee = H[4], f = H[5], g = H[6], h = H[7];
         var a_val = H[0], b_val = H[1], c_val = H[2], d_val = H[3], e_val = H[4], f_val = H[5], g_val = H[6], h_val = H[7];
 
         for (var t = 0; t < 64; t++) {
@@ -141,7 +140,6 @@ function solveProofOfWork(challenge, difficulty) {
     return 0;
 }
 
-// AES S-Box Inversa
 var ISBOX = [
     0x52, 0x09, 0x6a, 0xd5, 0x30, 0x36, 0xa5, 0x38, 0xbf, 0x40, 0xa3, 0x9e, 0x81, 0xf3, 0xd7, 0xfb,
     0x7c, 0xe3, 0x39, 0x82, 0x9b, 0x2f, 0xff, 0x87, 0x34, 0x8e, 0x43, 0x44, 0xc4, 0xde, 0xe9, 0xcb,
@@ -221,7 +219,7 @@ function gmul(a, b) {
 }
 
 function invCipher(state, w) {
-    var Nb = 4, Nr = 14;
+    var Nr = 14;
     function addRoundKey(round) {
         for (var r = 0; r < 4; r++) {
             for (var c = 0; c < 4; c++) {
@@ -298,20 +296,23 @@ function normalizeText(text) {
         .trim();
 }
 
-function cleanSlug(text) {
-    return normalizeText(text);
+function cleanSlug(urlOrSlug) {
+    if (!urlOrSlug) return "";
+    var path = urlOrSlug.replace(/^https?:\/\/[^/]+/i, "");
+    path = path.replace(/^\/(?:serie|pelicula|anime)\//i, "").replace(/\/.*$/, "");
+    return normalizeText(path);
 }
 
-function scoreSlugCandidate(slug, titles) {
-    if (!slug) return 0;
-    var cleanS = normalizeText(slug).replace(/-/g, " ");
+function scoreSlugCandidate(slugOrTitle, titles) {
+    if (!slugOrTitle) return 0;
+    var cleanS = cleanSlug(slugOrTitle).replace(/-/g, " ");
     var score = 0;
 
     for (var i = 0; i < titles.length; i++) {
         var t = normalizeText(titles[i]).replace(/-/g, " ");
         if (!t) continue;
 
-        if (cleanS === t) {
+        if (cleanS === t || cleanS.indexOf(t) === 0) {
             score = Math.max(score, 100);
             continue;
         }
@@ -529,6 +530,26 @@ function dispatchDirectResolver(url, lang) {
     if (u.includes("embed69.org")) {
         return resolveEmbed69(url);
     }
+    if (u.includes("/vidurl/")) {
+        return fetch(url, { headers: DEFAULT_HEADERS, redirect: "follow" })
+            .then(function(res) {
+                if (res.url && res.url.includes("embed69.org")) {
+                    return resolveEmbed69(res.url);
+                }
+                return res.text().then(function(html) {
+                    var iframes = extractPlayerUrlsFromHtml(html);
+                    if (iframes.length > 0) {
+                        return dispatchDirectResolver(iframes[0], lang);
+                    }
+                    var match69 = html.match(/https?:\/\/embed69\.org\/[fe]\/[a-zA-Z0-9_-]+/i);
+                    if (match69) {
+                        return resolveEmbed69(match69[0]);
+                    }
+                    return null;
+                });
+            })
+            .catch(function() { return null; });
+    }
     if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("sfasthwish")) {
         return resolveStreamWish(url, lang);
     }
@@ -542,7 +563,7 @@ function dispatchDirectResolver(url, lang) {
 }
 
 // ============================================================================
-// 4. BÚSQUEDA Y EXTRACCIÓN DE ENLACES
+// 4. BÚSQUEDA Y PARSER UNIVERSAL DE TOROTAKU
 // ============================================================================
 
 function searchEntrePeliculas(query) {
@@ -552,14 +573,27 @@ function searchEntrePeliculas(query) {
         .then(function(res) { return res.text(); })
         .then(function(html) {
             var results = [];
-            var regex = /<article\s+class="post\s+a"[^>]*>[\s\S]*?<a\s+href="([^"]+)"[\s\S]*?<h3\s+class="title">([^<]+)<\/h3>/gi;
+            var seen = [];
+
+            var linkRegex = /<a\s+[^>]*href=["']((?:https?:\/\/[^"']*)?\/(?:serie|pelicula|anime)\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
             var match;
 
-            while ((match = regex.exec(html)) !== null) {
-                var link = match[1];
-                var title = match[2].trim();
-                results.push({ url: link.startsWith("http") ? link : `${BASE_URL}${link}`, title: title });
+            while ((match = linkRegex.exec(html)) !== null) {
+                var rawLink = match[1];
+                var innerHtml = match[2];
+
+                var link = rawLink.startsWith("http") ? rawLink : `${BASE_URL}${rawLink}`;
+                if (seen.indexOf(link) !== -1) continue;
+                seen.push(link);
+
+                var titleMatch = innerHtml.match(/<h[23][^>]*class=["'][^"']*title[^"']*["'][^>]*>([^<]+)<\/h[23]>/i) ||
+                                 innerHtml.match(/alt=["']([^"']+)["']/i) ||
+                                 innerHtml.match(/title=["']([^"']+)["']/i);
+
+                var title = titleMatch ? titleMatch[1].trim() : cleanSlug(link);
+                results.push({ url: link, title: title });
             }
+
             return results;
         })
         .catch(function() { return []; });
@@ -567,12 +601,14 @@ function searchEntrePeliculas(query) {
 
 function extractPlayerUrlsFromHtml(html) {
     var urls = [];
-    var iframeRegex = /<iframe[^>]+(?:src|data-src)="([^"]+)"/gi;
+    var iframeRegex = /<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi;
     var match;
 
     while ((match = iframeRegex.exec(html)) !== null) {
         var src = match[1];
         if (src.startsWith("//")) src = "https:" + src;
+        else if (src.startsWith("/")) src = BASE_URL + src;
+
         if (src.startsWith("http") && urls.indexOf(src) === -1) {
             urls.push(src);
         }
@@ -612,19 +648,23 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            var primaryQuery = title || origTitle;
+            var queries = [];
+            if (title) queries.push(title);
+            if (origTitle && origTitle !== title) queries.push(origTitle);
 
-            return searchEntrePeliculas(primaryQuery).then(function(results) {
-                if (results.length === 0 && origTitle && origTitle !== primaryQuery) {
-                    return searchEntrePeliculas(origTitle);
-                }
-                return results;
-            }).then(function(candidates) {
-                // Filtrar candidatos con score >= 35
+            function trySearch(idx) {
+                if (idx >= queries.length) return Promise.resolve([]);
+                return searchEntrePeliculas(queries[idx]).then(function(res) {
+                    if (res && res.length > 0) return res;
+                    return trySearch(idx + 1);
+                });
+            }
+
+            return trySearch(0).then(function(candidates) {
                 var valid = [];
                 for (var c = 0; c < candidates.length; c++) {
                     var cand = candidates[c];
-                    var sc = scoreSlugCandidate(cand.url, titles) || scoreSlugCandidate(cand.title, titles);
+                    var sc = Math.max(scoreSlugCandidate(cand.url, titles), scoreSlugCandidate(cand.title, titles));
                     if (sc >= 35) {
                         valid.push({ url: cand.url, title: cand.title, score: sc });
                     }
@@ -637,7 +677,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 var targetItem = valid[0];
                 var pageUrl = targetItem.url;
 
-                // Si es serie/anime, construir la URL del episodio
+                // Si es serie o anime, construir la URL del episodio
                 if (!isMovie) {
                     var cleanBase = pageUrl.replace(/\/temporada\/\d+\/capitulo\/\d+/i, "").replace(/\/$/, "");
                     pageUrl = `${cleanBase}/temporada/${sNum}/capitulo/${eNum}`;
