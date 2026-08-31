@@ -371,30 +371,157 @@ function probeM3u8Quality(m3u8Url, headers) {
         .catch(function() { return "720p"; });
 }
 
-function unpackDeanEdwards(p, a, c, k) {
-    var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    function decodeBase(val, radix) {
-        var res = 0;
-        for (var i = 0; i < val.length; i++) {
-            var idx = dict.indexOf(val[i]);
-            if (idx === -1) return NaN;
-            res = res * radix + idx;
-        }
-        return res;
+function unpackDeanEdwards(packed) {
+    try {
+        var regex = /eval\(function\(p,a,c,k,e,[r|d|a-z]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
+        var match = packed.match(regex);
+        if (!match) return null;
+
+        var p = match[1].slice(1, -1);
+        var a = match[2];
+        var k = match[4];
+        var words = k.split("|");
+        var radix = parseInt(a, 10);
+
+        var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        var unbase = function(val, base) {
+            if (base <= 36) return parseInt(val, base);
+            var res = 0;
+            for (var i = 0; i < val.length; i++) {
+                res = res * base + dict.indexOf(val[i]);
+            }
+            return res;
+        };
+
+        return p.replace(/\b[0-9a-zA-Z]+\b/g, function(token) {
+            var idx = unbase(token, radix);
+            return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
+        });
+    } catch (e) {
+        return null;
     }
-    return p.replace(/\b([0-9a-zA-Z]+)\b/g, function(token) {
-        var index = decodeBase(token, a);
-        if (isNaN(index) || index >= k.length) return token;
-        return (k[index] && k[index] !== "") ? k[index] : token;
-    });
 }
 
 // ============================================================================
-// 3. RESOLVERS DE STREAMING
+// 3. RESOLVERS DE STREAMING INDIVIDUALES
+// ============================================================================
+
+function resolveStreamWish(url, lang) {
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" }, redirect: "follow" })
+        .then(function(res) { return res.text(); })
+        .then(function(html) {
+            var streamUrl = null;
+            var unpacked = unpackDeanEdwards(html);
+            if (unpacked) {
+                var m3uMatch = unpacked.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
+                if (m3uMatch) streamUrl = m3uMatch[0].replace(/\\/g, "");
+            }
+            if (!streamUrl) {
+                var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i) ||
+                             html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
+                if (direct) streamUrl = (direct[1] || direct[0]).replace(/\\/g, "");
+            }
+
+            if (streamUrl) {
+                var headers = { "User-Agent": USER_AGENT, "Referer": url };
+                return probeM3u8Quality(streamUrl, headers).then(function(q) {
+                    return {
+                        name: "PelisPedia",
+                        title: `${q || "720p"} · ${lang || "LAT"} · StreamWish`,
+                        quality: q || "720p",
+                        url: streamUrl,
+                        headers: headers
+                    };
+                });
+            }
+            return null;
+        })
+        .catch(function() { return null; });
+}
+
+function resolveVidHide(url, lang) {
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" }, redirect: "follow" })
+        .then(function(res) { return res.text(); })
+        .then(function(html) {
+            var streamUrl = null;
+            var unpacked = unpackDeanEdwards(html);
+            if (unpacked) {
+                var m3uMatch = unpacked.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
+                if (m3uMatch) streamUrl = m3uMatch[0].replace(/\\/g, "");
+            }
+            if (!streamUrl) {
+                var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i) ||
+                             html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
+                if (direct) streamUrl = (direct[1] || direct[0]).replace(/\\/g, "");
+            }
+
+            if (streamUrl) {
+                var headers = { "User-Agent": USER_AGENT, "Referer": url };
+                return probeM3u8Quality(streamUrl, headers).then(function(q) {
+                    return {
+                        name: "PelisPedia",
+                        title: `${q || "1080p"} · ${lang || "LAT"} · VidHide`,
+                        quality: q || "1080p",
+                        url: streamUrl,
+                        headers: headers
+                    };
+                });
+            }
+            return null;
+        })
+        .catch(function() { return null; });
+}
+
+function resolveVoe(url, lang) {
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" }, redirect: "follow" })
+        .then(function(res) { return res.text(); })
+        .then(function(html) {
+            var streamUrl = null;
+            var hlsMatch = html.match(/['"]hls['"]\s*:\s*['"]([^'"]+)['"]/i) ||
+                           html.match(/https?:\/\/[^"'\s<>]+\.m3u8(?:\?[^"'\s<>]*)?/i);
+            if (hlsMatch) {
+                streamUrl = (hlsMatch[1] || hlsMatch[0]).replace(/\\/g, "");
+            }
+
+            if (streamUrl) {
+                var headers = { "User-Agent": USER_AGENT, "Referer": url };
+                return probeM3u8Quality(streamUrl, headers).then(function(q) {
+                    return {
+                        name: "PelisPedia",
+                        title: `${q || "1080p"} · ${lang || "LAT"} · Voe`,
+                        quality: q || "1080p",
+                        url: streamUrl,
+                        headers: headers
+                    };
+                });
+            }
+            return null;
+        })
+        .catch(function() { return null; });
+}
+
+function dispatchDirectResolver(url, lang) {
+    if (!url) return Promise.resolve(null);
+    var u = url.toLowerCase();
+
+    if (u.includes("voe.sx") || u.includes("johnbeyondnation") || u.includes("voe-unblock")) {
+        return resolveVoe(url, lang);
+    }
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("sfasthwish") || u.includes("hanerix") || u.includes("hglink")) {
+        return resolveStreamWish(url, lang);
+    }
+    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("filelions") || u.includes("minochinos") || u.includes("morencius") || u.includes("vidhideplus")) {
+        return resolveVidHide(url, lang);
+    }
+    return Promise.resolve(null);
+}
+
+// ============================================================================
+// 4. MOTOR DE DESCIFRADO EMBED69
 // ============================================================================
 
 function resolveEmbed69(embedUrl) {
-    return fetch(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" } })
+    return fetch(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
         .then(function(res) {
             if (!res.ok) throw new Error("Embed69 HTTP " + res.status);
             return res.text();
@@ -459,109 +586,8 @@ function resolveEmbed69(embedUrl) {
         .catch(function() { return []; });
 }
 
-function resolveStreamWish(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url } })
-        .then(function(res) { return res.text(); })
-        .then(function(html) {
-            var m3uMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
-            if (!m3uMatch) {
-                var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-                if (packMatch) {
-                    var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-                    m3uMatch = unpacked.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
-                }
-            }
-
-            if (m3uMatch) {
-                return probeM3u8Quality(m3uMatch[0]).then(function(q) {
-                    return {
-                        name: "PelisPedia",
-                        title: `${q || "720p"} · ${lang || "LAT"} · StreamWish`,
-                        quality: q || "720p",
-                        url: m3uMatch[0],
-                        headers: { "User-Agent": USER_AGENT, "Referer": url }
-                    };
-                });
-            }
-            return null;
-        })
-        .catch(function() { return null; });
-}
-
-function resolveVidHide(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url } })
-        .then(function(res) { return res.text(); })
-        .then(function(html) {
-            var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-            var m3uMatch = null;
-            if (packMatch) {
-                var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-                m3uMatch = unpacked.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
-            }
-            if (!m3uMatch) {
-                m3uMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
-            }
-
-            if (m3uMatch) {
-                return probeM3u8Quality(m3uMatch[0]).then(function(q) {
-                    return {
-                        name: "PelisPedia",
-                        title: `${q || "1080p"} · ${lang || "LAT"} · VidHide`,
-                        quality: q || "1080p",
-                        url: m3uMatch[0],
-                        headers: { "User-Agent": USER_AGENT, "Referer": url }
-                    };
-                });
-            }
-            return null;
-        })
-        .catch(function() { return null; });
-}
-
-function resolveVoe(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url } })
-        .then(function(res) { return res.text(); })
-        .then(function(html) {
-            var hlsMatch = html.match(/['"]hls['"]\s*:\s*['"]([^'"]+)['"]/i) ||
-                           html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
-            if (hlsMatch) {
-                var m3u8 = hlsMatch[1] || hlsMatch[0];
-                return probeM3u8Quality(m3u8).then(function(q) {
-                    return {
-                        name: "PelisPedia",
-                        title: `${q || "1080p"} · ${lang || "LAT"} · Voe`,
-                        quality: q || "1080p",
-                        url: m3u8,
-                        headers: { "User-Agent": USER_AGENT, "Referer": url }
-                    };
-                });
-            }
-            return null;
-        })
-        .catch(function() { return null; });
-}
-
-function dispatchDirectResolver(url, lang) {
-    if (!url) return Promise.resolve(null);
-    var u = url.toLowerCase();
-
-    if (u.includes("embed69.org")) {
-        return resolveEmbed69(url);
-    }
-    if (u.includes("voe.sx") || u.includes("johnbeyondnation") || u.includes("voe-unblock")) {
-        return resolveVoe(url, lang);
-    }
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("sfasthwish") || u.includes("hanerix") || u.includes("hglink")) {
-        return resolveStreamWish(url, lang);
-    }
-    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("filelions") || u.includes("minochinos") || u.includes("morencius")) {
-        return resolveVidHide(url, lang);
-    }
-    return Promise.resolve(null);
-}
-
 // ============================================================================
-// 4. BÚSQUEDA Y PARSER DE PELISPEDIA
+// 5. BÚSQUEDA Y PARSER DE PELISPEDIA
 // ============================================================================
 
 function searchPelisPedia(query) {
@@ -613,7 +639,7 @@ function extractPlayerIdsFromHtml(html) {
 }
 
 // ============================================================================
-// 5. FUNCIÓN PRINCIPAL EXPORTADA
+// 6. FUNCIÓN PRINCIPAL EXPORTADA
 // ============================================================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
