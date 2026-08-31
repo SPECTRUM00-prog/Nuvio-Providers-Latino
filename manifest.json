@@ -1,6 +1,6 @@
 {
   "name": "Nuvio-Spectrum-Latino",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "scrapers": [
     {
       "id": "cinecalidad",
@@ -27,8 +27,8 @@
     {
       "id": "sololatino",
       "name": "SoloLatino",
-      "description": "Películas y Series en Español Latino desde SoloLatino / Embed69 (VidHide, StreamWish).",
-      "version": "1.2.0",
+      "description": "Películas y Series en Español Latino desde SoloLatino / Embed69 (VidHide, StreamWish, Voe).",
+      "version": "1.3.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/sololatino.js",
@@ -58,6 +58,17 @@
       "contentLanguage": ["es"]
     },
     {
+      "id": "pelispedia",
+      "name": "PelisPedia",
+      "description": "Películas, Series y Anime en Español Latino desde PelisPedia (VidHide, StreamWish, Voe).",
+      "version": "1.0.0",
+      "author": "SPECTRUM00-prog",
+      "supportedTypes": ["movie", "tv", "series"],
+      "filename": "providers/pelispedia.js",
+      "enabled": true,
+      "contentLanguage": ["es"]
+    },
+    {
       "id": "jkanime",
       "name": "JKAnime",
       "description": "Anime en emisión y finalizados en Sub Español desde JKAnime con AniList Engine (Desu, VidHide, StreamWish, MP4Upload, Streamtape).",
@@ -71,8 +82,8 @@
     {
       "id": "animeav1",
       "name": "AnimeAV1",
-      "description": "Anime en Sub Español y Doblaje Latino en Full HD 1080p (Zilla HLS, MP4Upload, StreamWish).",
-      "version": "1.0.0",
+      "description": "Anime en Sub Español y Doblaje Latino en Full HD 1080p con AniList Engine (Zilla HLS, MP4Upload, StreamWish).",
+      "version": "1.1.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv", "series"],
       "filename": "providers/animeav1.js",
