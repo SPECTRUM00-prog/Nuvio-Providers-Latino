@@ -16,7 +16,7 @@ const DEFAULT_HEADERS = {
 };
 
 // ============================================================================
-// 1. CRIPTOGRAFÍA EN JS PURO: SHA-256 Y AES-256-CBC (PARA EMBED69)
+// 1. CRIPTOGRAFÍA EN JS PURO: SHA-256 Y AES-256-CBC (MOTOR EMBED69)
 // ============================================================================
 
 function rotr(n, x) { return (x >>> n) | (x << (32 - n)); }
@@ -38,7 +38,7 @@ var K256 = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-function sha256Bytes(msgBytes) {
+function sha256Raw(msgBytes) {
     var l = msgBytes.length;
     var bitLen = l * 8;
     var newLen = ((l + 9 + 63) >> 6) << 6;
@@ -60,31 +60,37 @@ function sha256Bytes(msgBytes) {
             W[t] = (gamma1(W[t - 2]) + W[t - 7] + gamma0(W[t - 15]) + W[t - 16]) | 0;
         }
 
-        var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+        var a = H[0], e = H[4], c = H[2], d = H[3], ee = H[4], f = H[5], g = H[6], h = H[7];
+        var a_val = H[0], b_val = H[1], c_val = H[2], d_val = H[3], e_val = H[4], f_val = H[5], g_val = H[6], h_val = H[7];
 
         for (var t = 0; t < 64; t++) {
-            var T1 = (h + sigma1(e) + ch(e, f, g) + K256[t] + W[t]) | 0;
-            var T2 = (sigma0(a) + maj(a, b, c)) | 0;
-            h = g;
-            g = f;
-            f = e;
-            e = (d + T1) | 0;
-            d = c;
-            c = b;
-            b = a;
-            a = (T1 + T2) | 0;
+            var T1 = (h_val + sigma1(e_val) + ch(e_val, f_val, g_val) + K256[t] + W[t]) | 0;
+            var T2 = (sigma0(a_val) + maj(a_val, b_val, c_val)) | 0;
+            h_val = g_val;
+            g_val = f_val;
+            f_val = e_val;
+            e_val = (d_val + T1) | 0;
+            d_val = c_val;
+            c_val = b_val;
+            b_val = a_val;
+            a_val = (T1 + T2) | 0;
         }
 
-        H[0] = (H[0] + a) | 0;
-        H[1] = (H[1] + b) | 0;
-        H[2] = (H[2] + c) | 0;
-        H[3] = (H[3] + d) | 0;
-        H[4] = (H[4] + e) | 0;
-        H[5] = (H[5] + f) | 0;
-        H[6] = (H[6] + g) | 0;
-        H[7] = (H[7] + h) | 0;
+        H[0] = (H[0] + a_val) | 0;
+        H[1] = (H[1] + b_val) | 0;
+        H[2] = (H[2] + c_val) | 0;
+        H[3] = (H[3] + d_val) | 0;
+        H[4] = (H[4] + e_val) | 0;
+        H[5] = (H[5] + f_val) | 0;
+        H[6] = (H[6] + g_val) | 0;
+        H[7] = (H[7] + h_val) | 0;
     }
 
+    return H;
+}
+
+function sha256Hex(msgBytes) {
+    var H = sha256Raw(msgBytes);
     var res = "";
     for (var j = 0; j < 8; j++) {
         var hex = (H[j] >>> 0).toString(16);
@@ -92,6 +98,16 @@ function sha256Bytes(msgBytes) {
         res += hex;
     }
     return res;
+}
+
+function sha256Bytes(msgBytes) {
+    var H = sha256Raw(msgBytes);
+    var out = new Uint8Array(32);
+    var view = new DataView(out.buffer);
+    for (var j = 0; j < 8; j++) {
+        view.setUint32(j * 4, H[j] >>> 0);
+    }
+    return out;
 }
 
 function stringToUtf8(str) {
@@ -111,34 +127,30 @@ function stringToUtf8(str) {
     return new Uint8Array(out);
 }
 
-function hexToBytes(hex) {
-    var bytes = [];
-    for (var c = 0; c < hex.length; c += 2) {
-        bytes.push(parseInt(hex.substr(c, 2), 16));
+function base64ToBytes(b64) {
+    var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
+    var str = String(b64).replace(/[=]+$/, "");
+    var out = [];
+    for (var bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? out.push(255 & bs >> (-2 * bc & 6)) : 0) {
+        buffer = chars.indexOf(buffer);
     }
-    return new Uint8Array(bytes);
+    return new Uint8Array(out);
 }
 
-function solveProofOfWork(challenge, difficulty) {
+function solveProofOfWork(challenge, difficulty, salt) {
     var prefix = "";
     for (var i = 0; i < difficulty; i++) prefix += "0";
-    var chalBytes = stringToUtf8(challenge);
     var nonce = 0;
 
     while (nonce < 200000) {
-        var nStr = nonce.toString();
-        var nBytes = stringToUtf8(nStr);
-        var combined = new Uint8Array(chalBytes.length + nBytes.length);
-        combined.set(chalBytes, 0);
-        combined.set(nBytes, chalBytes.length);
-
-        var hash = sha256Bytes(combined);
+        var hash = sha256Hex(stringToUtf8(challenge + nonce));
         if (hash.startsWith(prefix)) {
-            return nonce;
+            var aesKey = sha256Bytes(stringToUtf8(challenge + nonce + salt));
+            return aesKey;
         }
         nonce++;
     }
-    return 0;
+    return null;
 }
 
 var ISBOX = [
@@ -388,51 +400,49 @@ function resolveEmbed69(embedUrl) {
             return res.text();
         })
         .then(function(html) {
-            var challengeMatch = html.match(/(?:var|let|const)?\s*challenge\s*=\s*['"]([^'"]+)['"]/i);
-            var diffMatch = html.match(/(?:var|let|const)?\s*difficulty\s*=\s*(\d+)/i);
-            var dataMatch = html.match(/(?:var|let|const)?\s*dataLink\s*=\s*['"]([^'"]+)['"]/i);
+            var chalMatch = html.match(/POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
+            var diffMatch = html.match(/POW_DIFFICULTY\s*=\s*(\d+)/i);
+            var saltMatch = html.match(/POW_SALT\s*=\s*['"]([^'"]+)['"]/i);
+            var dataMatch = html.match(/dataLink\s*=\s*(\[\{[\s\S]*?\}\]);/i);
 
-            if (!challengeMatch || !diffMatch || !dataMatch) {
+            if (!chalMatch || !diffMatch || !saltMatch || !dataMatch) {
                 return [];
             }
 
-            var challenge = challengeMatch[1];
+            var challenge = chalMatch[1];
             var difficulty = parseInt(diffMatch[1], 10);
-            var dataLinkHex = dataMatch[1];
+            var salt = saltMatch[1];
 
-            var solution = solveProofOfWork(challenge, difficulty);
-            var keyStr = challenge + solution;
-            var keyBytes = hexToBytes(sha256Bytes(stringToUtf8(keyStr)));
-            var cipherAll = hexToBytes(dataLinkHex);
+            var aesKeyBytes = solveProofOfWork(challenge, difficulty, salt);
+            if (!aesKeyBytes) return [];
 
-            var ivBytes = cipherAll.subarray(0, 16);
-            var cipherBytes = cipherAll.subarray(16);
-            var decryptedBytes = decryptAes256Cbc(cipherBytes, keyBytes, ivBytes);
-
-            var decryptedText = "";
-            for (var b = 0; b < decryptedBytes.length; b++) {
-                decryptedText += String.fromCharCode(decryptedBytes[b]);
-            }
-
-            var cleanJson = decryptedText.replace(/[\x00-\x1F\x7F-\x9F]/g, "").trim();
-            var linksObj = JSON.parse(cleanJson);
-
+            var rawDataList = JSON.parse(dataMatch[1]);
             var streams = [];
-            var keys = Object.keys(linksObj);
 
-            for (var k = 0; k < keys.length; k++) {
-                var lang = keys[k];
-                var srvList = linksObj[lang];
-                if (Array.isArray(srvList)) {
-                    for (var s = 0; s < srvList.length; s++) {
-                        var item = srvList[s];
-                        if (item && item.link) {
-                            streams.push({
-                                server: item.server || "Stream",
-                                lang: lang.toUpperCase(),
-                                url: item.link
-                            });
-                        }
+            for (var fi = 0; fi < rawDataList.length; fi++) {
+                var file = rawDataList[fi];
+                var lang = (file.video_language || "LAT").toUpperCase();
+                var embeds = file.sortedEmbeds || [];
+
+                for (var ei = 0; ei < embeds.length; ei++) {
+                    var emb = embeds[ei];
+                    if (emb.link && typeof emb.link === "string") {
+                        try {
+                            var rawBytes = base64ToBytes(emb.link);
+                            if (rawBytes.length > 16) {
+                                var iv = rawBytes.subarray(0, 16);
+                                var cipher = rawBytes.subarray(16);
+                                var plainBytes = decryptAes256Cbc(cipher, aesKeyBytes, iv);
+                                var decryptedUrl = "";
+                                for (var b = 0; b < plainBytes.length; b++) {
+                                    decryptedUrl += String.fromCharCode(plainBytes[b]);
+                                }
+                                decryptedUrl = decryptedUrl.trim();
+                                if (decryptedUrl.startsWith("http")) {
+                                    streams.push({ server: emb.servername, lang: lang, url: decryptedUrl });
+                                }
+                            }
+                        } catch (e) {}
                     }
                 }
             }
@@ -450,7 +460,7 @@ function resolveEmbed69(embedUrl) {
 }
 
 function resolveStreamWish(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://hglink.to/" } })
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url } })
         .then(function(res) { return res.text(); })
         .then(function(html) {
             var m3uMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
@@ -479,7 +489,7 @@ function resolveStreamWish(url, lang) {
 }
 
 function resolveVidHide(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://morencius.com/" } })
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url } })
         .then(function(res) { return res.text(); })
         .then(function(html) {
             var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
@@ -509,7 +519,7 @@ function resolveVidHide(url, lang) {
 }
 
 function resolveVoe(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://voe.sx/" } })
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url } })
         .then(function(res) { return res.text(); })
         .then(function(html) {
             var hlsMatch = html.match(/['"]hls['"]\s*:\s*['"]([^'"]+)['"]/i) ||
