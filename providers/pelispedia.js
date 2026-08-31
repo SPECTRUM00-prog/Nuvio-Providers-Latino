@@ -60,29 +60,29 @@ function sha256Bytes(msgBytes) {
             W[t] = (gamma1(W[t - 2]) + W[t - 7] + gamma0(W[t - 15]) + W[t - 16]) | 0;
         }
 
-        var a_val = H[0], b_val = H[1], c_val = H[2], d_val = H[3], e_val = H[4], f_val = H[5], g_val = H[6], h_val = H[7];
+        var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
 
         for (var t = 0; t < 64; t++) {
-            var T1 = (h_val + sigma1(e_val) + ch(e_val, f_val, g_val) + K256[t] + W[t]) | 0;
-            var T2 = (sigma0(a_val) + maj(a_val, b_val, c_val)) | 0;
-            h_val = g_val;
-            g_val = f_val;
-            f_val = e_val;
-            e_val = (d_val + T1) | 0;
-            d_val = c_val;
-            c_val = b_val;
-            b_val = a_val;
-            a_val = (T1 + T2) | 0;
+            var T1 = (h + sigma1(e) + ch(e, f, g) + K256[t] + W[t]) | 0;
+            var T2 = (sigma0(a) + maj(a, b, c)) | 0;
+            h = g;
+            g = f;
+            f = e;
+            e = (d + T1) | 0;
+            d = c;
+            c = b;
+            b = a;
+            a = (T1 + T2) | 0;
         }
 
-        H[0] = (H[0] + a_val) | 0;
-        H[1] = (H[1] + b_val) | 0;
-        H[2] = (H[2] + c_val) | 0;
-        H[3] = (H[3] + d_val) | 0;
-        H[4] = (H[4] + e_val) | 0;
-        H[5] = (H[5] + f_val) | 0;
-        H[6] = (H[6] + g_val) | 0;
-        H[7] = (H[7] + h_val) | 0;
+        H[0] = (H[0] + a) | 0;
+        H[1] = (H[1] + b) | 0;
+        H[2] = (H[2] + c) | 0;
+        H[3] = (H[3] + d) | 0;
+        H[4] = (H[4] + e) | 0;
+        H[5] = (H[5] + f) | 0;
+        H[6] = (H[6] + g) | 0;
+        H[7] = (H[7] + h) | 0;
     }
 
     var res = "";
@@ -382,15 +382,15 @@ function unpackDeanEdwards(p, a, c, k) {
 // ============================================================================
 
 function resolveEmbed69(embedUrl) {
-    return fetch(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
+    return fetch(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" } })
         .then(function(res) {
             if (!res.ok) throw new Error("Embed69 HTTP " + res.status);
             return res.text();
         })
         .then(function(html) {
-            var challengeMatch = html.match(/var\s+challenge\s*=\s*['"]([^'"]+)['"]/);
-            var diffMatch = html.match(/var\s+difficulty\s*=\s*(\d+)/);
-            var dataMatch = html.match(/var\s+dataLink\s*=\s*['"]([^'"]+)['"]/);
+            var challengeMatch = html.match(/(?:var|let|const)?\s*challenge\s*=\s*['"]([^'"]+)['"]/i);
+            var diffMatch = html.match(/(?:var|let|const)?\s*difficulty\s*=\s*(\d+)/i);
+            var dataMatch = html.match(/(?:var|let|const)?\s*dataLink\s*=\s*['"]([^'"]+)['"]/i);
 
             if (!challengeMatch || !diffMatch || !dataMatch) {
                 return [];
@@ -450,7 +450,7 @@ function resolveEmbed69(embedUrl) {
 }
 
 function resolveStreamWish(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://hglink.to/" } })
         .then(function(res) { return res.text(); })
         .then(function(html) {
             var m3uMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
@@ -479,7 +479,7 @@ function resolveStreamWish(url, lang) {
 }
 
 function resolveVidHide(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://morencius.com/" } })
         .then(function(res) { return res.text(); })
         .then(function(html) {
             var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
@@ -508,19 +508,23 @@ function resolveVidHide(url, lang) {
         .catch(function() { return null; });
 }
 
-function resolveUqload(url, lang) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": url } })
+function resolveVoe(url, lang) {
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://voe.sx/" } })
         .then(function(res) { return res.text(); })
         .then(function(html) {
-            var srcMatch = html.match(/sources:\s*\[\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
-            if (srcMatch) {
-                return {
-                    name: "PelisPedia",
-                    title: `720p · ${lang || "LAT"} · Uqload`,
-                    quality: "720p",
-                    url: srcMatch[1],
-                    headers: { "User-Agent": USER_AGENT, "Referer": url }
-                };
+            var hlsMatch = html.match(/['"]hls['"]\s*:\s*['"]([^'"]+)['"]/i) ||
+                           html.match(/https?:\/\/[^"'\s\\]+\.m3u8(?:\?[^"'\s\\]*)?/i);
+            if (hlsMatch) {
+                var m3u8 = hlsMatch[1] || hlsMatch[0];
+                return probeM3u8Quality(m3u8).then(function(q) {
+                    return {
+                        name: "PelisPedia",
+                        title: `${q || "1080p"} · ${lang || "LAT"} · Voe`,
+                        quality: q || "1080p",
+                        url: m3u8,
+                        headers: { "User-Agent": USER_AGENT, "Referer": url }
+                    };
+                });
             }
             return null;
         })
@@ -534,35 +538,14 @@ function dispatchDirectResolver(url, lang) {
     if (u.includes("embed69.org")) {
         return resolveEmbed69(url);
     }
-    if (u.includes("/vidurl/")) {
-        var absoluteVidUrl = url.startsWith("http") ? url : `${BASE_URL}${url}`;
-        return fetch(absoluteVidUrl, { headers: DEFAULT_HEADERS, redirect: "follow" })
-            .then(function(res) {
-                if (res.url && res.url.includes("embed69.org")) {
-                    return resolveEmbed69(res.url);
-                }
-                return res.text().then(function(html) {
-                    var match69 = html.match(/https?:\/\/embed69\.org\/[fe]\/[a-zA-Z0-9_-]+/i);
-                    if (match69) {
-                        return resolveEmbed69(match69[0]);
-                    }
-                    var iframes = extractPlayerUrlsFromHtml(html);
-                    if (iframes.length > 0) {
-                        return dispatchDirectResolver(iframes[0], lang);
-                    }
-                    return null;
-                });
-            })
-            .catch(function() { return null; });
+    if (u.includes("voe.sx") || u.includes("johnbeyondnation") || u.includes("voe-unblock")) {
+        return resolveVoe(url, lang);
     }
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("sfasthwish")) {
+    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("sfasthwish") || u.includes("hanerix") || u.includes("hglink")) {
         return resolveStreamWish(url, lang);
     }
-    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("filelions") || u.includes("minochinos")) {
+    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("filelions") || u.includes("minochinos") || u.includes("morencius")) {
         return resolveVidHide(url, lang);
-    }
-    if (u.includes("uqload")) {
-        return resolveUqload(url, lang);
     }
     return Promise.resolve(null);
 }
@@ -604,21 +587,19 @@ function searchPelisPedia(query) {
         .catch(function() { return []; });
 }
 
-function extractPlayerUrlsFromHtml(html) {
-    var urls = [];
+function extractPlayerIdsFromHtml(html) {
+    var ids = [];
     var iframeRegex = /<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi;
     var match;
 
     while ((match = iframeRegex.exec(html)) !== null) {
         var src = match[1];
-        if (src.startsWith("//")) src = "https:" + src;
-        else if (src.startsWith("/")) src = BASE_URL + src;
-
-        if (src.startsWith("http") && urls.indexOf(src) === -1) {
-            urls.push(src);
+        var vidMatch = src.match(/\/vidurl\/([^\/]+)/i);
+        if (vidMatch && ids.indexOf(vidMatch[1]) === -1) {
+            ids.push(vidMatch[1]);
         }
     }
-    return urls;
+    return ids;
 }
 
 // ============================================================================
@@ -697,19 +678,17 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         return res.text();
                     })
                     .then(function(html) {
-                        var playerUrls = extractPlayerUrlsFromHtml(html);
-
+                        var playerIds = extractPlayerIdsFromHtml(html);
                         var ePadded = eNum < 10 ? "0" + eNum : "" + eNum;
 
-                        if (playerUrls.length === 0 && imdbId) {
-                            var directVidUrl = isMovie
-                                ? `${BASE_URL}/vidurl/${imdbId}/`
-                                : `${BASE_URL}/vidurl/${imdbId}-${sNum}x${ePadded}/`;
-                            playerUrls.push(directVidUrl);
+                        if (playerIds.length === 0 && imdbId) {
+                            var directId = isMovie ? imdbId : `${imdbId}-${sNum}x${ePadded}`;
+                            playerIds.push(directId);
                         }
 
-                        var promises = playerUrls.map(function(u) {
-                            return dispatchDirectResolver(u, "LAT");
+                        var promises = playerIds.map(function(pId) {
+                            var embedUrl = `https://embed69.org/f/${pId}`;
+                            return resolveEmbed69(embedUrl);
                         });
 
                         return Promise.all(promises);
