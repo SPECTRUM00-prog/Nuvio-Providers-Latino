@@ -12,7 +12,7 @@ var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 // ==========================================
 function decodeB64ToBytes(b64) {
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    var str = String(b64).replace(/[=]+$/, "");
+    var str = String(b64).replace(/-/g, "+").replace(/_/g, "/").replace(/[=]+$/, "");
     if (str.length % 4 === 1) return new Uint8Array(0);
     var output = [];
     for (var bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output.push(255 & bs >> (-2 * bc & 6)) : 0) {
@@ -66,21 +66,21 @@ function utf8BytesToString(bytes) {
 }
 
 // ==========================================
-// 2. MOTOR SHA-256 PURO (Síncrono)
+// 2. MOTOR SHA-256 PURO (Síncrono sobre TypedArrays)
 // ==========================================
+var SHA256_K = [
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
+];
+
 function sha256(input) {
     var bytes = typeof input === "string" ? stringToUtf8Bytes(input) : input;
-    var K = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
-    ];
-
     var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
     var bitLen = bytes.length * 8;
     var newLen = (((bytes.length + 8) >> 6) + 1) << 6;
@@ -96,9 +96,9 @@ function sha256(input) {
     for (var i = 0; i < newLen; i += 64) {
         for (var t = 0; t < 16; t++) W[t] = view.getUint32(i + t * 4, false);
         for (var t = 16; t < 64; t++) {
-            var gamma0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
-            var gamma1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
-            W[t] = (W[t - 16] + gamma0 + W[t - 7] + gamma1) | 0;
+            var g0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
+            var g1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
+            W[t] = (W[t - 16] + g0 + W[t - 7] + g1) | 0;
         }
 
         var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
@@ -106,7 +106,7 @@ function sha256(input) {
         for (var t = 0; t < 64; t++) {
             var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
             var ch = (e & f) ^ (~e & g);
-            var temp1 = (h + S1 + ch + K[t] + W[t]) | 0;
+            var temp1 = (h + S1 + ch + SHA256_K[t] + W[t]) | 0;
             var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
             var maj = (a & b) ^ (a & c) ^ (b & c);
             var temp2 = (S0 + maj) | 0;
@@ -125,11 +125,16 @@ function sha256(input) {
     return out;
 }
 
-function sha256Hex(str) {
-    var bytes = sha256(str);
-    var hex = "";
-    for (var i = 0; i < bytes.length; i++) hex += bytes[i].toString(16).padStart(2, "0");
-    return hex;
+// Verificación PoW en bytes (sin asignaciones de strings en bucle)
+function checkPoWDifficulty(hashBytes, difficulty) {
+    var fullBytes = difficulty >> 1;
+    for (var i = 0; i < fullBytes; i++) {
+        if (hashBytes[i] !== 0) return false;
+    }
+    if ((difficulty & 1) === 1) {
+        if ((hashBytes[fullBytes] >>> 4) !== 0) return false;
+    }
+    return true;
 }
 
 // ==========================================
@@ -377,7 +382,8 @@ function resolveVidHide(url) {
 }
 
 function resolveStreamWish(url) {
-    var id = url.replace(/\/$/, "").split("/").pop();
+    var cleanUrl = url.split("?")[0].replace(/\/$/, "");
+    var id = cleanUrl.split("/").pop();
     var targetUrl = "https://hlswish.com/e/" + id;
 
     return fetch(targetUrl, {
@@ -412,7 +418,7 @@ function resolveStreamWish(url) {
 }
 
 // ==========================================
-// 7. TMDB METADATA (Con Fallback de Episodio)
+// 7. TMDB METADATA
 // ==========================================
 function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
     var isTv = mediaType === "tv" || mediaType === "series";
@@ -443,7 +449,8 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
                         return {
                             title: data.name,
                             year: (data.first_air_date || "").substring(0, 4),
-                            imdbId: null
+                            imdbId: null,
+                            isEpisodeImdb: false
                         };
                     });
             }
@@ -470,29 +477,39 @@ function fetchAndDecryptEmbed69(targetUrl) {
         return res.text();
     })
     .then(function(html) {
-        var challengeMatch = html.match(/const\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/);
-        var difficultyMatch = html.match(/const\s+POW_DIFFICULTY\s*=\s*(\d+)/);
-        var saltMatch = html.match(/const\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/);
-        var dataLinkMatch = html.match(/let\s+dataLink\s*=\s*(\[[\s\S]*?\]);/);
+        var challengeMatch = html.match(/(?:const|let|var)\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
+        var difficultyMatch = html.match(/(?:const|let|var)\s+POW_DIFFICULTY\s*=\s*(\d+)/i);
+        var saltMatch = html.match(/(?:const|let|var)\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/i);
+        var dataLinkMatch = html.match(/(?:let|var|const)\s+dataLink\s*=\s*(\[[\s\S]*?\])\s*;/i);
 
         if (!challengeMatch || !dataLinkMatch) return [];
 
         var challenge = challengeMatch[1];
         var difficulty = parseInt(difficultyMatch ? difficultyMatch[1] : "3", 10);
         var salt = saltMatch ? saltMatch[1] : "";
-        var dataLink = JSON.parse(dataLinkMatch[1]);
 
-        var prefix = "0".repeat(difficulty);
+        var dataLink = null;
+        try {
+            dataLink = JSON.parse(dataLinkMatch[1]);
+        } catch (e) {
+            return [];
+        }
+
         var nonce = 0;
         var maxIterations = 200000;
+        var solved = false;
 
+        // Minado PoW directo en TypedArrays (sin overhead de GC)
         while (nonce < maxIterations) {
-            var hash = sha256Hex(challenge + nonce);
-            if (hash.startsWith(prefix)) break;
+            var hashBytes = sha256(challenge + nonce);
+            if (checkPoWDifficulty(hashBytes, difficulty)) {
+                solved = true;
+                break;
+            }
             nonce++;
         }
 
-        if (nonce >= maxIterations) return [];
+        if (!solved) return [];
 
         var aesKey = sha256(challenge + nonce + salt);
         var embeds = [];
@@ -535,7 +552,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             if (media.isEpisodeImdb) {
                 candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
             }
-            var epPadded = String(e).padStart(2, "0");
+            var epPadded = ("0" + e).slice(-2);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-s" + s + "e" + epPadded);
