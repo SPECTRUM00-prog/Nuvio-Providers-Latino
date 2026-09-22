@@ -1,12 +1,12 @@
 /**
- * Provider: JKAnime (Anime Series y Películas) con Mapeo Inteligente AniList
+ * Provider: JKAnime (Anime, Donghua y Películas) con AniList Engine y Buscador Nativo
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
  */
 
 const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 const ANILIST_GRAPHQL = "https://graphql.anilist.co";
 const BASE_URL = "https://jkanime.net";
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
 const DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -56,9 +56,50 @@ function cleanTitle(text) {
         .trim();
 }
 
-function hasJapaneseChars(str) {
+function cleanSlug(urlOrSlug) {
+    if (!urlOrSlug) return "";
+    var path = urlOrSlug.replace(/^https?:\/\/[^/]+/i, "").replace(/^\//, "").replace(/\/.*$/, "");
+    return cleanTitle(path);
+}
+
+function hasAsianChars(str) {
     if (!str) return false;
-    return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
+    return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\uac00-\ud7af]/.test(str);
+}
+
+function scoreCandidate(candidateSlug, titles, year) {
+    if (!candidateSlug) return 0;
+    var cleanS = cleanSlug(candidateSlug).replace(/-/g, " ");
+    var score = 0;
+
+    for (var i = 0; i < titles.length; i++) {
+        var t = cleanTitle(titles[i]).replace(/-/g, " ");
+        if (!t) continue;
+
+        if (cleanS === t || cleanS.indexOf(t) === 0) {
+            score = Math.max(score, 100);
+            continue;
+        }
+
+        var words = t.split(/\s+/).filter(function(w) { return w.length > 2; });
+        var matches = 0;
+        for (var j = 0; j < words.length; j++) {
+            if (cleanS.indexOf(words[j]) !== -1) {
+                matches++;
+            }
+        }
+
+        if (words.length > 0 && matches > 0) {
+            var ratio = (matches / words.length) * 80;
+            score = Math.max(score, ratio);
+        }
+    }
+
+    if (score > 0 && year && cleanS.indexOf(String(year)) !== -1) {
+        score += 20;
+    }
+
+    return score;
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -107,7 +148,7 @@ function probeM3u8Quality(m3u8Url, headers) {
 // ==========================================
 
 function fetchAniListMapping(searchName) {
-    if (!searchName || hasJapaneseChars(searchName)) return Promise.resolve([]);
+    if (!searchName || hasAsianChars(searchName)) return Promise.resolve([]);
 
     var gqlQuery = `
     query ($search: String) {
@@ -170,7 +211,6 @@ function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
         return false;
     });
 
-    // 1. Caso Shonen Continuo (One Piece, Detective Conan, Naruto)
     if (matchingEntries.length === 0) {
         var baseEntry = aniListMedia[0];
         return {
@@ -179,7 +219,6 @@ function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
         };
     }
 
-    // 2. Caso Split-Cour (Mushoku Tensei, Spy x Family)
     if (matchingEntries.length > 1) {
         var part1 = matchingEntries.find(function(m) {
             var f = (m.title.romaji + " " + m.title.english).toLowerCase();
@@ -213,6 +252,32 @@ function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
         slug: cleanTitle(selected.title.romaji),
         targetEp: (isContinuous && sNum > 1) ? absoluteEp : eNum
     };
+}
+
+// ==========================================
+// BUSCADOR NATIVO DE JKANIME (FALLBACK)
+// ==========================================
+
+function searchJKAnime(query) {
+    if (!query || hasAsianChars(query)) return Promise.resolve([]);
+    var searchUrl = `${BASE_URL}/buscar/${encodeURIComponent(query)}/1/`;
+
+    return fetch(searchUrl, { headers: DEFAULT_HEADERS })
+        .then(function(res) { return res.ok ? res.text() : ""; })
+        .then(function(html) {
+            var slugs = [];
+            var regex = /href=["']https?:\/\/jkanime\.net\/([a-zA-Z0-9-]+)\/["']/gi;
+            var match;
+
+            while ((match = regex.exec(html)) !== null) {
+                var s = match[1];
+                if (s && s !== "buscar" && s !== "horario" && s !== "directorio" && slugs.indexOf(s) === -1) {
+                    slugs.push(s);
+                }
+            }
+            return slugs;
+        })
+        .catch(function() { return []; });
 }
 
 // ==========================================
@@ -338,7 +403,7 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
     if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("sfasthwish") || u.includes("flaswish") || u.includes("fasthwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return resolveStreamWish(url);
-    if (u.includes("vidhide") || u.includes("vidhidevip") || u.includes("callistanise") || u.includes("minochinos") || u.includes("filelions")) return resolveVidHide(url);
+    if (u.includes("vidhide") || u.includes("vidhidevip") || u.includes("callistanise") || u.includes("minochinos") || u.includes("filelions") || u.includes("morencius")) return resolveVidHide(url);
     if (u.includes("mp4upload")) return resolveMp4upload(url);
     if (u.includes("streamtape")) return resolveStreamtape(url);
     if (u.includes("/jkplayer/") || u.includes("playmudos")) return resolveDesuMagi(url);
@@ -430,51 +495,98 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return res.json();
         })
         .then(function(meta) {
-            var isJapanese = (meta.original_language === "ja") ||
-                             (meta.origin_country && meta.origin_country.indexOf("JP") !== -1) ||
-                             (meta.production_countries && meta.production_countries.some(function(c) { return c.iso_3166_1 === "JP"; }));
+            // Permitir Japonés (ja), Chino/Donghua (zh) y Coreano (ko)
+            var isAsianAnim = (meta.original_language === "ja" || meta.original_language === "zh" || meta.original_language === "ko") ||
+                              (meta.origin_country && meta.origin_country.some(function(c) { return ["JP", "CN", "KR", "TW", "HK"].indexOf(c) !== -1; })) ||
+                              (meta.production_countries && meta.production_countries.some(function(c) { return ["JP", "CN", "KR"].indexOf(c.iso_3166_1) !== -1; }));
 
-            if (!isJapanese) {
-                console.log("[JKAnime] Contenido no japonés. Abortando.");
+            if (!isAsianAnim) {
+                console.log("[JKAnime] Contenido no asiático. Abortando.");
                 return [];
             }
 
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
-            var cleanT = cleanTitle(title).replace(/-/g, " ");
+            var origTitle = isMovie ? meta.original_title : meta.original_name;
+            var year = (meta.release_date || meta.first_air_date || "").substring(0, 4);
+
+            var titles = [];
+            if (title) titles.push(title);
+            if (origTitle && origTitle !== title) titles.push(origTitle);
+
+            var altArr = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
+            for (var i = 0; i < altArr.length; i++) {
+                var alt = altArr[i].title || "";
+                if (alt && !hasAsianChars(alt) && titles.indexOf(alt) === -1) {
+                    titles.push(alt);
+                }
+            }
+
+            var cleanT = cleanTitle(origTitle || title).replace(/-/g, " ");
             var words = cleanT.split(/\s+/).filter(function(w) { return w.length > 2; });
             var searchKeyword = words.length >= 2 ? words.slice(0, 2).join(" ") : cleanT;
-
             var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
 
-            // 1. Consultar AniList GraphQL
-            return fetchAniListMapping(searchKeyword).then(function(aniListMedia) {
+            // 1. Consultar AniList GraphQL + Buscador Nativo de JKAnime
+            return Promise.all([
+                fetchAniListMapping(searchKeyword),
+                searchJKAnime(searchKeyword)
+            ]).then(function(results) {
+                var aniListMedia = results[0];
+                var nativeSlugs = results[1];
+
                 var aniTarget = resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp);
-                var pageUrlsToTry = [];
+                var candidateSlugs = [];
 
                 if (aniTarget && aniTarget.slug) {
-                    var targetEp = isMovie ? 1 : aniTarget.targetEp;
-                    pageUrlsToTry.push(`${BASE_URL}/${aniTarget.slug}/${targetEp}/`);
+                    candidateSlugs.push(aniTarget.slug);
+                    if (year) candidateSlugs.push(`${aniTarget.slug}-${year}`);
                 }
 
-                // 2. Prioridad de Respaldo: Si es Shonen Continuo (One Piece), probar absoluteEp antes de eNum
-                var rawBaseSlug = cleanTitle(title);
-                if (isMovie) {
-                    pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/pelicula/`);
-                    pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/1/`);
-                } else {
-                    if (sNum > 1 && absoluteEp !== eNum) {
-                        pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/${absoluteEp}/`);
+                for (var n = 0; n < nativeSlugs.length; n++) {
+                    if (candidateSlugs.indexOf(nativeSlugs[n]) === -1) {
+                        candidateSlugs.push(nativeSlugs[n]);
                     }
-                    pageUrlsToTry.push(`${BASE_URL}/${rawBaseSlug}/${eNum}/`);
                 }
 
-                var uniqueUrls = pageUrlsToTry.filter(function(item, pos, self) {
-                    return item && self.indexOf(item) === pos;
-                });
+                // Añadir slugs directos basados en los títulos de TMDB con y sin año
+                for (var t = 0; t < titles.length; t++) {
+                    var sBase = cleanTitle(titles[t]);
+                    if (sBase) {
+                        if (candidateSlugs.indexOf(sBase) === -1) candidateSlugs.push(sBase);
+                        if (year && candidateSlugs.indexOf(`${sBase}-${year}`) === -1) candidateSlugs.push(`${sBase}-${year}`);
+                    }
+                }
+
+                // Filtrar con score >= 35
+                var scoredSlugs = [];
+                for (var k = 0; k < candidateSlugs.length; k++) {
+                    var sc = scoreCandidate(candidateSlugs[k], titles, year);
+                    if (sc >= 35) {
+                        scoredSlugs.push({ slug: candidateSlugs[k], score: sc });
+                    }
+                }
+
+                if (scoredSlugs.length === 0) return [];
+
+                scoredSlugs.sort(function(a, b) { return b.score - a.score; });
+
+                var pageUrlsToTry = [];
+                for (var sIdx = 0; sIdx < scoredSlugs.length; sIdx++) {
+                    var currentSlug = scoredSlugs[sIdx].slug;
+                    if (isMovie) {
+                        pageUrlsToTry.push(`${BASE_URL}/${currentSlug}/pelicula/`);
+                        pageUrlsToTry.push(`${BASE_URL}/${currentSlug}/1/`);
+                    } else {
+                        pageUrlsToTry.push(`${BASE_URL}/${currentSlug}/${eNum}/`);
+                        if (sNum > 1 && absoluteEp !== eNum) {
+                            pageUrlsToTry.push(`${BASE_URL}/${currentSlug}/${absoluteEp}/`);
+                        }
+                    }
+                }
 
                 function tryPageUrls(pIdx) {
-                    if (pIdx >= uniqueUrls.length) return Promise.resolve([]);
-                    var targetUrl = uniqueUrls[pIdx];
+                    if (pIdx >= pageUrlsToTry.length) return Promise.resolve([]);
+                    var targetUrl = pageUrlsToTry[pIdx];
 
                     return extractStreamsFromEpisodePage(targetUrl).then(function(streams) {
                         if (streams && streams.length > 0) return streams;
