@@ -6,10 +6,23 @@
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://embed69.org";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 3500; // 3.5 segundos máximo para evitar el freeze de 21s de TCP
 
 // ==========================================
-// 1. HELPERS BASE64 & STRINGS (HERMES SAFE)
+// 1. HELPERS DE RED & HERMES SAFE TIMEOUT
 // ==========================================
+function fetchWithTimeout(url, options, timeoutMs) {
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    return Promise.race([
+        fetch(url, options),
+        new Promise(function(_, reject) {
+            setTimeout(function() {
+                reject(new Error("Timeout"));
+            }, limit);
+        })
+    ]);
+}
+
 function decodeB64ToBytes(b64) {
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
     var str = String(b64).replace(/-/g, "+").replace(/_/g, "/").replace(/[=]+$/, "");
@@ -66,7 +79,7 @@ function utf8BytesToString(bytes) {
 }
 
 // ==========================================
-// 2. MOTOR CRIPTOGRÁFICO ZERO-ALLOCATION (SHA-256)
+// 2. MOTOR SHA-256 ZERO-ALLOCATION
 // ==========================================
 var SHA256_K = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -79,7 +92,6 @@ var SHA256_K = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-// Reutilizamos estructuras para no sobrecargar el Garbage Collector
 var POW_W = new Uint32Array(64);
 var POW_BUFFER = new Uint8Array(128);
 var POW_VIEW = new DataView(POW_BUFFER.buffer);
@@ -87,13 +99,11 @@ var POW_VIEW = new DataView(POW_BUFFER.buffer);
 function solvePoW(challengeStr, difficulty) {
     var cBytes = stringToUtf8Bytes(challengeStr);
     var cLen = cBytes.length;
-
     var fullBytes = difficulty >> 1;
     var hasHalfByte = (difficulty & 1) === 1;
     var maxIterations = 200000;
 
     for (var nonce = 0; nonce < maxIterations; nonce++) {
-        // Convertir nonce a dígitos ASCII sin instanciar strings
         var n = nonce;
         var nDigits = 0;
         var tempN = n;
@@ -138,7 +148,6 @@ function solvePoW(challengeStr, difficulty) {
         var h0 = (0x6a09e667 + a) >>> 0;
         var h1 = (0xbb67ae85 + b) >>> 0;
 
-        // Comprobación ultra rápida de ceros en cabecera
         var match = true;
         if (fullBytes >= 1 && (h0 >>> 24) !== 0) match = false;
         if (match && fullBytes >= 2 && ((h0 >>> 16) & 0xff) !== 0) match = false;
@@ -378,10 +387,10 @@ function unpackJS(packed) {
 function probeM3u8Quality(m3u8Url, headers) {
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
-    return fetch(m3u8Url, {
+    return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    })
+    }, 2500)
     .then(function(res) {
         if (!res.ok) return "720p";
         return res.text();
@@ -416,10 +425,10 @@ function probeM3u8Quality(m3u8Url, headers) {
 // 6. RESOLVERS DE STREAMING (PROMISE BASED)
 // ==========================================
 function resolveVidHide(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" },
+    return fetchWithTimeout(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -450,10 +459,10 @@ function resolveStreamWish(url) {
     var id = cleanUrl.split("/").pop();
     var targetUrl = "https://hlswish.com/e/" + id;
 
-    return fetch(targetUrl, {
+    return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -489,7 +498,7 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
     var type = isTv ? "tv" : "movie";
     var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=external_ids";
 
-    return fetch(url)
+    return fetchWithTimeout(url, null, 2500)
         .then(function(res) { return res.json(); })
         .then(function(data) {
             var imdbId = (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null;
@@ -499,7 +508,7 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
                 var e = parseInt(episodeNum || 1, 10);
                 var epUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + s + "/episode/" + e + "/external_ids?api_key=" + TMDB_API_KEY;
 
-                return fetch(epUrl)
+                return fetchWithTimeout(epUrl, null, 2500)
                     .then(function(epRes) { return epRes.json(); })
                     .then(function(epData) {
                         return {
@@ -533,9 +542,9 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
 // 8. OBTENER Y DESCIFRAR EMBEDS DE EMBED69
 // ==========================================
 function fetchAndDecryptEmbed69(targetUrl) {
-    return fetch(targetUrl, {
+    return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) {
         if (!res.ok) return [];
         return res.text();
@@ -559,7 +568,6 @@ function fetchAndDecryptEmbed69(targetUrl) {
             return [];
         }
 
-        // Resolución de PoW a máxima velocidad (0 asignaciones de memoria)
         var nonce = solvePoW(challenge, difficulty);
         if (nonce === -1) return [];
 
@@ -613,7 +621,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         if (candidateUrls.length === 0) return [];
 
-        // Concurrencia real: consultar los candidatos en paralelo
+        // Concurrencia controlada: consultar todas las variantes de URL en paralelo
         var embedPromises = candidateUrls.map(function(u) {
             return fetchAndDecryptEmbed69(u);
         });
