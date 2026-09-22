@@ -66,7 +66,7 @@ function utf8BytesToString(bytes) {
 }
 
 // ==========================================
-// 2. MOTOR SHA-256 PURO (Síncrono sobre TypedArrays)
+// 2. MOTOR CRIPTOGRÁFICO ZERO-ALLOCATION (SHA-256)
 // ==========================================
 var SHA256_K = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -78,6 +78,82 @@ var SHA256_K = [
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
+
+// Reutilizamos estructuras para no sobrecargar el Garbage Collector
+var POW_W = new Uint32Array(64);
+var POW_BUFFER = new Uint8Array(128);
+var POW_VIEW = new DataView(POW_BUFFER.buffer);
+
+function solvePoW(challengeStr, difficulty) {
+    var cBytes = stringToUtf8Bytes(challengeStr);
+    var cLen = cBytes.length;
+
+    var fullBytes = difficulty >> 1;
+    var hasHalfByte = (difficulty & 1) === 1;
+    var maxIterations = 200000;
+
+    for (var nonce = 0; nonce < maxIterations; nonce++) {
+        // Convertir nonce a dígitos ASCII sin instanciar strings
+        var n = nonce;
+        var nDigits = 0;
+        var tempN = n;
+        do { nDigits++; tempN = (tempN / 10) | 0; } while (tempN > 0);
+
+        var totalLen = cLen + nDigits;
+        POW_BUFFER.fill(0);
+        POW_BUFFER.set(cBytes, 0);
+
+        var pos = totalLen - 1;
+        tempN = n;
+        do {
+            POW_BUFFER[pos--] = 48 + (tempN % 10);
+            tempN = (tempN / 10) | 0;
+        } while (tempN > 0);
+
+        POW_BUFFER[totalLen] = 0x80;
+        POW_VIEW.setUint32(60, totalLen * 8, false);
+
+        for (var t = 0; t < 16; t++) POW_W[t] = POW_VIEW.getUint32(t * 4, false);
+        for (var t = 16; t < 64; t++) {
+            var g0 = ((POW_W[t - 15] >>> 7) | (POW_W[t - 15] << 25)) ^ ((POW_W[t - 15] >>> 18) | (POW_W[t - 15] << 14)) ^ (POW_W[t - 15] >>> 3);
+            var g1 = ((POW_W[t - 2] >>> 17) | (POW_W[t - 2] << 15)) ^ ((POW_W[t - 2] >>> 19) | (POW_W[t - 2] << 13)) ^ (POW_W[t - 2] >>> 10);
+            POW_W[t] = (POW_W[t - 16] + g0 + POW_W[t - 7] + g1) | 0;
+        }
+
+        var a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
+        var e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
+
+        for (var t = 0; t < 64; t++) {
+            var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+            var ch = (e & f) ^ (~e & g);
+            var temp1 = (h + S1 + ch + SHA256_K[t] + POW_W[t]) | 0;
+            var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+            var maj = (a & b) ^ (a & c) ^ (b & c);
+            var temp2 = (S0 + maj) | 0;
+
+            h = g; g = f; f = e; e = (d + temp1) | 0;
+            d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+        }
+
+        var h0 = (0x6a09e667 + a) >>> 0;
+        var h1 = (0xbb67ae85 + b) >>> 0;
+
+        // Comprobación ultra rápida de ceros en cabecera
+        var match = true;
+        if (fullBytes >= 1 && (h0 >>> 24) !== 0) match = false;
+        if (match && fullBytes >= 2 && ((h0 >>> 16) & 0xff) !== 0) match = false;
+        if (match && fullBytes >= 3 && ((h0 >>> 8) & 0xff) !== 0) match = false;
+        if (match && fullBytes >= 4 && (h0 & 0xff) !== 0) match = false;
+        if (match && hasHalfByte) {
+            var shift = (3 - fullBytes) * 8 + 4;
+            var nibble = fullBytes < 4 ? (h0 >>> shift) & 0x0f : (h1 >>> 28);
+            if (nibble !== 0) match = false;
+        }
+
+        if (match) return nonce;
+    }
+    return -1;
+}
 
 function sha256(input) {
     var bytes = typeof input === "string" ? stringToUtf8Bytes(input) : input;
@@ -123,18 +199,6 @@ function sha256(input) {
     var outView = new DataView(out.buffer);
     for (var i = 0; i < 8; i++) outView.setUint32(i * 4, H[i], false);
     return out;
-}
-
-// Verificación PoW en bytes (sin asignaciones de strings en bucle)
-function checkPoWDifficulty(hashBytes, difficulty) {
-    var fullBytes = difficulty >> 1;
-    for (var i = 0; i < fullBytes; i++) {
-        if (hashBytes[i] !== 0) return false;
-    }
-    if ((difficulty & 1) === 1) {
-        if ((hashBytes[fullBytes] >>> 4) !== 0) return false;
-    }
-    return true;
 }
 
 // ==========================================
@@ -430,7 +494,7 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
         .then(function(data) {
             var imdbId = (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null;
 
-            if (!imdbId && isTv) {
+            if (isTv) {
                 var s = parseInt(seasonNum || 1, 10);
                 var e = parseInt(episodeNum || 1, 10);
                 var epUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + s + "/episode/" + e + "/external_ids?api_key=" + TMDB_API_KEY;
@@ -441,25 +505,25 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
                         return {
                             title: data.name,
                             year: (data.first_air_date || "").substring(0, 4),
-                            imdbId: epData.imdb_id || null,
-                            isEpisodeImdb: !!epData.imdb_id
+                            imdbId: imdbId,
+                            episodeImdbId: epData.imdb_id || null
                         };
                     })
                     .catch(function() {
                         return {
                             title: data.name,
                             year: (data.first_air_date || "").substring(0, 4),
-                            imdbId: null,
-                            isEpisodeImdb: false
+                            imdbId: imdbId,
+                            episodeImdbId: null
                         };
                     });
             }
 
             return {
-                title: isTv ? data.name : data.title,
-                year: (data.release_date || data.first_air_date || "").substring(0, 4),
+                title: data.title,
+                year: (data.release_date || "").substring(0, 4),
                 imdbId: imdbId,
-                isEpisodeImdb: false
+                episodeImdbId: null
             };
         })
         .catch(function() { return null; });
@@ -495,21 +559,9 @@ function fetchAndDecryptEmbed69(targetUrl) {
             return [];
         }
 
-        var nonce = 0;
-        var maxIterations = 200000;
-        var solved = false;
-
-        // Minado PoW directo en TypedArrays (sin overhead de GC)
-        while (nonce < maxIterations) {
-            var hashBytes = sha256(challenge + nonce);
-            if (checkPoWDifficulty(hashBytes, difficulty)) {
-                solved = true;
-                break;
-            }
-            nonce++;
-        }
-
-        if (!solved) return [];
+        // Resolución de PoW a máxima velocidad (0 asignaciones de memoria)
+        var nonce = solvePoW(challenge, difficulty);
+        if (nonce === -1) return [];
 
         var aesKey = sha256(challenge + nonce + salt);
         var embeds = [];
@@ -543,32 +595,38 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     var e = parseInt(episodeNum || 1, 10);
 
     return getMediaData(tmdbId, mediaType, s, e).then(function(media) {
-        if (!media || !media.imdbId || !/^tt\d+$/.test(media.imdbId)) return [];
+        if (!media) return [];
 
         var candidateUrls = [];
         if (!isTv) {
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
+            if (media.imdbId) candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
         } else {
-            if (media.isEpisodeImdb) {
-                candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
+            if (media.episodeImdbId) {
+                candidateUrls.push(BASE_URL + "/f/" + media.episodeImdbId);
             }
-            var epPadded = ("0" + e).slice(-2);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-s" + s + "e" + epPadded);
+            if (media.imdbId) {
+                var epPadded = ("0" + e).slice(-2);
+                candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
+                candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e);
+            }
         }
 
-        function tryNextUrl(idx) {
-            if (idx >= candidateUrls.length) return Promise.resolve([]);
-            var targetUrl = candidateUrls[idx];
+        if (candidateUrls.length === 0) return [];
 
-            return fetchAndDecryptEmbed69(targetUrl).then(function(embeds) {
-                if (embeds && embeds.length > 0) return embeds;
-                return tryNextUrl(idx + 1);
-            });
-        }
+        // Concurrencia real: consultar los candidatos en paralelo
+        var embedPromises = candidateUrls.map(function(u) {
+            return fetchAndDecryptEmbed69(u);
+        });
 
-        return tryNextUrl(0).then(function(embedsToResolve) {
+        return Promise.all(embedPromises).then(function(allResults) {
+            var embedsToResolve = [];
+            for (var i = 0; i < allResults.length; i++) {
+                if (allResults[i] && allResults[i].length > 0) {
+                    embedsToResolve = allResults[i];
+                    break;
+                }
+            }
+
             if (!embedsToResolve || embedsToResolve.length === 0) return [];
 
             var resolvePromises = embedsToResolve.map(function(item) {
