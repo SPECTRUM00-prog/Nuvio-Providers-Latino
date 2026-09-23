@@ -1,7 +1,7 @@
 /**
  * Provider: JKAnime (Anime, Donghua y Películas)
- * Motor: AniList GraphQL + Algoritmo Universal Continuo/Estacional (TMDB/Cinemeta/Kitsu)
- * Runtime: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Android TV / Desktop)
+ * Motor: AniList GraphQL + Algoritmo Universal Split-Cour y Continuo (Agnóstico)
+ * Soporte Completo: TMDB, Cinemeta y Kitsu sin dependencias y 100% Hermes Safe
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -81,15 +81,30 @@ function hasAsianChars(str) {
     return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\uac00-\ud7af]/.test(str);
 }
 
-// Determina si un slug representa una temporada específica o si es el slug raíz
+// Clasificador jerárquico universal de temporada (1, 2, 3, 4...)
+function getSeasonRank(text) {
+    if (!text) return 1;
+    var t = (" " + text.toLowerCase() + " ").replace(/[:\-_]/g, " ");
+    if (t.indexOf(" season 4 ") !== -1 || t.indexOf(" 4th season ") !== -1 || t.indexOf(" iv ") !== -1 || t.indexOf(" final season ") !== -1) return 4;
+    if (t.indexOf(" season 3 ") !== -1 || t.indexOf(" 3rd season ") !== -1 || t.indexOf(" iii ") !== -1) return 3;
+    if (t.indexOf(" season 2 ") !== -1 || t.indexOf(" 2nd season ") !== -1 || t.indexOf(" ii ") !== -1) return 2;
+    return 1;
+}
+
+function isPartTwo(text) {
+    if (!text) return false;
+    var t = text.toLowerCase();
+    return t.indexOf("part 2") !== -1 || t.indexOf("part-2") !== -1 || t.indexOf("cour 2") !== -1 || t.indexOf("cour-2") !== -1;
+}
+
 function isSeasonalSlug(slug) {
     if (!slug) return false;
     var s = slug.toLowerCase();
     var markers = [
         "-season-", "-temporada-", "-part-", "-cour-",
-        "-1st", "-2nd", "-3rd", "-4th", "-5th", "-6th", "-7th", "-8th",
-        "-s1", "-s2", "-s3", "-s4", "-s5", "-s6", "-s7", "-s8",
-        "-ii", "-iii", "-iv", "-v", "-vi",
+        "-1st", "-2nd", "-3rd", "-4th", "-5th", "-6th",
+        "-s1", "-s2", "-s3", "-s4", "-s5",
+        "-ii", "-iii", "-iv", "-v",
         "-movie", "-pelicula"
     ];
     for (var i = 0; i < markers.length; i++) {
@@ -157,8 +172,8 @@ function probeM3u8Quality(m3u8Url, headers) {
         .then(function(res) { return res.ok ? res.text() : ""; })
         .then(function(text) {
             if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
-                if (m3u8Url.indexOf("1080") !== -1) return "1080p";
-                if (m3u8Url.indexOf("720") !== -1) return "720p";
+                if (/1080/i.test(m3u8Url)) return "1080p";
+                if (/720/i.test(m3u8Url)) return "720p";
                 return "720p";
             }
             var maxH = 0, resRegex = /RESOLUTION=\d+x(\d+)/gi, match;
@@ -175,10 +190,9 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
-// 2. MATEMÁTICAS DE EPISODIOS UNIVERSALES
+// 2. MATEMÁTICAS UNIVERSALES DE EPISODIOS
 // ==========================================
 
-// Calcula el episodio absoluto acumulado desde el inicio de la serie (TMDB / Cinemeta)
 function calculateAbsoluteEp(seasons, sNum, eNum) {
     if (!seasons || seasons.length === 0 || sNum <= 1) return eNum;
     var totalPrevious = 0;
@@ -191,7 +205,6 @@ function calculateAbsoluteEp(seasons, sNum, eNum) {
     return totalPrevious + eNum;
 }
 
-// Descompone un número absoluto a su temporada y episodio relativo (Kitsu -> TMDB)
 function decomposeAbsoluteEp(seasons, absEp) {
     if (!seasons || seasons.length === 0) return { season: 1, episode: absEp };
     var accumulated = 0;
@@ -212,13 +225,13 @@ function decomposeAbsoluteEp(seasons, absEp) {
 }
 
 // ==========================================
-// 3. CONSULTAS GRAPHQL A ANILIST
+// 3. ANILIST GRAPHQL: RESOLUTOR SPLIT-COUR
 // ==========================================
 
 function fetchAniListMapping(searchName) {
     if (!searchName || hasAsianChars(searchName)) return Promise.resolve([]);
 
-    var gqlQuery = "query ($search: String) { Page(page: 1, perPage: 8) { media(search: $search, type: ANIME, sort: SEARCH_MATCH) { id title { romaji english } synonyms episodes seasonYear format } } }";
+    var gqlQuery = "query ($search: String) { Page(page: 1, perPage: 10) { media(search: $search, type: ANIME, sort: SEARCH_MATCH) { id title { romaji english } synonyms episodes seasonYear format } } }";
 
     return fetchWithTimeout(ANILIST_GRAPHQL, {
         method: "POST",
@@ -235,76 +248,69 @@ function fetchAniListMapping(searchName) {
     .catch(function() { return []; });
 }
 
-function resolveAniListTarget(aniListMedia, sNum, eNum, absoluteEp) {
+function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
     if (!aniListMedia || aniListMedia.length === 0) return null;
 
-    var seasonKeywords = {
-        1: ["season 1", "cour 1", "cour 2", "part 2", "2nd season", "1st season"],
-        2: ["season 2", " ii ", "ii:", "ii ", "part 2", "cour 2", "2nd season"],
-        3: ["season 3", " iii ", "iii:", "iii ", "3rd season"],
-        4: ["season 4", " iv ", "iv:", "iv ", "final season", "4th season"]
-    }[sNum] || ["season " + sNum];
-
-    var matchingEntries = aniListMedia.filter(function(m) {
-        var r = (m.title.romaji || "").toLowerCase();
-        var e = (m.title.english || "").toLowerCase();
-        var full = r + " " + e;
-
-        if (sNum === 1) {
-            if (full.indexOf("season 2") !== -1 || full.indexOf("season 3") !== -1 || full.indexOf("season 4") !== -1 || full.indexOf(" ii") !== -1 || full.indexOf(" iii") !== -1) {
-                return false;
-            }
-            return true;
+    // 1. Filtrar los animes que pertenecen exactamente a la temporada solicitada
+    var seasonMatches = [];
+    for (var i = 0; i < aniListMedia.length; i++) {
+        var item = aniListMedia[i];
+        var combinedTitle = (item.title.romaji || "") + " " + (item.title.english || "");
+        var rank = getSeasonRank(combinedTitle);
+        if (rank === sNum) {
+            seasonMatches.push(item);
         }
+    }
 
-        for (var i = 0; i < seasonKeywords.length; i++) {
-            if (full.indexOf(seasonKeywords[i]) !== -1) return true;
-        }
-        return false;
-    });
-
-    if (matchingEntries.length === 0) {
+    // Si no hay temporada específica, tomar el slug base continuo (One Piece, etc.)
+    if (seasonMatches.length === 0) {
         var baseEntry = aniListMedia[0];
         return {
             slug: cleanTitle(baseEntry.title.romaji),
-            targetEp: sNum > 1 ? absoluteEp : eNum
+            targetEp: sNum > 1 ? absoluteEp : eNum,
+            isContinuous: true
         };
     }
 
-    // Manejo universal de split-cours (Mushoku Tensei Part 2, Spy x Family Part 2, etc.)
-    if (matchingEntries.length > 1) {
+    // 2. Manejo Universal de Split-Cours (Parte 1 vs Parte 2)
+    if (seasonMatches.length > 1) {
         var part1 = null;
         var part2 = null;
-        for (var p = 0; p < matchingEntries.length; p++) {
-            var f = (matchingEntries[p].title.romaji + " " + matchingEntries[p].title.english).toLowerCase();
-            if (f.indexOf("part 2") !== -1 || f.indexOf("cour 2") !== -1) {
-                part2 = matchingEntries[p];
+
+        for (var p = 0; p < seasonMatches.length; p++) {
+            var name = (seasonMatches[p].title.romaji + " " + seasonMatches[p].title.english).toLowerCase();
+            if (isPartTwo(name)) {
+                part2 = seasonMatches[p];
             } else {
-                part1 = matchingEntries[p];
+                part1 = seasonMatches[p];
             }
         }
 
-        if (part1 && part2 && part1.episodes) {
-            if (eNum > part1.episodes) {
+        // Si la temporada está partida en dos y eNum supera los episodios de la Parte 1:
+        if (part1 && part2) {
+            var p1Limit = part1.episodes || 12; // Valor estándar de cour japonés
+            if (eNum > p1Limit) {
                 return {
                     slug: cleanTitle(part2.title.romaji),
-                    targetEp: eNum - part1.episodes
+                    targetEp: eNum - p1Limit, // Ej. 16 - 12 = Episodio 4
+                    isContinuous: false
                 };
             } else {
                 return {
                     slug: cleanTitle(part1.title.romaji),
-                    targetEp: eNum
+                    targetEp: eNum,
+                    isContinuous: false
                 };
             }
         }
     }
 
-    var selected = matchingEntries[0];
-    var isContinuous = selected.title.romaji.toLowerCase().indexOf("season") === -1 && selected.title.romaji.toLowerCase().indexOf(" ii") === -1 && selected.title.romaji.toLowerCase().indexOf(" iii") === -1;
-    
+    // 3. Temporada normal de un solo bloque (ej. Jujutsu Kaisen S2 con 23 episodios seguidos)
+    var selected = seasonMatches[0];
     return {
         slug: cleanTitle(selected.title.romaji),
-        targetEp: (isContinuous && sNum > 1) ? absoluteEp : eNum
+        targetEp: eNum,
+        isContinuous: false
     };
 }
 
@@ -584,7 +590,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var words = cleanT.split(/\s+/).filter(function(w) { return w.length > 2; });
             var searchKeyword = words.length >= 2 ? words.slice(0, 2).join(" ") : cleanT;
 
-            // RESOLUCIÓN MATEMÁTICA UNIVERSAL DE EPISODIOS (KITSU vs TMDB vs CINEMETA)
+            // RESOLUCIÓN MATEMÁTICA UNIVERSAL DE TEMPORADAS Y EPISODIOS
             var seasonsList = meta.seasons || [];
             var s1Count = (seasonsList[0] && seasonsList[0].episode_count) || 60;
             
@@ -593,14 +599,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var absoluteEp = eNum;
 
             if (!isMovie) {
-                // Caso Kitsu: Manda sNum = 1, pero eNum supera la temporada 1 completa (ej. One Piece 1179, Mushoku 26)
+                // Caso Kitsu: Manda Temporada 1 pero con número de episodio global acumulado
                 if (sNum === 1 && eNum > s1Count && seasonsList.length > 1) {
                     absoluteEp = eNum;
                     var decomp = decomposeAbsoluteEp(seasonsList, eNum);
                     effectiveSeason = decomp.season;
                     effectiveEpisode = decomp.episode;
                 } else {
-                    // Caso TMDB / Cinemeta: Manda sNum = 23, eNum = 20
+                    // Caso TMDB / Cinemeta: Manda Temporada N y Episodio dentro de la temporada
                     absoluteEp = calculateAbsoluteEp(seasonsList, sNum, eNum);
                     effectiveSeason = sNum;
                     effectiveEpisode = eNum;
@@ -614,7 +620,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 var aniListMedia = results[0];
                 var nativeSlugs = results[1];
 
-                var aniTarget = resolveAniListTarget(aniListMedia, effectiveSeason, effectiveEpisode, absoluteEp);
+                // El resolver universal calcula el slug exacto de la parte (y el targetEp reseteado)
+                var aniTarget = resolveUniversalTarget(aniListMedia, effectiveSeason, effectiveEpisode, absoluteEp);
                 var candidateSlugs = [];
 
                 if (aniTarget && aniTarget.slug) {
@@ -664,7 +671,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                 scoredSlugs.sort(function(a, b) { return b.score - a.score; });
 
-                // CONSTRUCCIÓN UNIVERSAL DE RUTAS SEGÚN LA NATURALEZA DEL SLUG
+                // CONSTRUCCIÓN INTELIGENTE DE RUTAS DE EPISODIO
                 var pageUrlsToTry = [];
                 for (var sIdx = 0; sIdx < scoredSlugs.length; sIdx++) {
                     var item = scoredSlugs[sIdx];
@@ -677,20 +684,20 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         var isSeasonal = isSeasonalSlug(curSlug);
 
                         if (item.targetEp) {
-                            // AniList resolvió exactamente el episodio correspondiente (Split-cour / Temporada)
+                            // Si AniList resolvió el offset matemático del Split-Cour, este va de PRIMERO
                             pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + item.targetEp + "/");
                         }
 
                         if (isSeasonal) {
-                            // Slug estacional (ej. mushoku-tensei-season-2 / jujutsu-kaisen-2nd-season):
-                            // El episodio relativo (eNum) VA PRIMERO porque la temporada resetea a 1.
+                            // Slug de Temporada/Parte (Mushoku Tensei T2 P2):
+                            // El episodio relativo reseteado a 1 va de primero
                             pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + effectiveEpisode + "/");
                             if (absoluteEp !== effectiveEpisode) {
                                 pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + absoluteEp + "/");
                             }
                         } else {
-                            // Slug raíz continuo (ej. one-piece / black-clover / naruto-shippuden):
-                            // Si estamos en temporadas avanzadas (sNum > 1) o es Kitsu, el acumulado absoluto VA PRIMERO.
+                            // Slug Raíz Continuo (One Piece):
+                            // El episodio acumulado absoluto (1179) va de primero
                             if (effectiveSeason > 1 || absoluteEp > s1Count) {
                                 pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + absoluteEp + "/");
                                 pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + effectiveEpisode + "/");
@@ -701,7 +708,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                // Descartar duplicados manteniendo el orden de prioridad
                 var uniquePageUrls = [];
                 for (var u = 0; u < pageUrlsToTry.length; u++) {
                     if (uniquePageUrls.indexOf(pageUrlsToTry[u]) === -1) {
