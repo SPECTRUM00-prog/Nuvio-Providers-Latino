@@ -81,7 +81,7 @@ function hasAsianChars(str) {
     return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\uac00-\ud7af]/.test(str);
 }
 
-// Clasificador jerárquico universal de temporada (1, 2, 3, 4...)
+// Clasificador universal de temporada por número romano, cardinal u ordinal
 function getSeasonRank(text) {
     if (!text) return 1;
     var t = (" " + text.toLowerCase() + " ").replace(/[:\-_]/g, " ");
@@ -262,7 +262,7 @@ function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
         }
     }
 
-    // Si no hay temporada específica, tomar el slug base continuo (One Piece, etc.)
+    // Si no hay temporada específica, tomar el slug base continuo (One Piece, Conan, etc.)
     if (seasonMatches.length === 0) {
         var baseEntry = aniListMedia[0];
         return {
@@ -286,9 +286,9 @@ function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
             }
         }
 
-        // Si la temporada está partida en dos y eNum supera los episodios de la Parte 1:
+        // Si la temporada está dividida en dos bloques de emisión:
         if (part1 && part2) {
-            var p1Limit = part1.episodes || 12; // Valor estándar de cour japonés
+            var p1Limit = part1.episodes || 12;
             if (eNum > p1Limit) {
                 return {
                     slug: cleanTitle(part2.title.romaji),
@@ -305,7 +305,7 @@ function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
         }
     }
 
-    // 3. Temporada normal de un solo bloque (ej. Jujutsu Kaisen S2 con 23 episodios seguidos)
+    // 3. Temporada normal de un solo bloque (ej. Jujutsu Kaisen S2)
     var selected = seasonMatches[0];
     return {
         slug: cleanTitle(selected.title.romaji),
@@ -406,7 +406,7 @@ function resolveVidHide(url) {
 
 function resolveMp4upload(url) {
     return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(res) { return res.text(); })
         .then(function(html) {
             if (!html) return null;
             var quality = "1080p";
@@ -690,9 +690,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                         if (isSeasonal) {
                             // Slug de Temporada/Parte (Mushoku Tensei T2 P2):
-                            // El episodio relativo reseteado a 1 va de primero
-                            pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + effectiveEpisode + "/");
-                            if (absoluteEp !== effectiveEpisode) {
+                            // Si es una parte 2 y no tenía targetEp calculado, aplicar el offset estándar (-12)
+                            var seasonalEp = (isPartTwo(curSlug) && effectiveEpisode > 12) ? (effectiveEpisode - 12) : effectiveEpisode;
+                            pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + seasonalEp + "/");
+                            if (absoluteEp !== seasonalEp) {
                                 pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + absoluteEp + "/");
                             }
                         } else {
