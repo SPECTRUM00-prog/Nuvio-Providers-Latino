@@ -6,14 +6,27 @@
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://www.cinecalidad.am";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 3500;
 
 // ==========================================
-// 1. HELPERS BASE64 & STRINGS (HERMES SAFE)
+// 1. HELPERS DE RED & HERMES SAFE STRINGS
 // ==========================================
+function fetchWithTimeout(url, options, timeoutMs) {
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    return Promise.race([
+        fetch(url, options),
+        new Promise(function(_, reject) {
+            setTimeout(function() {
+                reject(new Error("Timeout"));
+            }, limit);
+        })
+    ]);
+}
+
 function decodeB64(input) {
     if (!input) return null;
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    var str = String(input).replace(/[=]+$/, "");
+    var str = String(input).replace(/-/g, "+").replace(/_/g, "/").replace(/[=]+$/, "");
     if (str.length % 4 === 1) return null;
     var output = "";
     for (var bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output += String.fromCharCode(255 & bs >> (-2 * bc & 6)) : 0) {
@@ -33,7 +46,6 @@ function cleanTitle(str) {
         .trim();
 }
 
-// Filtro anti-falsos positivos (evita películas de la barra lateral como Enola Holmes)
 function scoreCandidate(url, titles, year) {
     if (!url) return 0;
     var slug = url.replace(/\/$/, "").split("/").pop().toLowerCase().replace(/-/g, " ");
@@ -56,12 +68,9 @@ function scoreCandidate(url, titles, year) {
             }
         }
 
-        if (words.length > 0) {
+        if (words.length > 0 && matches > 0) {
             var ratio = (matches / words.length) * 80;
-            // Solo puntúa si coincide al menos una palabra clave real
-            if (matches > 0) {
-                score = Math.max(score, ratio);
-            }
+            score = Math.max(score, ratio);
         }
     }
 
@@ -147,10 +156,10 @@ function probeM3u8Quality(m3u8Url, headers) {
 
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
-    return fetch(m3u8Url, {
+    return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    })
+    }, 2500)
     .then(function(res) {
         if (!res.ok) return "720p";
         return res.text();
@@ -185,9 +194,9 @@ function probeM3u8Quality(m3u8Url, headers) {
 // 4. RESOLVERS INDIVIDUALES
 // ==========================================
 function resolveVimeos(embedUrl) {
-    return fetch(embedUrl, {
+    return fetchWithTimeout(embedUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -219,9 +228,9 @@ function resolveVimeos(embedUrl) {
 }
 
 function resolveGoodStream(embedUrl) {
-    return fetch(embedUrl, {
+    return fetchWithTimeout(embedUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -258,9 +267,9 @@ function resolveStreamWish(embedUrl) {
     var id = embedUrl.replace(/\/$/, "").split("/").pop();
     var targetUrl = "https://hlswish.com/e/" + id;
 
-    return fetch(targetUrl, {
+    return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -294,9 +303,9 @@ function resolveStreamWish(embedUrl) {
 }
 
 function resolveFilemoon(embedUrl) {
-    return fetch(embedUrl, {
+    return fetchWithTimeout(embedUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -329,9 +338,9 @@ function resolveFilemoon(embedUrl) {
 }
 
 function resolveVideoApp(embedUrl) {
-    return fetch(embedUrl, {
+    return fetchWithTimeout(embedUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://www.cinecalidad.am/" }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i) ||
@@ -357,7 +366,7 @@ function getMediaData(tmdbId, mediaType) {
     var type = isTv ? "tv" : "movie";
     var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
-    return fetch(url)
+    return fetchWithTimeout(url, null, 2500)
         .then(function(res) { return res.json(); })
         .then(function(data) {
             var titles = [];
@@ -371,9 +380,12 @@ function getMediaData(tmdbId, mediaType) {
                 if (altArr[i].title) titles.push(altArr[i].title);
             }
 
-            var uniqueTitles = titles.filter(function(item, pos, self) {
-                return item && self.indexOf(item) === pos;
-            });
+            var uniqueTitles = [];
+            for (var t = 0; t < titles.length; t++) {
+                if (titles[t] && uniqueTitles.indexOf(titles[t]) === -1) {
+                    uniqueTitles.push(titles[t]);
+                }
+            }
 
             return {
                 title: isTv ? data.name : data.title,
@@ -391,9 +403,9 @@ function getMediaData(tmdbId, mediaType) {
 function searchCinecalidad(query, isTv) {
     if (!query) return Promise.resolve([]);
     var searchUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
-    return fetch(searchUrl, {
+    return fetchWithTimeout(searchUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var pattern = isTv ? /href=["']((?:https?:\/\/[^"']*)?\/(?:ver-serie|serie)\/[^"']+)["']/gi
@@ -402,7 +414,7 @@ function searchCinecalidad(query, isTv) {
         var m;
         while ((m = pattern.exec(html)) !== null) {
             var full = m[1];
-            if (!full.startsWith("http")) full = BASE_URL + (full.startsWith("/") ? full : "/" + full);
+            if (full.indexOf("http") !== 0) full = BASE_URL + (full.indexOf("/") === 0 ? full : "/" + full);
             if (matches.indexOf(full) === -1) matches.push(full);
         }
         return matches;
@@ -425,11 +437,11 @@ function searchMultiQuery(queries, isTv) {
 // 7. EXTRAER ENLACES DEL HTML
 // ==========================================
 function extractEmbedsFromPage(pageUrl) {
-    return fetch(pageUrl, {
+    return fetchWithTimeout(pageUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) {
-        if (res.status !== 200) return [];
+        if (!res.ok) return [];
         return res.text();
     })
     .then(function(html) {
@@ -443,8 +455,8 @@ function extractEmbedsFromPage(pageUrl) {
             if (val.indexOf("zopass=") !== -1) {
                 var param = val.split("zopass=")[1].split("&")[0];
                 var dec = decodeB64(param);
-                if (dec && dec.startsWith("http")) embeds.push(dec);
-            } else if (val.startsWith("http") && val.indexOf("youtube.com") === -1) {
+                if (dec && dec.indexOf("http") === 0) embeds.push(dec);
+            } else if (val.indexOf("http") === 0 && val.indexOf("youtube.com") === -1) {
                 embeds.push(val);
             }
         }
@@ -455,28 +467,30 @@ function extractEmbedsFromPage(pageUrl) {
             if (embeds.indexOf(lMatch[1]) === -1) embeds.push(lMatch[1]);
         }
 
-        return embeds.filter(function(item, pos, self) {
-            return self.indexOf(item) === pos;
-        });
+        var unique = [];
+        for (var i = 0; i < embeds.length; i++) {
+            if (unique.indexOf(embeds[i]) === -1) unique.push(embeds[i]);
+        }
+        return unique;
     })
     .catch(function() { return []; });
 }
 
 function resolveEpisodePage(seriesUrl, sNum, eNum) {
-    return fetch(seriesUrl, {
+    return fetchWithTimeout(seriesUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var s = parseInt(sNum, 10);
         var e = parseInt(eNum, 10);
-        var epPadded = String(e).padStart(2, "0");
+        var epPadded = ("0" + e).slice(-2);
 
         var epRegex = new RegExp('href=["\']((?:https?:\\/\\/[^"\']*)?\\/(?:ver-el-episodio|episodio)\\/[^"\']*(?:-' + s + 'x' + e + '|-s' + s + 'e' + e + '|-s' + s + 'e' + epPadded + '|-' + s + 'x' + epPadded + ')[^"\']*)["\']', 'i');
         var match = html.match(epRegex);
         if (match && match[1]) {
             var found = match[1];
-            if (!found.startsWith("http")) found = BASE_URL + (found.startsWith("/") ? found : "/" + found);
+            if (found.indexOf("http") !== 0) found = BASE_URL + (found.indexOf("/") === 0 ? found : "/" + found);
             return found;
         }
 
@@ -520,7 +534,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         return searchMultiQuery(searchQueries, isTv).then(function(urls) {
             if (!urls || urls.length === 0) return [];
 
-            // 1. Filtrar con umbral estricto anti-falsos positivos (score >= 35)
             var scoredCandidates = [];
             for (var u = 0; u < urls.length; u++) {
                 var sc = scoreCandidate(urls[u], media.titles, media.year);
@@ -529,17 +542,12 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                 }
             }
 
-            // Si ningún resultado coincide con el título real, abortar para no dar películas ajenas
-            if (scoredCandidates.length === 0) {
-                return [];
-            }
+            if (scoredCandidates.length === 0) return [];
 
-            // 2. Ordenar candidatos por mayor precisión
             scoredCandidates.sort(function(a, b) {
                 return b.score - a.score;
             });
 
-            // 3. Probar candidatos válidos en cascada
             function tryCandidates(cIdx) {
                 if (cIdx >= scoredCandidates.length) return Promise.resolve([]);
                 var currentUrl = scoredCandidates[cIdx].url;
@@ -589,7 +597,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     });
 
                     return Promise.all(resolvePromises).then(function(results) {
-                        var streams = results.filter(function(st) { return st !== null; });
+                        var streams = [];
+                        for (var r = 0; r < results.length; r++) {
+                            if (results[r]) streams.push(results[r]);
+                        }
                         if (streams.length > 0) return streams;
                         return tryCandidates(cIdx + 1);
                     });
