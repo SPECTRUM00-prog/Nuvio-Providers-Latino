@@ -1,23 +1,36 @@
 /**
  * Provider: AnimeAV1 (Anime en Sub Español y Doblaje Latino)
  * Motor: AniList GraphQL Engine + Algoritmo Universal de Temporadas y SvelteKit Tree Parser
- * Arquitectura: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
+ * Arquitectura: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Android TV)
  */
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const BASE_URL = "https://animeav1.com";
-const ANILIST_URL = "https://graphql.anilist.co";
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var BASE_URL = "https://animeav1.com";
+var ANILIST_URL = "https://graphql.anilist.co";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 3500;
 
-const DEFAULT_HEADERS = {
+var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "application/json, text/plain, */*",
-    "Referer": `${BASE_URL}/`
+    "Referer": BASE_URL + "/"
 };
 
 // ==========================================
-// 1. ALGORITMOS MATEMÁTICOS Y NORMALIZACIÓN
+// 1. HELPERS DE RED & TIMEOUT HERMES SAFE
 // ==========================================
+
+function fetchWithTimeout(url, options, timeoutMs) {
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    return Promise.race([
+        fetch(url, options),
+        new Promise(function(_, reject) {
+            setTimeout(function() {
+                reject(new Error("Timeout"));
+            }, limit);
+        })
+    ]);
+}
 
 function normalizeText(text) {
     if (!text) return "";
@@ -99,7 +112,7 @@ function getUniversalSeasonVariants(baseSlug, sNum, isMovie) {
 function scoreSlugForSeason(slug, sNum, isMovie) {
     var s = slug.toLowerCase();
     if (isMovie) {
-        if (s.includes("movie") || s.includes("pelicula")) return 20;
+        if (s.indexOf("movie") !== -1 || s.indexOf("pelicula") !== -1) return 20;
         return 5;
     }
 
@@ -108,15 +121,13 @@ function scoreSlugForSeason(slug, sNum, isMovie) {
     var ordinal = toOrdinal(num);
 
     if (num === 1) {
-        if (s.includes("-s1") || s.includes("-season-1") || s.includes("-1st-season")) return 30;
-        // Penalizar temporadas superiores
-        if (s.includes("-s2") || s.includes("-s3") || s.includes("-s4") || s.includes("-2nd") || s.includes("-3rd") || s.includes("-ii") || s.includes("-iii") || s.includes("-iv") || s.includes("-part-2")) {
+        if (s.indexOf("-s1") !== -1 || s.indexOf("-season-1") !== -1 || s.indexOf("-1st-season") !== -1) return 30;
+        if (s.indexOf("-s2") !== -1 || s.indexOf("-s3") !== -1 || s.indexOf("-s4") !== -1 || s.indexOf("-2nd") !== -1 || s.indexOf("-3rd") !== -1 || s.indexOf("-ii") !== -1 || s.indexOf("-iii") !== -1 || s.indexOf("-iv") !== -1 || s.indexOf("-part-2") !== -1) {
             return -25;
         }
         return 15;
     }
 
-    // Temporadas superiores (sNum >= 2)
     var targetTokens = [
         "-s" + num,
         "-" + ordinal + "-season",
@@ -127,13 +138,12 @@ function scoreSlugForSeason(slug, sNum, isMovie) {
     ];
 
     for (var i = 0; i < targetTokens.length; i++) {
-        if (s.includes(targetTokens[i])) {
+        if (s.indexOf(targetTokens[i]) !== -1) {
             return 30 - i;
         }
     }
 
-    // Penalizar si corresponde a la temporada 1 cuando se pidió otra temporada
-    if (s.includes("-s1") || (!s.includes("-" + num) && !s.includes("-" + roman))) {
+    if (s.indexOf("-s1") !== -1 || (s.indexOf("-" + num) === -1 && s.indexOf("-" + roman) === -1)) {
         return -20;
     }
 
@@ -190,13 +200,13 @@ function unpackDeanEdwards(p, a, c, k) {
 }
 
 function probeM3u8Quality(m3u8Url, headers) {
-    if (!m3u8Url || !m3u8Url.includes(".m3u8")) return Promise.resolve("720p");
-    return fetch(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" })
+    if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
+    return fetchWithTimeout(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" }, 2500)
         .then(function(res) { return res.ok ? res.text() : ""; })
         .then(function(text) {
-            if (!text || !text.includes("#EXT-X-STREAM-INF")) {
-                if (m3u8Url.includes("1080")) return "1080p";
-                if (m3u8Url.includes("720")) return "720p";
+            if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
+                if (m3u8Url.indexOf("1080") !== -1) return "1080p";
+                if (m3u8Url.indexOf("720") !== -1) return "720p";
                 return "720p";
             }
             var maxH = 0, resRegex = /RESOLUTION=\d+x(\d+)/gi, match;
@@ -220,36 +230,9 @@ function probeM3u8Quality(m3u8Url, headers) {
 function queryAniList(title) {
     if (!title || hasJapaneseChars(title)) return Promise.resolve(null);
 
-    var query = `
-    query ($search: String) {
-      Media (search: $search, type: ANIME) {
-        id
-        title {
-          romaji
-          english
-          native
-        }
-        synonyms
-        format
-        episodes
-        relations {
-          edges {
-            relationType
-            node {
-              id
-              title {
-                romaji
-                english
-              }
-              format
-              episodes
-            }
-          }
-        }
-      }
-    }`;
+    var query = "query ($search: String) { Media (search: $search, type: ANIME) { id title { romaji english native } synonyms format episodes relations { edges { relationType node { id title { romaji english } format episodes } } } } }";
 
-    return fetch(ANILIST_URL, {
+    return fetchWithTimeout(ANILIST_URL, {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
@@ -260,7 +243,7 @@ function queryAniList(title) {
             query: query,
             variables: { search: title }
         })
-    })
+    }, 3000)
     .then(function(res) {
         if (!res.ok) return null;
         return res.json();
@@ -306,7 +289,7 @@ function extractEmbedsFromSvelteKit(nodes) {
                                     if (srvItem && typeof srvItem === "object") {
                                         var sName = dataArr[srvItem.server] || "HLS";
                                         var sUrl = dataArr[srvItem.url] || "";
-                                        if (sUrl && typeof sUrl === "string" && sUrl.startsWith("http")) {
+                                        if (sUrl && typeof sUrl === "string" && sUrl.indexOf("http") === 0) {
                                             results.push({ lang: langLabel, server: sName, url: sUrl });
                                         }
                                     }
@@ -330,11 +313,11 @@ function extractEmbedsFromSvelteKit(nodes) {
 function resolveZillaHls(url) {
     var idMatch = url.match(/\/play\/([a-fA-F0-9]{32})/i) || url.match(/\/([a-fA-F0-9]{32})/i);
     var id = idMatch ? idMatch[1] : null;
-    var directM3u8 = id ? `https://player.zilla-networks.com/m3u8/${id}` : url.replace("/play/", "/m3u8/");
+    var directM3u8 = id ? ("https://player.zilla-networks.com/m3u8/" + id) : url.replace("/play/", "/m3u8/");
 
     var requestHeaders = {
         "User-Agent": USER_AGENT,
-        "Referer": `${BASE_URL}/`,
+        "Referer": BASE_URL + "/",
         "Origin": BASE_URL
     };
 
@@ -354,18 +337,18 @@ function resolveZillaHls(url) {
 }
 
 function resolveMp4upload(url) {
-    return fetch(url, {
+    return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" },
         redirect: "follow"
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var quality = "1080p";
-        if (html.includes("FHD") || html.includes("1080")) {
+        if (html.indexOf("FHD") !== -1 || html.indexOf("1080") !== -1) {
             quality = "1080p";
-        } else if (html.includes("HD") || html.includes("720")) {
+        } else if (html.indexOf("HD") !== -1 || html.indexOf("720") !== -1) {
             quality = "720p";
-        } else if (html.includes("SD") || html.includes("480")) {
+        } else if (html.indexOf("SD") !== -1 || html.indexOf("480") !== -1) {
             quality = "480p";
         }
 
@@ -388,7 +371,7 @@ function resolveMp4upload(url) {
 }
 
 function resolveStreamWish(url) {
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` } })
+    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } }, NETWORK_TIMEOUT)
         .then(function(res) { return res.text(); })
         .then(function(html) {
             var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
@@ -416,12 +399,12 @@ function dispatchResolver(embed) {
     if (!embed || !embed.url) return Promise.resolve(null);
     var u = embed.url.toLowerCase();
 
-    if (u.includes("zilla-networks") || embed.server === "HLS") {
+    if (u.indexOf("zilla-networks") !== -1 || embed.server === "HLS") {
         return resolveZillaHls(embed.url).then(function(res) {
             if (!res) return null;
             return {
                 name: "AnimeAV1",
-                title: `${res.quality || "1080p"} · ${embed.lang} · Zilla HLS`,
+                title: (res.quality || "1080p") + " · " + embed.lang + " · Zilla HLS",
                 quality: res.quality || "1080p",
                 url: res.url,
                 headers: res.headers || {}
@@ -429,12 +412,12 @@ function dispatchResolver(embed) {
         });
     }
 
-    if (u.includes("mp4upload")) {
+    if (u.indexOf("mp4upload") !== -1) {
         return resolveMp4upload(embed.url).then(function(res) {
             if (!res) return null;
             return {
                 name: "AnimeAV1",
-                title: `${res.quality || "1080p"} · ${embed.lang} · MP4Upload`,
+                title: (res.quality || "1080p") + " · " + embed.lang + " · MP4Upload",
                 quality: res.quality || "1080p",
                 url: res.url,
                 headers: res.headers || {}
@@ -442,12 +425,12 @@ function dispatchResolver(embed) {
         });
     }
 
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish") || u.includes("sfasthwish")) {
+    if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("flaswish") !== -1 || u.indexOf("sfasthwish") !== -1) {
         return resolveStreamWish(embed.url).then(function(res) {
             if (!res) return null;
             return {
                 name: "AnimeAV1",
-                title: `${res.quality || "720p"} · ${embed.lang} · StreamWish`,
+                title: (res.quality || "720p") + " · " + embed.lang + " · StreamWish",
                 quality: res.quality || "720p",
                 url: res.url,
                 headers: res.headers || {}
@@ -470,16 +453,16 @@ function searchAnimeAV1(queries) {
         var q = queryList[index];
         if (!q || hasJapaneseChars(q)) return tryNextQuery(index + 1);
 
-        return fetch(`${BASE_URL}/search`, {
+        return fetchWithTimeout(BASE_URL + "/search", {
             method: "POST",
             headers: {
                 "User-Agent": USER_AGENT,
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "Referer": `${BASE_URL}/`
+                "Referer": BASE_URL + "/"
             },
             body: JSON.stringify({ query: q })
-        })
+        }, NETWORK_TIMEOUT)
         .then(function(res) {
             if (!res.ok) return [];
             return res.json();
@@ -490,7 +473,7 @@ function searchAnimeAV1(queries) {
             var slugs = [];
             for (var i = 0; i < json.length; i++) {
                 var item = json[i];
-                if (item && item.slug) {
+                if (item && item.slug && slugs.indexOf(item.slug) === -1) {
                     slugs.push(item.slug);
                 }
             }
@@ -507,18 +490,16 @@ function searchAnimeAV1(queries) {
 }
 
 function extractStreamsFromEpisodeData(slug, episodeNum) {
-    var dataUrl = `${BASE_URL}/media/${slug}/${episodeNum}/__data.json`;
+    var dataUrl = BASE_URL + "/media/" + slug + "/" + episodeNum + "/__data.json";
 
-    return fetch(dataUrl, { headers: DEFAULT_HEADERS })
+    return fetchWithTimeout(dataUrl, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
         .then(function(res) {
             if (!res.ok) throw new Error("HTTP " + res.status);
             return res.json();
         })
         .then(function(json) {
             var embeds = extractEmbedsFromSvelteKit(json.nodes);
-            if (embeds.length === 0) {
-                return [];
-            }
+            if (embeds.length === 0) return [];
 
             var promises = embeds.map(function(emb) {
                 return dispatchResolver(emb);
@@ -527,7 +508,11 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
             return Promise.all(promises);
         })
         .then(function(results) {
-            return results.filter(function(st) { return st !== null; });
+            var streams = [];
+            for (var i = 0; i < results.length; i++) {
+                if (results[i]) streams.push(results[i]);
+            }
+            return streams;
         })
         .catch(function() {
             return [];
@@ -539,26 +524,31 @@ function extractStreamsFromEpisodeData(slug, episodeNum) {
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
-    console.log(`[AnimeAV1] Buscando TMDB ID ${tmdbId} (${mediaType})`);
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
-    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
+    var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
-    return fetch(tmdbUrl)
+    return fetchWithTimeout(tmdbUrl, null, 2500)
         .then(function(res) {
             if (!res.ok) throw new Error("TMDB HTTP " + res.status);
             return res.json();
         })
         .then(function(meta) {
-            var isJapanese = (meta.original_language === "ja") ||
-                             (meta.origin_country && meta.origin_country.indexOf("JP") !== -1) ||
-                             (meta.production_countries && meta.production_countries.some(function(c) { return c.iso_3166_1 === "JP"; }));
+            var origLang = meta.original_language || "";
+            var isAsianAnim = (origLang === "ja" || origLang === "zh" || origLang === "ko");
 
-            if (!isJapanese) {
-                console.log("[AnimeAV1] Contenido no japonés. Abortando.");
-                return [];
+            if (!isAsianAnim && meta.origin_country) {
+                for (var c = 0; c < meta.origin_country.length; c++) {
+                    var country = meta.origin_country[c];
+                    if (country === "JP" || country === "CN" || country === "KR") {
+                        isAsianAnim = true;
+                        break;
+                    }
+                }
             }
+
+            if (!isAsianAnim) return [];
 
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
@@ -575,7 +565,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            // Consultar AniList GraphQL
             var searchTitle = origTitle || title;
             return queryAniList(searchTitle).then(function(aniData) {
                 if (aniData) {
@@ -628,7 +617,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         }
                     }
 
-                    // Filtrar candidatos con score >= 35
                     var validSlugs = [];
                     for (var k = 0; k < candidateSlugs.length; k++) {
                         var sc = scoreSlugCandidate(candidateSlugs[k], titles);
@@ -660,14 +648,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 });
             });
         })
-        .then(function(streams) {
-            console.log(`[AnimeAV1] ✓ ${streams.length} streams extraídos`);
-            return streams;
-        })
-        .catch(function(err) {
-            console.log(`[AnimeAV1] Error general: ${err.message}`);
+        .catch(function() {
             return [];
         });
 }
 
-module.exports = { getStreams };
+if (typeof module !== "undefined") {
+    module.exports = { getStreams: getStreams };
+}
