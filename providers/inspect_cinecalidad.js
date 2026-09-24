@@ -1,51 +1,76 @@
 /**
- * Extractor de rutas API desde el bundle SPA de CineCalidad
+ * Test de API JSON CineCalidad LITE
  */
 
-var BASE_URL = "https://www.cinecalidad.am";
-var JS_URL = BASE_URL + "/assets/app-Cv8fx5zV.js";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var hosts = [
+    "https://www.cinecalidad.am",
+    "https://tmdb.cinecalidad.am"
+];
 
-console.log("[*] Descargando bundle JS:", JS_URL);
+function testSearch(host, query) {
+    var url = host + "/v1/search?q=" + encodeURIComponent(query);
+    console.log("[*] Probando:", url);
 
-fetch(JS_URL, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
+    return fetch(url, {
+        headers: {
+            "User-Agent": USER_AGENT,
+            "Accept": "application/json",
+            "Referer": "https://www.cinecalidad.am/"
+        }
+    })
     .then(function(res) {
-        console.log("-> Status:", res.status);
+        console.log("-> Status (" + host + "):", res.status);
         return res.text();
     })
-    .then(function(code) {
-        console.log("-> Tamaño del bundle:", code.length, "caracteres.\n");
-
-        // 1. Buscar llamadas a fetch o axios con /api/ o endpoints
-        var apiRegex = /["'](\/(?:api|v[0-9]|backend|data|wp-json)[^"'\s<>]*)["']/gi;
-        var apis = [];
-        var m;
-        while ((m = apiRegex.exec(code)) !== null) {
-            if (apis.indexOf(m[1]) === -1) apis.push(m[1]);
+    .then(function(text) {
+        try {
+            var json = JSON.parse(text);
+            console.log("[+] JSON recibido con éxito (" + host + "):");
+            console.log(JSON.stringify(json, null, 2).substring(0, 700));
+            return { host: host, data: json };
+        } catch(e) {
+            console.log("[-] No devolvió JSON válido en " + host + ". (Primeros 150 caracteres: " + text.substring(0, 150) + ")");
+            return null;
         }
-        console.log("[+] Rutas de API detectadas (" + apis.length + "):");
-        console.log(apis.slice(0, 25));
-
-        // 2. Buscar referencias a fileCode o player
-        console.log("\n[+] Búsqueda de lógica de reproductor / fileCode:");
-        var playerMatches = code.match(/[^;]{0,50}(?:fileCode|playerProvider|embedUrl|vimeos)[^;]{0,50}/gi);
-        if (playerMatches) {
-            console.log(playerMatches.slice(0, 10));
-        }
-
-        // 3. Buscar URLs absolutas (endpoints externos o de streaming)
-        var urlRegex = /["'](https?:\/\/[a-zA-Z0-9.-]+(?:\/[^"'\s]*)?)["']/gi;
-        var urls = [];
-        var uMatch;
-        while ((uMatch = urlRegex.exec(code)) !== null) {
-            var found = uMatch[1];
-            if (found.indexOf("w3.org") === -1 && urls.indexOf(found) === -1) {
-                urls.push(found);
-            }
-        }
-        console.log("\n[+] Dominios / APIs externas encontradas:");
-        console.log(urls.slice(0, 15));
     })
     .catch(function(err) {
-        console.error("[-] Error:", err.message);
+        console.log("[-] Error conectando a " + host + ": " + err.message);
+        return null;
     });
+}
+
+// Probar ambos hosts con Oppenheimer
+testSearch(hosts[0], "Oppenheimer").then(function(res1) {
+    if (!res1) {
+        return testSearch(hosts[1], "Oppenheimer");
+    }
+    return res1;
+}).then(function(active) {
+    if (!active || !active.data) return;
+
+    var targetHost = active.host;
+    // Si encontramos resultados, probar consultar el detalle /v1/items de ese título
+    var items = active.data.results || active.data.items || active.data.data || (Array.isArray(active.data) ? active.data : []);
+    if (items.length > 0) {
+        var first = items[0];
+        console.log("\n[+] Primer resultado de búsqueda:", first);
+
+        var idOrSlug = first.id || first.slug || first._id;
+        var detailUrl = targetHost + "/v1/items/" + idOrSlug;
+        console.log("\n[*] Consultando detalles del item:", detailUrl);
+
+        return fetch(detailUrl, {
+            headers: {
+                "User-Agent": USER_AGENT,
+                "Accept": "application/json",
+                "Referer": "https://www.cinecalidad.am/"
+            }
+        })
+        .then(function(r) { return r.json(); })
+        .then(function(detail) {
+            console.log("[+] Ficha de detalles / fileCode:");
+            console.log(JSON.stringify(detail, null, 2).substring(0, 800));
+        });
+    }
+});
