@@ -1,15 +1,30 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
  * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
+ * Resolvers: VidHide (morencius), StreamWish (hglink), Voe
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://embed69.org";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 3200;
 
 // ==========================================
-// 1. HELPERS BASE64 & STRINGS (HERMES SAFE)
+// 1. HELPERS DE RED & STRINGS (HERMES SAFE)
 // ==========================================
+
+function fetchWithTimeout(url, options, timeoutMs) {
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    return Promise.race([
+        fetch(url, options),
+        new Promise(function(_, reject) {
+            setTimeout(function() {
+                reject(new Error("Timeout"));
+            }, limit);
+        })
+    ]);
+}
+
 function decodeB64ToBytes(b64) {
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
     var str = String(b64).replace(/-/g, "+").replace(/_/g, "/").replace(/[=]+$/, "");
@@ -66,8 +81,9 @@ function utf8BytesToString(bytes) {
 }
 
 // ==========================================
-// 2. MOTOR SHA-256 PURO (Síncrono sobre TypedArrays)
+// 2. MOTOR SHA-256 ZERO-ALLOCATION (PoW)
 // ==========================================
+
 var SHA256_K = [
     0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
     0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
@@ -78,6 +94,75 @@ var SHA256_K = [
     0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
+
+var POW_W = new Uint32Array(64);
+var POW_BUFFER = new Uint8Array(128);
+var POW_VIEW = new DataView(POW_BUFFER.buffer);
+
+function solvePoW(challengeStr, difficulty) {
+    var cBytes = stringToUtf8Bytes(challengeStr);
+    var cLen = cBytes.length;
+    var fullBytes = difficulty >> 1;
+    var hasHalfByte = (difficulty & 1) === 1;
+
+    for (var nonce = 0; nonce < 200000; nonce++) {
+        var n = nonce, nDigits = 0, tempN = n;
+        do { nDigits++; tempN = (tempN / 10) | 0; } while (tempN > 0);
+
+        var totalLen = cLen + nDigits;
+        POW_BUFFER.fill(0);
+        POW_BUFFER.set(cBytes, 0);
+
+        var pos = totalLen - 1;
+        tempN = n;
+        do {
+            POW_BUFFER[pos--] = 48 + (tempN % 10);
+            tempN = (tempN / 10) | 0;
+        } while (tempN > 0);
+
+        POW_BUFFER[totalLen] = 0x80;
+        POW_VIEW.setUint32(60, totalLen * 8, false);
+
+        for (var t = 0; t < 16; t++) POW_W[t] = POW_VIEW.getUint32(t * 4, false);
+        for (var t = 16; t < 64; t++) {
+            var g0 = ((POW_W[t - 15] >>> 7) | (POW_W[t - 15] << 25)) ^ ((POW_W[t - 15] >>> 18) | (POW_W[t - 15] << 14)) ^ (POW_W[t - 15] >>> 3);
+            var g1 = ((POW_W[t - 2] >>> 17) | (POW_W[t - 2] << 15)) ^ ((POW_W[t - 2] >>> 19) | (POW_W[t - 2] << 13)) ^ (POW_W[t - 2] >>> 10);
+            POW_W[t] = (POW_W[t - 16] + g0 + POW_W[t - 7] + g1) | 0;
+        }
+
+        var a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
+        var e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
+
+        for (var t = 0; t < 64; t++) {
+            var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+            var ch = (e & f) ^ (~e & g);
+            var temp1 = (h + S1 + ch + SHA256_K[t] + POW_W[t]) | 0;
+            var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+            var maj = (a & b) ^ (a & c) ^ (b & c);
+            var temp2 = (S0 + maj) | 0;
+
+            h = g; g = f; f = e; e = (d + temp1) | 0;
+            d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+        }
+
+        var h0 = (0x6a09e667 + a) >>> 0;
+        var h1 = (0xbb67ae85 + b) >>> 0;
+
+        var match = true;
+        if (fullBytes >= 1 && (h0 >>> 24) !== 0) match = false;
+        if (match && fullBytes >= 2 && ((h0 >>> 16) & 0xff) !== 0) match = false;
+        if (match && fullBytes >= 3 && ((h0 >>> 8) & 0xff) !== 0) match = false;
+        if (match && fullBytes >= 4 && (h0 & 0xff) !== 0) match = false;
+        if (match && hasHalfByte) {
+            var shift = (3 - fullBytes) * 8 + 4;
+            var nibble = fullBytes < 4 ? (h0 >>> shift) & 0x0f : (h1 >>> 28);
+            if (nibble !== 0) match = false;
+        }
+
+        if (match) return nonce;
+    }
+    return -1;
+}
 
 function sha256(input) {
     var bytes = typeof input === "string" ? stringToUtf8Bytes(input) : input;
@@ -125,21 +210,10 @@ function sha256(input) {
     return out;
 }
 
-// Verificación PoW en bytes (sin asignaciones de strings en bucle)
-function checkPoWDifficulty(hashBytes, difficulty) {
-    var fullBytes = difficulty >> 1;
-    for (var i = 0; i < fullBytes; i++) {
-        if (hashBytes[i] !== 0) return false;
-    }
-    if ((difficulty & 1) === 1) {
-        if ((hashBytes[fullBytes] >>> 4) !== 0) return false;
-    }
-    return true;
-}
-
 // ==========================================
 // 3. MOTOR AES-256-CBC PURO
 // ==========================================
+
 var SBOX = new Uint8Array([
     0x63,0x7c,0x77,0x7b,0xf2,0x6b,0x6f,0xc5,0x30,0x01,0x67,0x2b,0xfe,0xd7,0xab,0x76,
     0xca,0x82,0xc9,0x7d,0xfa,0x59,0x47,0xf0,0xad,0xd4,0xa2,0xaf,0x9c,0xa4,0x72,0xc0,
@@ -161,7 +235,6 @@ var SBOX = new Uint8Array([
 
 var INV_SBOX = new Uint8Array(256);
 for (var i = 0; i < 256; i++) INV_SBOX[SBOX[i]] = i;
-
 var RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
 function gmult(a, b) {
@@ -210,17 +283,13 @@ function invCipherBlock(block, w) {
     }
 
     addRoundKey(14);
-
     for (var round = 13; round >= 1; round--) {
-        var t1 = state[13];
-        state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
+        var t1 = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
         var t = state[2]; state[2] = state[10]; state[10] = t;
         t = state[6]; state[6] = state[14]; state[14] = t;
-        var t4 = state[3];
-        state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t4;
+        var t4 = state[3]; state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t4;
 
         for (var i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
-
         addRoundKey(round);
 
         for (var c = 0; c < 4; c++) {
@@ -232,15 +301,11 @@ function invCipherBlock(block, w) {
         }
     }
 
-    var t1 = state[13];
-    state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
+    var t1 = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
     var t = state[2]; state[2] = state[10]; state[10] = t;
     t = state[6]; state[6] = state[14]; state[14] = t;
-    var t4 = state[3];
-    state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t4;
-
+    var t4 = state[3]; state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t4;
     for (var i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
-
     addRoundKey(0);
     return state;
 }
@@ -259,9 +324,7 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
             var block = ciphertext.slice(i, i + 16);
             var invBlock = invCipherBlock(block, w);
             var prevBlock = i === 0 ? iv : ciphertext.slice(i - 16, i);
-            for (var j = 0; j < 16; j++) {
-                decrypted[i + j] = invBlock[j] ^ prevBlock[j];
-            }
+            for (var j = 0; j < 16; j++) decrypted[i + j] = invBlock[j] ^ prevBlock[j];
         }
 
         var pad = decrypted[decrypted.length - 1];
@@ -269,7 +332,6 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
         for (var i = decrypted.length - pad; i < decrypted.length; i++) {
             if (decrypted[i] !== pad) return null;
         }
-
         return utf8BytesToString(decrypted.slice(0, decrypted.length - pad));
     } catch (e) {
         return null;
@@ -279,6 +341,7 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
 // ==========================================
 // 4. DESEMPAQUETADOR DEAN EDWARDS
 // ==========================================
+
 function unpackJS(packed) {
     try {
         var regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
@@ -309,15 +372,16 @@ function unpackJS(packed) {
 }
 
 // ==========================================
-// 5. DETECCIÓN DINÁMICA DE RESOLUCIÓN REAL
+// 5. DETECCIÓN DINÁMICA DE CALIDAD REAL
 // ==========================================
+
 function probeM3u8Quality(m3u8Url, headers) {
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
-    return fetch(m3u8Url, {
+    return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    })
+    }, 2500)
     .then(function(res) {
         if (!res.ok) return "720p";
         return res.text();
@@ -351,11 +415,12 @@ function probeM3u8Quality(m3u8Url, headers) {
 // ==========================================
 // 6. RESOLVERS DE STREAMING (PROMISE BASED)
 // ==========================================
+
 function resolveVidHide(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" },
+    return fetchWithTimeout(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -386,10 +451,10 @@ function resolveStreamWish(url) {
     var id = cleanUrl.split("/").pop();
     var targetUrl = "https://hlswish.com/e/" + id;
 
-    return fetch(targetUrl, {
+    return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -417,15 +482,53 @@ function resolveStreamWish(url) {
     .catch(function() { return null; });
 }
 
+function resolveVoe(url) {
+    return fetchWithTimeout(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": url },
+        redirect: "follow"
+    }, NETWORK_TIMEOUT)
+    .then(function(res) { return res.text(); })
+    .then(function(html) {
+        var streamUrl = null;
+        var hlsMatch = html.match(/["']hls["']\s*:\s*["']([^"']+)["']/i) ||
+                       html.match(/["']file["']\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
+        if (hlsMatch) streamUrl = hlsMatch[1];
+
+        // Decodificación Base64 típica de VOE
+        if (!streamUrl) {
+            var b64Match = html.match(/prompt\([^,]+,["']([a-zA-Z0-9+/=]+)["']\)/i) ||
+                           html.match(/sources\s*=\s*JSON\.parse\(atob\(["']([a-zA-Z0-9+/=]+)["']\)\)/i);
+            if (b64Match) {
+                try {
+                    var decBytes = decodeB64ToBytes(b64Match[1]);
+                    var decStr = utf8BytesToString(decBytes);
+                    var innerHls = decStr.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
+                    if (innerHls) streamUrl = innerHls[0];
+                } catch(e) {}
+            }
+        }
+
+        if (streamUrl) {
+            var headers = { "User-Agent": USER_AGENT, "Referer": url };
+            return probeM3u8Quality(streamUrl, headers).then(function(q) {
+                return { url: streamUrl, quality: q || "1080p", server: "Voe", headers: headers };
+            });
+        }
+        return null;
+    })
+    .catch(function() { return null; });
+}
+
 // ==========================================
 // 7. TMDB METADATA
 // ==========================================
+
 function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
     var isTv = mediaType === "tv" || mediaType === "series";
     var type = isTv ? "tv" : "movie";
     var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=external_ids";
 
-    return fetch(url)
+    return fetchWithTimeout(url, null, 2500)
         .then(function(res) { return res.json(); })
         .then(function(data) {
             var imdbId = (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null;
@@ -435,7 +538,7 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
                 var e = parseInt(episodeNum || 1, 10);
                 var epUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + s + "/episode/" + e + "/external_ids?api_key=" + TMDB_API_KEY;
 
-                return fetch(epUrl)
+                return fetchWithTimeout(epUrl, null, 2500)
                     .then(function(epRes) { return epRes.json(); })
                     .then(function(epData) {
                         return {
@@ -468,10 +571,11 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
 // ==========================================
 // 8. OBTENER Y DESCIFRAR EMBEDS DE EMBED69
 // ==========================================
+
 function fetchAndDecryptEmbed69(targetUrl) {
-    return fetch(targetUrl, {
+    return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
-    })
+    }, NETWORK_TIMEOUT)
     .then(function(res) {
         if (!res.ok) return [];
         return res.text();
@@ -495,21 +599,8 @@ function fetchAndDecryptEmbed69(targetUrl) {
             return [];
         }
 
-        var nonce = 0;
-        var maxIterations = 200000;
-        var solved = false;
-
-        // Minado PoW directo en TypedArrays (sin overhead de GC)
-        while (nonce < maxIterations) {
-            var hashBytes = sha256(challenge + nonce);
-            if (checkPoWDifficulty(hashBytes, difficulty)) {
-                solved = true;
-                break;
-            }
-            nonce++;
-        }
-
-        if (!solved) return [];
+        var nonce = solvePoW(challenge, difficulty);
+        if (nonce === -1) return [];
 
         var aesKey = sha256(challenge + nonce + salt);
         var embeds = [];
@@ -535,6 +626,7 @@ function fetchAndDecryptEmbed69(targetUrl) {
 // ==========================================
 // 9. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
+
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
 
@@ -573,12 +665,20 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
             var resolvePromises = embedsToResolve.map(function(item) {
                 var u = item.url.toLowerCase();
+                var sName = (item.server || "").toLowerCase();
                 var promise = null;
 
-                if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) {
+                // Soporte universal para VidHide (incluyendo morencius)
+                if (sName.indexOf("vidhide") !== -1 || u.indexOf("vidhide") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) {
                     promise = resolveVidHide(item.url);
-                } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
+                } 
+                // Soporte universal para StreamWish (incluyendo hglink)
+                else if (sName.indexOf("streamwish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
                     promise = resolveStreamWish(item.url);
+                } 
+                // Soporte de alta velocidad para VOE
+                else if (sName.indexOf("voe") !== -1 || u.indexOf("voe.sx") !== -1 || u.indexOf("voe-network") !== -1) {
+                    promise = resolveVoe(item.url);
                 } else {
                     promise = Promise.resolve(null);
                 }
