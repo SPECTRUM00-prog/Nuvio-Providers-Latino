@@ -1,15 +1,6 @@
 /**
- * Script de auditoría para CineCalidad (Versión LITE / Actual)
- * Uso: 
- *   node providers/inspect_cinecalidad.js "nombre de pelicula o serie" [tv|movie]
- * Ejemplos:
- *   node providers/inspect_cinecalidad.js "Oppenheimer" movie
- *   node providers/inspect_cinecalidad.js "Fallout" tv
+ * Script para descubrir la API y el formulario de búsqueda de CineCalidad LITE
  */
-
-var query = process.argv[2] || "Oppenheimer";
-var mediaType = process.argv[3] || "movie";
-var isTv = mediaType === "tv" || mediaType === "series";
 
 var BASE_URL = "https://www.cinecalidad.am";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
@@ -19,114 +10,53 @@ var headers = {
     "Referer": BASE_URL + "/"
 };
 
-console.log("==================================================");
-console.log("[*] AUDITORÍA CINECALIDAD: \"" + query + "\" (" + (isTv ? "SERIE" : "PELÍCULA") + ")");
-console.log("==================================================\n");
+console.log("[*] 1. Descargando portada para inspeccionar el buscador...");
 
-var searchUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
-console.log("[1] Consultando búsqueda:", searchUrl);
-
-fetch(searchUrl, { headers: headers, redirect: "follow" })
-    .then(function(res) {
-        console.log("-> Status HTTP:", res.status, res.statusText);
-        return res.text();
-    })
+fetch(BASE_URL, { headers: headers })
+    .then(function(res) { return res.text(); })
     .then(function(html) {
-        console.log("-> Tamaño de HTML recibido:", html.length, "caracteres");
+        console.log("-> Portada descargada. Tamaño:", html.length, "caracteres.");
 
-        // 1. Extraer todos los links a películas y series
-        var linkPattern = /href=["']((?:https?:\/\/[^"']*)?\/(?:pelicula|ver-pelicula|serie|ver-serie)\/[^"']+)["']/gi;
-        var allLinks = [];
-        var m;
-        while ((m = linkPattern.exec(html)) !== null) {
-            var fullUrl = m[1];
-            if (fullUrl.indexOf("http") !== 0) fullUrl = BASE_URL + (fullUrl.indexOf("/") === 0 ? fullUrl : "/" + fullUrl);
-            if (allLinks.indexOf(fullUrl) === -1) allLinks.push(fullUrl);
+        // Buscar formularios de búsqueda
+        var formMatch = html.match(/<form[^>]*>[\s\S]*?<\/form>/gi);
+        if (formMatch) {
+            console.log("\n[+] Formularios detectados en la web:");
+            for (var i = 0; i < formMatch.length; i++) {
+                console.log(formMatch[i]);
+            }
+        } else {
+            console.log("\n[-] No se encontraron etiquetas <form> tradicionales.");
         }
 
-        console.log("\n[2] RESULTADOS ENCONTRADOS EN LA PÁGINA (" + allLinks.length + "):");
-        for (var i = 0; i < allLinks.length; i++) {
-            console.log("   [" + (i + 1) + "] " + allLinks[i]);
+        // Buscar scripts que manejen la búsqueda o APIs
+        console.log("\n[+] Buscando rutas de API o scripts de búsqueda:");
+        var apiMatches = html.match(/(?:action|api|search|endpoint|url)\s*[:=]\s*["']([^"']*(?:search|buscar|api)[^"']*)["']/gi);
+        if (apiMatches) {
+            console.log(apiMatches);
+        } else {
+            console.log("No hay rutas explícitas en HTML.");
         }
 
-        // 2. Verificar si hay avisos de 'no encontrado'
-        if (html.indexOf("No se encontraron") !== -1 || html.indexOf("sin resultados") !== -1 || html.indexOf("no matching") !== -1) {
-            console.log("\n[!] AVISO: El HTML contiene texto explícito de 'Sin resultados'.");
+        // Buscar scripts JS incluidos
+        var scripts = [];
+        var sRegex = /<script[^>]+src=["']([^"']+)["']/gi;
+        var sm;
+        while ((sm = sRegex.exec(html)) !== null) {
+            scripts.push(sm[1]);
         }
-
-        // 3. Inspeccionar el primer enlace encontrado
-        if (allLinks.length === 0) {
-            console.log("\n[-] No se encontraron enlaces para inspeccionar.");
-            return;
-        }
-
-        var targetUrl = allLinks[0];
-        console.log("\n[3] INSPECCIONANDO PRIMER ENLACE:", targetUrl);
-
-        return fetch(targetUrl, { headers: headers, redirect: "follow" })
-            .then(function(r) { return r.text(); })
-            .then(function(itemHtml) {
-                console.log("-> Tamaño HTML del contenido:", itemHtml.length);
-
-                // Si es serie, auditar cómo están estructurados los episodios
-                if (isTv) {
-                    console.log("\n[+] Analizando estructura de episodios de la serie...");
-                    var epMatches = [];
-                    var epRegex = /href=["']([^"']*(?:episodio|capitulo|season|temporada)[^"']*)["']/gi;
-                    var em;
-                    while ((em = epRegex.exec(itemHtml)) !== null) {
-                        if (epMatches.indexOf(em[1]) === -1) epMatches.push(em[1]);
-                    }
-                    console.log("-> Enlaces de episodios detectados (" + epMatches.length + "):");
-                    console.log(epMatches.slice(0, 8));
-
-                    // Si hay enlace a un episodio, descargar el primero para ver los embeds
-                    if (epMatches.length > 0) {
-                        var firstEp = epMatches[0];
-                        if (firstEp.indexOf("http") !== 0) firstEp = BASE_URL + (firstEp.indexOf("/") === 0 ? firstEp : "/" + firstEp);
-                        console.log("\n[+] Descargando primer episodio para ver reproductores:", firstEp);
-                        return fetch(firstEp, { headers: headers, redirect: "follow" })
-                            .then(function(er) { return er.text(); })
-                            .then(function(epHtml) {
-                                inspectEmbeds(epHtml);
-                            });
-                    }
-                } else {
-                    inspectEmbeds(itemHtml);
-                }
-            });
+        console.log("\n[+] Scripts JS cargados en la portada (" + scripts.length + "):");
+        console.log(scripts.slice(0, 10));
+    })
+    .then(function() {
+        console.log("\n[*] 2. Inspeccionando los 1,913 caracteres de `/?s=Breaking%20Bad`:");
+        return fetch(BASE_URL + "/?s=Breaking%20Bad", { headers: headers });
+    })
+    .then(function(res) { return res.text(); })
+    .then(function(body) {
+        console.log("--- CONTENIDO COMPLETO DE LA RESPUESTA ---");
+        console.log(body);
+        console.log("------------------------------------------");
     })
     .catch(function(err) {
-        console.error("[-] Error en la auditoría:", err.message);
+        console.error("Error:", err.message);
     });
-
-function inspectEmbeds(html) {
-    console.log("\n[4] REPRODUCTORES Y EMBEDS DETECTADOS EN EL CONTENIDO:");
-    
-    // Opciones de reproductor (data-option, data-url, etc.)
-    var options = [];
-    var optRegex = /(?:data-option|data-url|data-src|data-link)=["']([^"']+)["']/gi;
-    var om;
-    while ((om = optRegex.exec(html)) !== null) {
-        options.push(om[1]);
-    }
-    console.log("-> Parámetros de reproducción (data-*):", options);
-
-    // Iframes
-    var iframes = [];
-    var ifRegex = /<iframe[^>]+src=["']([^"']+)["']/gi;
-    var im;
-    while ((im = ifRegex.exec(html)) !== null) {
-        iframes.push(im[1]);
-    }
-    console.log("-> Iframes directos:", iframes);
-
-    // Enlaces directos a hosters
-    var hosters = [];
-    var hRegex = /href=["'](https?:\/\/[^"']*(?:vimeos|goodstream|hlswish|streamwish|filemoon|videoapp|waaw)[^"']*)["']/gi;
-    var hm;
-    while ((hm = hRegex.exec(html)) !== null) {
-        hosters.push(hm[1]);
-    }
-    console.log("-> Enlaces a servidores conocidos:", hosters);
-}
