@@ -1,5 +1,5 @@
 /**
- * Extractor de todos los servidores (KeKi, Flix, Magi, etc.) y Series en PelisGO
+ * Extractor de precisión para PelisGO (Películas y Series)
  * Ejecución: node providers/inspect_pelisgo.js
  */
 
@@ -8,66 +8,73 @@ var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 
 var headers = {
     "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": BASE_URL + "/"
 };
 
 console.log("==================================================");
-console.log("[*] AUDITORÍA PROFUNDA DE SERVIDORES Y SERIES");
+console.log("[*] AUDITORÍA DE PRECISIÓN: PelisGO");
 console.log("==================================================\n");
 
-// 1. Extraer los 6 servidores de la película 'ayuda'
-console.log("[1] Consultando película 'ayuda'...");
+// 1. Extraer ID y enlaces de la película 'ayuda'
+console.log("[1] Analizando película: https://pelisgo.online/movies/ayuda");
+
 fetch(BASE_URL + "/movies/ayuda", { headers: headers })
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var idMatch = html.match(/"movieId"\s*:\s*"([a-zA-Z0-9]+)"/i) || html.match(/"id"\s*:\s*"([a-zA-Z0-9]+)"/i);
+        // En Next.js serializado viene como: \"movieId\":\"cuid_o_id\"
+        var idMatch = html.match(/\\?"movieId\\?"\s*:\s*\\?"([a-zA-Z0-9_-]+)\\?"/i) ||
+                      html.match(/\\?"id\\?"\s*:\s*\\?"(cm[a-zA-Z0-9]+)\\?"/i);
+
         var movieId = idMatch ? idMatch[1] : null;
+        console.log("-> Movie ID extraído:", movieId);
 
-        console.log("-> Movie ID detectado en 'ayuda':", movieId);
-        if (!movieId) return;
+        if (movieId) {
+            var streamUrl = BASE_URL + "/api/movies/" + movieId + "/stream";
+            console.log("-> Consultando API de streams:", streamUrl);
 
-        var streamApi = BASE_URL + "/api/movies/" + movieId + "/stream";
-        console.log("-> Consultando API de streams:", streamApi);
-
-        return fetch(streamApi, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/movies/ayuda" } })
+            return fetch(streamUrl, {
+                headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/movies/ayuda" }
+            })
             .then(function(r) { return r.json(); })
             .then(function(json) {
-                console.log("\n[+] LISTA COMPLETA DE SERVIDORES ENCONTRADOS (" + (json.links ? json.links.length : 0) + "):");
+                console.log("\n[+] SERVIDORES DE LA PELÍCULA (" + (json.links ? json.links.length : 0) + "):");
                 var links = json.links || [];
                 for (var i = 0; i < links.length; i++) {
                     var l = links[i];
-                    console.log("   [" + (i + 1) + "] Botón: " + l.server + " | Servidor real: " + l.name + " (" + l.language + ") -> " + l.url);
+                    console.log("   [" + (i + 1) + "] " + l.server + " (" + l.language + " - " + l.quality + ") -> " + l.url);
                 }
             });
+        }
     })
     .then(function() {
-        // 2. Probar cómo maneja una Serie en PelisGO
-        console.log("\n[2] Probando una serie en PelisGO (Breaking Bad / Fallout)...");
-        return fetch(BASE_URL + "/search?q=Breaking%20Bad", { headers: headers });
+        // 2. Analizar la serie Breaking Bad
+        console.log("\n[2] Analizando serie: https://pelisgo.online/series/breaking-bad");
+        return fetch(BASE_URL + "/series/breaking-bad", { headers: headers });
     })
     .then(function(res) { return res.text(); })
-    .then(function(searchHtml) {
-        var seriesLinkMatch = searchHtml.match(/href=["'](\/series\/[^"']+)["']/i);
-        var seriesPath = seriesLinkMatch ? seriesLinkMatch[1] : "/series/breaking-bad";
+    .then(function(sHtml) {
+        console.log("-> Tamaño HTML recibido:", sHtml.length, "caracteres.");
 
-        console.log("-> Ruta de la serie detectada:", seriesPath);
-        return fetch(BASE_URL + seriesPath, { headers: headers })
-            .then(function(r) { return r.text(); })
-            .then(function(sHtml) {
-                console.log("-> Tamaño HTML de la serie:", sHtml.length);
+        // Buscar componentes de episodios o reproductores de series
+        var seriesDataMatches = sHtml.match(/\\?"(?:seriesId|episodeId|showId|tvId|seasonId)\\?"\s*:\s*\\?"([a-zA-Z0-9_-]+)\\?"/gi) || [];
+        console.log("[+] Identificadores de series detectados:", seriesDataMatches.slice(0, 5));
 
-                // Buscar cómo referencia episodios o llamadas API de series
-                var seriesId = sHtml.match(/"seriesId"\s*:\s*"([a-zA-Z0-9]+)"/i) || sHtml.match(/"tvId"\s*:\s*"([a-zA-Z0-9]+)"/i) || sHtml.match(/"id"\s*:\s*"([a-zA-Z0-9]+)"/i);
-                console.log("[+] ID de la serie:", seriesId ? seriesId[1] : "No encontrado");
+        // Buscar enlaces a episodios o temporadas en el HTML
+        var epLinks = sHtml.match(/href=\\?["'](\/series\/[^"'\\>]+)\\?["']/gi) || [];
+        var uniqueEpLinks = [];
+        for (var e = 0; e < epLinks.length; e++) {
+            var cleanHref = epLinks[e].replace(/href=\\?["']|\\?["']/gi, "");
+            if (cleanHref !== "/series/breaking-bad" && uniqueEpLinks.indexOf(cleanHref) === -1) {
+                uniqueEpLinks.push(cleanHref);
+            }
+        }
+        console.log("[+] Enlaces internos de episodios detectados (" + uniqueEpLinks.length + "):");
+        console.log(uniqueEpLinks.slice(0, 5));
 
-                var epMatches = sHtml.match(/\/api\/[^"'\s<>]+/gi) || [];
-                console.log("[+] Rutas API en la serie:", [...new Set(epMatches)]);
-
-                var epProps = sHtml.match(/ClientEpisode[^\]]*\]/i) || sHtml.match(/ClientPlayer[^\]]*\]/i);
-                if (epProps) {
-                    console.log("[+] Componente de reproductor de episodios detectado:", epProps[0].substring(0, 150));
-                }
-            });
+        // Buscar llamadas API de episodios en los chunks o bloques
+        var apiEpMatches = sHtml.match(/\/api\/(?:series|episodes|tv)[^"'\s<>\\]+/gi) || [];
+        console.log("[+] Endpoints API de series en el HTML:", [...new Set(apiEpMatches)]);
     })
     .catch(function(err) {
         console.error("[-] Error:", err.message);
