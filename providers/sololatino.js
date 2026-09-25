@@ -1,7 +1,7 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
  * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
- * Resolvers: VidHide (morencius), StreamWish (streamwish.to)
+ * Resolvers: VidHide (morencius), StreamWish (hlswish)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -167,7 +167,6 @@ function sha256(input) {
 
     var view = new DataView(padded.buffer);
     view.setUint32(newLen - 4, bitLen, false);
-
     var W = new Uint32Array(64);
 
     for (var i = 0; i < newLen; i += 64) {
@@ -179,7 +178,6 @@ function sha256(input) {
         }
 
         var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
-
         for (var t = 0; t < 64; t++) {
             var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
             var ch = (e & f) ^ (~e & g);
@@ -261,7 +259,6 @@ function keyExpansion256(key) {
 function invCipherBlock(block, w) {
     var state = new Uint8Array(16);
     state.set(block);
-
     function addRoundKey(rnd) {
         for (var c = 0; c < 4; c++) {
             var word = w[rnd * 4 + c];
@@ -271,17 +268,14 @@ function invCipherBlock(block, w) {
             state[c * 4 + 3] ^= word & 0xff;
         }
     }
-
     addRoundKey(14);
     for (var round = 13; round >= 1; round--) {
         var t1 = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
         var t = state[2]; state[2] = state[10]; state[10] = t;
         t = state[6]; state[6] = state[14]; state[14] = t;
         var t4 = state[3]; state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t4;
-
         for (var i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
         addRoundKey(round);
-
         for (var c = 0; c < 4; c++) {
             var s0 = state[c * 4], s1 = state[c * 4 + 1], s2 = state[c * 4 + 2], s3 = state[c * 4 + 3];
             state[c * 4 + 0] = gmult(s0, 0x0e) ^ gmult(s1, 0x0b) ^ gmult(s2, 0x0d) ^ gmult(s3, 0x09);
@@ -290,7 +284,6 @@ function invCipherBlock(block, w) {
             state[c * 4 + 3] = gmult(s0, 0x0b) ^ gmult(s1, 0x0d) ^ gmult(s2, 0x09) ^ gmult(s3, 0x0e);
         }
     }
-
     var t1 = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
     var t = state[2]; state[2] = state[10]; state[10] = t;
     t = state[6]; state[6] = state[14]; state[14] = t;
@@ -304,19 +297,16 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
     try {
         var raw = decodeB64ToBytes(encryptedBase64);
         if (raw.length < 32 || raw.length % 16 !== 0) return null;
-
         var iv = raw.slice(0, 16);
         var ciphertext = raw.slice(16);
         var w = keyExpansion256(aesKeyBytes);
         var decrypted = new Uint8Array(ciphertext.length);
-
         for (var i = 0; i < ciphertext.length; i += 16) {
             var block = ciphertext.slice(i, i + 16);
             var invBlock = invCipherBlock(block, w);
             var prevBlock = i === 0 ? iv : ciphertext.slice(i - 16, i);
             for (var j = 0; j < 16; j++) decrypted[i + j] = invBlock[j] ^ prevBlock[j];
         }
-
         var pad = decrypted[decrypted.length - 1];
         if (pad < 1 || pad > 16) return null;
         for (var i = decrypted.length - pad; i < decrypted.length; i++) {
@@ -337,13 +327,11 @@ function unpackJS(packed) {
         var regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
         var match = packed.match(regex);
         if (!match) return null;
-
         var p = match[1].slice(1, -1);
         var a = match[2];
         var k = match[4];
         var words = k.split("|");
         var radix = parseInt(a, 10);
-
         var unbase = function(val, base) {
             var chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
             if (base <= 36) return parseInt(val, base);
@@ -351,7 +339,6 @@ function unpackJS(packed) {
             for (var i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
             return res;
         };
-
         return p.replace(/\b[0-9a-zA-Z]+\b/g, function(token) {
             var idx = unbase(token, radix);
             return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
@@ -371,7 +358,7 @@ function probeM3u8Quality(m3u8Url, headers) {
     return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    }, 2500)
+    }, 2000)
     .then(function(res) {
         if (!res.ok) return "720p";
         return res.text();
@@ -382,7 +369,6 @@ function probeM3u8Quality(m3u8Url, headers) {
             if (/720/i.test(m3u8Url)) return "720p";
             return "720p";
         }
-
         var maxH = 0;
         var resRegex = /RESOLUTION=\d+x(\d+)/gi;
         var match;
@@ -390,7 +376,6 @@ function probeM3u8Quality(m3u8Url, headers) {
             var h = parseInt(match[1], 10);
             if (h > maxH) maxH = h;
         }
-
         if (maxH >= 2160) return "4K";
         if (maxH >= 1080) return "1080p";
         if (maxH >= 720) return "720p";
@@ -426,11 +411,8 @@ function resolveVidHide(url) {
         }
 
         if (streamUrl) {
-            // Referer en la raíz del hoster para que el CDN valide al instante sin timeout
-            var originMatch = url.match(/^https?:\/\/[^/]+/i);
-            var origin = originMatch ? originMatch[0] + "/" : "https://morencius.com/";
-            var headers = { "User-Agent": USER_AGENT, "Referer": origin };
-
+            // Referer exacto de la URL embed para que el CDN privado no corte la conexión
+            var headers = { "User-Agent": USER_AGENT, "Referer": url };
             return probeM3u8Quality(streamUrl, headers).then(function(q) {
                 return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: headers };
             });
@@ -443,11 +425,12 @@ function resolveVidHide(url) {
 function resolveStreamWish(url) {
     var cleanUrl = url.split("?")[0].replace(/\/$/, "");
     var id = cleanUrl.split("/").pop();
-    // Consulta directa a streamwish.to para evitar la pantalla "Loading..." de hglink
-    var targetUrl = "https://streamwish.to/e/" + id;
+    
+    // Consulta directa por hlswish.com que responde el m3u8 empaquetado
+    var targetUrl = "https://hlswish.com/e/" + id;
 
     return fetchWithTimeout(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://streamwish.to/" },
+        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
@@ -467,7 +450,7 @@ function resolveStreamWish(url) {
         }
 
         if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": "https://streamwish.to/" };
+            var headers = { "User-Agent": USER_AGENT, "Referer": targetUrl };
             return probeM3u8Quality(streamUrl, headers).then(function(q) {
                 return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: headers };
             });
