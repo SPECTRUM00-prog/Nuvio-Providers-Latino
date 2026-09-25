@@ -1,65 +1,31 @@
 /**
- * Localizador de la función de carga de servidores en PelisGO
+ * Extractor de la función onClick (y) en PelisGO
  * Ejecución: node providers/inspect_pelisgo.js
  */
 
-var TARGET_URL = "https://pelisgo.online/movies/oppenheimer-el-dilema-de-la-bomba-atomica";
-var BASE_URL = "https://pelisgo.online";
+var CHUNK_URL = "https://pelisgo.online/_next/static/chunks/0178590330c372b0.js";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-console.log("[*] Buscando la función 'cargar los servidores' en los chunks de Next.js...");
+console.log("[*] Analizando la función 'y' dentro del chunk...");
 
-fetch(TARGET_URL, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
-    .then(function(res) { return res.text(); })
-    .then(function(html) {
-        // Extraer todos los chunks de Next.js incluidos en la página
-        var chunkRegex = /src=["'](\/_next\/static\/chunks\/[^"']+\.js)["']/gi;
-        var chunks = [];
-        var m;
-        while ((m = chunkRegex.exec(html)) !== null) {
-            if (chunks.indexOf(m[1]) === -1) chunks.push(m[1]);
+fetch(CHUNK_URL, { headers: { "User-Agent": USER_AGENT, "Referer": "https://pelisgo.online/" } })
+    .then(function(r) { return r.text(); })
+    .then(function(code) {
+        var needle = "Opciones de Reproducci";
+        var pos = code.indexOf(needle);
+
+        if (pos === -1) {
+            console.log("[-] No se encontró la frase.");
+            return;
         }
 
-        console.log("[+] Chunks detectados en la página (" + chunks.length + "):");
+        // Extraer 2500 caracteres ANTES de la frase para ver la definición de 'y'
+        var start = Math.max(0, pos - 2000);
+        var snippet = code.substring(start, pos + 200);
 
-        function searchNextChunk(idx) {
-            if (idx >= chunks.length) {
-                console.log("[-] No se encontró la frase en los chunks escaneados.");
-                return;
-            }
-
-            var chunkPath = chunks[idx];
-            var fullUrl = BASE_URL + chunkPath;
-
-            return fetch(fullUrl, { headers: { "User-Agent": USER_AGENT, "Referer": TARGET_URL } })
-                .then(function(r) { return r.text(); })
-                .then(function(code) {
-                    var needle = "cargar los servidores";
-                    var pos = code.indexOf(needle);
-
-                    if (pos === -1) {
-                        needle = "Opciones de Reproducci";
-                        pos = code.indexOf(needle);
-                    }
-
-                    if (pos !== -1) {
-                        console.log("\n[!!!] ¡FUNCIÓN ENCONTRADA EN EL CHUNK: " + chunkPath + "!");
-                        // Imprimir 2000 caracteres alrededor para ver el onClick y la llamada de red
-                        var snippet = code.substring(Math.max(0, pos - 1000), pos + 1000);
-                        console.log("--- CÓDIGO DEL BOTÓN Y LA PETICIÓN ---");
-                        console.log(snippet);
-                        console.log("--------------------------------------");
-                        return; // Detener la búsqueda
-                    }
-
-                    return searchNextChunk(idx + 1);
-                })
-                .catch(function() {
-                    return searchNextChunk(idx + 1);
-                });
-        }
-
-        return searchNextChunk(0);
+        console.log("\n--- CÓDIGO DE LA FUNCIÓN onClick (y) ---");
+        console.log(snippet);
+        console.log("----------------------------------------\n");
     })
     .catch(function(err) {
         console.error("[-] Error:", err.message);
