@@ -1,78 +1,48 @@
 /**
- * Extractor del endpoint de reproducción en PelisGO
+ * Rastreador de la variable movieId en los chunks de PelisGO
  * Ejecución: node providers/inspect_pelisgo.js
  */
 
 var BASE_URL = "https://pelisgo.online";
-var CHUNK_URL = BASE_URL + "/_next/static/chunks/b1469352088ffdf4.js";
+var CHUNKS = [
+    BASE_URL + "/_next/static/chunks/b1469352088ffdf4.js",
+    BASE_URL + "/_next/static/chunks/dc14c808126fb5b4.js"
+];
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-console.log("[*] Descargando chunk del reproductor:", CHUNK_URL);
+console.log("[*] Buscando la lógica de movieId en los chunks...");
 
-fetch(CHUNK_URL, {
-    headers: {
-        "User-Agent": USER_AGENT,
-        "Referer": BASE_URL + "/"
-    }
-})
-.then(function(res) { return res.text(); })
-.then(function(code) {
-    console.log("-> Tamaño del chunk:", code.length, "caracteres.\n");
+function searchInChunk(url) {
+    console.log("\n-> Descargando:", url);
+    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
+        .then(function(r) { return r.text(); })
+        .then(function(code) {
+            console.log("   Tamaño:", code.length);
 
-    // 1. Buscar llamadas a fetch en el componente
-    var fetchMatches = code.match(/fetch\(["'`][^"'`]+["'`]/gi) || [];
-    console.log("[+] Peticiones fetch detectadas en el componente:");
-    console.log(fetchMatches);
-
-    // 2. Buscar rutas relativas que contengan api, player, stream, etc.
-    var routeMatches = code.match(/["'`](\/api\/[^"'`\s<>]+|api\/[^"'`\s<>]+)["'`]/gi) || [];
-    console.log("\n[+] Rutas de API en el reproductor:");
-    console.log([...new Set(routeMatches)]);
-
-    // 3. Probar si el endpoint de reproductor usa movieId
-    var testMovieId = "cmmxiudf3033gje4ludbighql";
-    var possibleEndpoints = [
-        BASE_URL + "/api/player?id=" + testMovieId,
-        BASE_URL + "/api/player?movieId=" + testMovieId,
-        BASE_URL + "/api/movies/" + testMovieId + "/player",
-        BASE_URL + "/api/player/" + testMovieId,
-        BASE_URL + "/api/stream/" + testMovieId
-    ];
-
-    console.log("\n[*] Probando posibles endpoints de video con el movieId...");
-
-    function tryNext(idx) {
-        if (idx >= possibleEndpoints.length) {
-            console.log("[-] Fin de las pruebas directas.");
-            return;
-        }
-
-        var ep = possibleEndpoints[idx];
-        return fetch(ep, {
-            headers: {
-                "User-Agent": USER_AGENT,
-                "Accept": "application/json",
-                "Referer": "https://pelisgo.online/movies/oppenheimer-el-dilema-de-la-bomba-atomica"
-            }
-        })
-        .then(function(r) {
-            console.log("   -> Probando [" + r.status + "]: " + ep);
-            if (r.status === 200) {
-                return r.text().then(function(t) {
-                    console.log("\n[!!!] ¡ENDPOINT DEL REPRODUCTOR ENCONTRADO! [!!!]");
-                    console.log(t.substring(0, 500));
-                });
+            // 1. Buscar 'movieId'
+            var idx = code.indexOf("movieId");
+            if (idx !== -1) {
+                console.log("   [+] ¡'movieId' encontrado en posición " + idx + "!");
+                // Extraer 800 caracteres alrededor
+                var snippet = code.substring(Math.max(0, idx - 100), idx + 800);
+                console.log("   --- FRAGMENTO DE CÓDIGO ---");
+                console.log(snippet);
+                console.log("   ---------------------------");
             } else {
-                return tryNext(idx + 1);
+                console.log("   [-] 'movieId' no aparece en este chunk.");
             }
-        })
-        .catch(function() {
-            return tryNext(idx + 1);
-        });
-    }
 
-    return tryNext(0);
-})
-.catch(function(err) {
-    console.error("[-] Error:", err.message);
+            // 2. Buscar si hay peticiones HTTP (/api/ o Server Actions o endpoints)
+            var urlsInCode = code.match(/["'](\/[a-zA-Z0-9_\-\/]+)["']/g) || [];
+            var interesting = urlsInCode.filter(function(u) {
+                return u.indexOf("static") === -1 && u.indexOf("chunks") === -1 && u.length > 5;
+            });
+            console.log("   Rutas interesantes encontradas:", [...new Set(interesting)].slice(0, 10));
+        });
+}
+
+searchInChunk(CHUNKS[0]).then(function() {
+    return searchInChunk(CHUNKS[1]);
+}).catch(function(e) {
+    console.error("Error:", e.message);
 });
