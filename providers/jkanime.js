@@ -310,15 +310,16 @@ function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
 }
 
 // ==========================================
-// 4. BUSCADOR NATIVO DE JKANIME
+// 4. BUSCADOR NATIVO DE JKANIME (SIN /1/ FINAL)
 // ==========================================
 
 function searchJKAnime(query) {
     if (!query || hasAsianChars(query)) return Promise.resolve([]);
-    var searchUrl = BASE_URL + "/buscar/" + encodeURIComponent(query) + "/1/";
+    // URL limpia sin /1/ que devuelve 200 OK
+    var searchUrl = BASE_URL + "/buscar/" + encodeURIComponent(query) + "/";
 
     return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2800)
-        .then(function(res) { return res.ok ? res.text() : ""; })
+        .then(function(res) { return res && res.ok ? res.text() : ""; })
         .then(function(html) {
             var slugs = [];
             var regex = /href=["']https?:\/\/jkanime\.net\/([a-zA-Z0-9-]+)\/["']/gi;
@@ -401,7 +402,7 @@ function resolveVidHide(url) {
 
 function resolveMp4upload(url) {
     return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" }, redirect: "follow" }, 2800)
-        .then(function(res) { return res.text(); })
+        .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             if (!html) return null;
             var quality = "1080p";
@@ -581,7 +582,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            // EXTRACCIÓN ROBUSTA DE BÚSQUEDA (EVITA QUE KANJI DEJE LA CONSULTA EN BLANCO)
+            // EXTRACCIÓN ROBUSTA DE CONSULTA (EVITA QUE KANJI EN ORIGINAL_NAME DEJE LA BÚSQUEDA EN BLANCO)
             var cleanSearchTitle = "";
             if (origTitle && !hasAsianChars(origTitle)) {
                 cleanSearchTitle = origTitle;
@@ -617,7 +618,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     effectiveSeason = decomp.season;
                     effectiveEpisode = decomp.episode;
                 } else {
-                    // Caso TMDB / Cinemeta: Manda Temporada N y Episodio dentro del bloque
+                    // Caso TMDB / Cinemeta: Manda Temporada N y Episodio dentro de la temporada
                     absoluteEp = calculateAbsoluteEp(seasonsList, sNum, eNum);
                     effectiveSeason = sNum;
                     effectiveEpisode = eNum;
@@ -673,10 +674,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     var cand = candidateSlugs[k];
                     var sc = scoreCandidate(cand.slug, titles, year);
                     if (sc >= 35) {
-                        // BONIFICACIÓN JERÁRQUICA SEGÚN TEMPORADA SOLICITADA
+                        // BONIFICACIÓN JERÁRQUICA SEGÚN TEMPORADA EXACTA
                         var slugRank = getSeasonRank(cand.slug);
                         if (slugRank === effectiveSeason) {
-                            sc += 30; // Gran impulso al slug de la temporada exacta
+                            sc += 30; // Impulso grande a la temporada correcta (ej. II para T2)
                             if (isPartTwo(cand.slug) && effectiveEpisode > 12) sc += 15;
                             if (!isPartTwo(cand.slug) && effectiveEpisode <= 12) sc += 15;
                         } else if (effectiveSeason > 1 && slugRank === 1 && !cand.isContinuous) {
