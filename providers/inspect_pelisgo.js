@@ -1,48 +1,56 @@
 /**
- * Rastreador de la variable movieId en los chunks de PelisGO
+ * Extractor del contenedor #player y chunks de ClientPlayerSection en PelisGO
  * Ejecución: node providers/inspect_pelisgo.js
  */
 
-var BASE_URL = "https://pelisgo.online";
-var CHUNKS = [
-    BASE_URL + "/_next/static/chunks/b1469352088ffdf4.js",
-    BASE_URL + "/_next/static/chunks/dc14c808126fb5b4.js"
-];
+var TARGET_URL = "https://pelisgo.online/movies/oppenheimer-el-dilema-de-la-bomba-atomica";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-console.log("[*] Buscando la lógica de movieId en los chunks...");
+console.log("[*] Analizando contenedor #player y chunks...");
 
-function searchInChunk(url) {
-    console.log("\n-> Descargando:", url);
-    return fetch(url, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
-        .then(function(r) { return r.text(); })
-        .then(function(code) {
-            console.log("   Tamaño:", code.length);
+fetch(TARGET_URL, {
+    headers: {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://pelisgo.online/"
+    }
+})
+.then(function(res) { return res.text(); })
+.then(function(html) {
+    // 1. Buscar id="player" o id='player'
+    var pIdx = html.indexOf('id="player"');
+    if (pIdx === -1) pIdx = html.indexOf("id='player'");
+    if (pIdx === -1) pIdx = html.indexOf('player"');
 
-            // 1. Buscar 'movieId'
-            var idx = code.indexOf("movieId");
-            if (idx !== -1) {
-                console.log("   [+] ¡'movieId' encontrado en posición " + idx + "!");
-                // Extraer 800 caracteres alrededor
-                var snippet = code.substring(Math.max(0, idx - 100), idx + 800);
-                console.log("   --- FRAGMENTO DE CÓDIGO ---");
-                console.log(snippet);
-                console.log("   ---------------------------");
-            } else {
-                console.log("   [-] 'movieId' no aparece en este chunk.");
-            }
+    console.log("[1] Búsqueda de id=\"player\":");
+    if (pIdx !== -1) {
+        console.log("   [+] ¡Contenedor #player encontrado en la posición " + pIdx + "!");
+        var playerHtml = html.substring(Math.max(0, pIdx - 150), pIdx + 1200);
+        console.log("   --- FRAGMENTO HTML DE #PLAYER ---");
+        console.log(playerHtml);
+        console.log("   ---------------------------------");
+    } else {
+        console.log("   [-] No hay id=\"player\" estático.");
+    }
 
-            // 2. Buscar si hay peticiones HTTP (/api/ o Server Actions o endpoints)
-            var urlsInCode = code.match(/["'](\/[a-zA-Z0-9_\-\/]+)["']/g) || [];
-            var interesting = urlsInCode.filter(function(u) {
-                return u.indexOf("static") === -1 && u.indexOf("chunks") === -1 && u.length > 5;
-            });
-            console.log("   Rutas interesantes encontradas:", [...new Set(interesting)].slice(0, 10));
-        });
-}
+    // 2. Extraer la línea completa donde se declara ClientPlayerSection para ver todos sus chunks
+    console.log("\n[2] Lista completa de chunks para ClientPlayerSection:");
+    var sectionMatch = html.match(/\[[^\]]*ClientPlayerSection[^\]]*\]/i) || 
+                       html.match(/self\.__next_f\.push\(\[1,"[^"]*ClientPlayerSection[^"]*"\)/i);
 
-searchInChunk(CHUNKS[0]).then(function() {
-    return searchInChunk(CHUNKS[1]);
-}).catch(function(e) {
-    console.error("Error:", e.message);
+    if (sectionMatch) {
+        console.log(sectionMatch[0]);
+    } else {
+        var idxCPS = html.indexOf("ClientPlayerSection");
+        if (idxCPS !== -1) {
+            console.log(html.substring(Math.max(0, idxCPS - 200), idxCPS + 150));
+        }
+    }
+
+    // 3. Buscar si hay Server Actions (Next-Action IDs) o llamadas de acción en el HTML
+    console.log("\n[3] Buscando posibles Server Actions o endpoints en el HTML:");
+    var actions = html.match(/["']([a-f0-9]{40,})["']/g) || [];
+    console.log("   IDs hash detectados:", actions.slice(0, 5));
+})
+.catch(function(err) {
+    console.error("[-] Error:", err.message);
 });
