@@ -1,7 +1,7 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
  * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
- * Resolvers: VidHide (morencius), StreamWish (hglink), Voe
+ * Resolvers: VidHide (morencius), StreamWish (streamwish.to)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -40,13 +40,10 @@ function stringToUtf8Bytes(str) {
     var bytes = [];
     for (var i = 0; i < str.length; i++) {
         var code = str.charCodeAt(i);
-        if (code < 0x80) {
-            bytes.push(code);
-        } else if (code < 0x800) {
-            bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
-        } else if (code < 0xd800 || code >= 0xe000) {
-            bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
-        } else {
+        if (code < 0x80) bytes.push(code);
+        else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+        else if (code < 0xd800 || code >= 0xe000) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+        else {
             i++;
             code = 0x10000 + (((code & 0x3ff) << 10) | (str.charCodeAt(i) & 0x3ff));
             bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
@@ -56,23 +53,18 @@ function stringToUtf8Bytes(str) {
 }
 
 function utf8BytesToString(bytes) {
-    var str = "";
-    var i = 0;
+    var str = "", i = 0;
     while (i < bytes.length) {
         var b1 = bytes[i++];
-        if (b1 < 0x80) {
-            str += String.fromCharCode(b1);
-        } else if (b1 > 0xbf && b1 < 0xe0) {
+        if (b1 < 0x80) str += String.fromCharCode(b1);
+        else if (b1 > 0xbf && b1 < 0xe0) {
             var b2 = bytes[i++];
             str += String.fromCharCode(((b1 & 0x1f) << 6) | (b2 & 0x3f));
         } else if (b1 > 0xdf && b1 < 0xf0) {
-            var b2 = bytes[i++];
-            var b3 = bytes[i++];
+            var b2 = bytes[i++], b3 = bytes[i++];
             str += String.fromCharCode(((b1 & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f));
         } else {
-            var b2 = bytes[i++];
-            var b3 = bytes[i++];
-            var b4 = bytes[i++];
+            var b2 = bytes[i++], b3 = bytes[i++], b4 = bytes[i++];
             var code = (((b1 & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f)) - 0x10000;
             str += String.fromCharCode(0xd800 + (code >> 10), 0xdc00 + (code & 0x3ff));
         }
@@ -251,9 +243,7 @@ function gmult(a, b) {
 
 function keyExpansion256(key) {
     var w = new Uint32Array(60);
-    for (var i = 0; i < 8; i++) {
-        w[i] = (key[4 * i] << 24) | (key[4 * i + 1] << 16) | (key[4 * i + 2] << 8) | key[4 * i + 3];
-    }
+    for (var i = 0; i < 8; i++) w[i] = (key[4 * i] << 24) | (key[4 * i + 1] << 16) | (key[4 * i + 2] << 8) | key[4 * i + 3];
     for (var i = 8; i < 60; i++) {
         var temp = w[i - 1];
         if (i % 8 === 0) {
@@ -436,7 +426,11 @@ function resolveVidHide(url) {
         }
 
         if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": url };
+            // Referer en la raíz del hoster para que el CDN valide al instante sin timeout
+            var originMatch = url.match(/^https?:\/\/[^/]+/i);
+            var origin = originMatch ? originMatch[0] + "/" : "https://morencius.com/";
+            var headers = { "User-Agent": USER_AGENT, "Referer": origin };
+
             return probeM3u8Quality(streamUrl, headers).then(function(q) {
                 return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: headers };
             });
@@ -449,10 +443,11 @@ function resolveVidHide(url) {
 function resolveStreamWish(url) {
     var cleanUrl = url.split("?")[0].replace(/\/$/, "");
     var id = cleanUrl.split("/").pop();
-    var targetUrl = "https://hlswish.com/e/" + id;
+    // Consulta directa a streamwish.to para evitar la pantalla "Loading..." de hglink
+    var targetUrl = "https://streamwish.to/e/" + id;
 
     return fetchWithTimeout(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://streamwish.to/" },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
@@ -472,46 +467,9 @@ function resolveStreamWish(url) {
         }
 
         if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": targetUrl };
+            var headers = { "User-Agent": USER_AGENT, "Referer": "https://streamwish.to/" };
             return probeM3u8Quality(streamUrl, headers).then(function(q) {
                 return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: headers };
-            });
-        }
-        return null;
-    })
-    .catch(function() { return null; });
-}
-
-function resolveVoe(url) {
-    return fetchWithTimeout(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": url },
-        redirect: "follow"
-    }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
-    .then(function(html) {
-        var streamUrl = null;
-        var hlsMatch = html.match(/["']hls["']\s*:\s*["']([^"']+)["']/i) ||
-                       html.match(/["']file["']\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-        if (hlsMatch) streamUrl = hlsMatch[1];
-
-        // Decodificación Base64 típica de VOE
-        if (!streamUrl) {
-            var b64Match = html.match(/prompt\([^,]+,["']([a-zA-Z0-9+/=]+)["']\)/i) ||
-                           html.match(/sources\s*=\s*JSON\.parse\(atob\(["']([a-zA-Z0-9+/=]+)["']\)\)/i);
-            if (b64Match) {
-                try {
-                    var decBytes = decodeB64ToBytes(b64Match[1]);
-                    var decStr = utf8BytesToString(decBytes);
-                    var innerHls = decStr.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
-                    if (innerHls) streamUrl = innerHls[0];
-                } catch(e) {}
-            }
-        }
-
-        if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": url };
-            return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return { url: streamUrl, quality: q || "1080p", server: "Voe", headers: headers };
             });
         }
         return null;
@@ -668,17 +626,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                 var sName = (item.server || "").toLowerCase();
                 var promise = null;
 
-                // Soporte universal para VidHide (incluyendo morencius)
                 if (sName.indexOf("vidhide") !== -1 || u.indexOf("vidhide") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) {
                     promise = resolveVidHide(item.url);
-                } 
-                // Soporte universal para StreamWish (incluyendo hglink)
-                else if (sName.indexOf("streamwish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
+                } else if (sName.indexOf("streamwish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
                     promise = resolveStreamWish(item.url);
-                } 
-                // Soporte de alta velocidad para VOE
-                else if (sName.indexOf("voe") !== -1 || u.indexOf("voe.sx") !== -1 || u.indexOf("voe-network") !== -1) {
-                    promise = resolveVoe(item.url);
                 } else {
                     promise = Promise.resolve(null);
                 }
