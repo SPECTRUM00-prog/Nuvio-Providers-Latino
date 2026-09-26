@@ -1,119 +1,58 @@
 /**
- * Diagnóstico paso a paso de PelisGO
- * Ejecución: node providers/test_pelisgo_debug.js 872585 movie
- *             node providers/test_pelisgo_debug.js 1149947 movie
- *             node providers/test_pelisgo_debug.js 1396 tv 1 1
+ * Escáner de la API de Filemoon (Byse Frontend)
+ * Ejecución: node providers/inspect_pelisgo.js
  */
 
-var tmdbId = process.argv[2] || "872585";
-var mediaType = process.argv[3] || "movie";
-var seasonNum = process.argv[4] || "1";
-var episodeNum = process.argv[5] || "1";
-var isTv = mediaType === "tv" || mediaType === "series";
-
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-var BASE_URL = "https://pelisgo.online";
+var BUNDLE_URL = "https://filemoon.sx/assets/index-DocunfmE.js";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
-console.log("==================================================");
-console.log("[*] DIAGNÓSTICO PELISGO: TMDB " + tmdbId + " (" + mediaType + ")");
-console.log("==================================================\n");
+console.log("[*] Descargando y analizando el bundle de Filemoon:", BUNDLE_URL);
 
-// PASO 1: TMDB
-var tmdbUrl = "https://api.themoviedb.org/3/" + (isTv ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX";
-console.log("[1] Consultando TMDB:", tmdbUrl);
+fetch(BUNDLE_URL, {
+    headers: {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://filemoon.sx/"
+    }
+})
+.then(function(res) { return res.text(); })
+.then(function(code) {
+    console.log("-> Tamaño del bundle recibido:", code.length, "caracteres.\n");
 
-fetch(tmdbUrl)
-    .then(function(r) { return r.json(); })
-    .then(function(meta) {
-        var title = meta.name || meta.title;
-        console.log("-> Título TMDB:", title);
+    // 1. Buscar dominios de API (como api.byse.sx o filemoon)
+    var domains = code.match(/https?:\/\/[a-zA-Z0-9.-]*(?:byse|filemoon|stream|api)[a-zA-Z0-9.-]*/gi) || [];
+    var uniqueDomains = [];
+    for (var d = 0; d < domains.length; d++) {
+        if (uniqueDomains.indexOf(domains[d]) === -1) uniqueDomains.push(domains[d]);
+    }
+    console.log("[1] Dominios de API y plataformas detectados:");
+    console.log(uniqueDomains);
 
-        // PASO 2: BÚSQUEDA PELISGO
-        var searchUrl = BASE_URL + "/search?q=" + encodeURIComponent(title);
-        console.log("\n[2] Consultando buscador de PelisGO:", searchUrl);
-        return fetch(searchUrl, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
-            .then(function(r) { return r.text(); })
-            .then(function(searchHtml) {
-                var pattern = isTv ? /href=["'](\/series\/[^"'\s<>]+)["']/gi : /href=["'](\/movies\/[^"'\s<>]+)["']/gi;
-                var slugs = [];
-                var m;
-                while ((m = pattern.exec(searchHtml)) !== null) {
-                    var s = m[1].replace("/movies/", "").replace("/series/", "").replace(/\/$/, "");
-                    if (slugs.indexOf(s) === -1) slugs.push(s);
-                }
-                console.log("-> Slugs devueltos por el buscador:", slugs);
+    // 2. Buscar rutas relativas de API
+    var apiRoutes = code.match(/["'`](\/(?:api|v[0-9]|player|video|embed)[^"'`\s<>]+)["'`]/gi) || [];
+    var uniqueApis = [];
+    for (var a = 0; a < apiRoutes.length; a++) {
+        var clean = apiRoutes[a].replace(/["'`]/g, "");
+        if (uniqueApis.indexOf(clean) === -1) uniqueApis.push(clean);
+    }
+    console.log("\n[2] Rutas de API relativas encontradas:");
+    console.log(uniqueApis);
 
-                if (slugs.length === 0) {
-                    console.log("[-] El buscador no devolvió ningún slug para este título.");
-                    return;
-                }
+    // 3. Buscar llamadas fetch o axios en el código
+    var fetchSnippets = code.match(/fetch\(["'`][^"'`]+["'`]/gi) || [];
+    console.log("\n[3] Llamadas fetch directas:");
+    console.log(fetchSnippets);
 
-                // PASO 3: PÁGINA DEL CONTENIDO
-                var targetSlug = slugs[0];
-                var pageUrl = isTv ? 
-                    (BASE_URL + "/series/" + targetSlug + "/temporada/" + seasonNum + "/episodio/" + episodeNum) :
-                    (BASE_URL + "/movies/" + targetSlug);
-
-                console.log("\n[3] Descargando página del contenido:", pageUrl);
-                return fetch(pageUrl, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" } })
-                    .then(function(r) { return r.text(); })
-                    .then(function(html) {
-                        console.log("-> Tamaño HTML recibido:", html.length);
-
-                        // PASO 4: EXTRAER ID
-                        var idMatch = isTv ?
-                            (html.match(/\\?"episodeId\\?"\s*:\s*\\?"([^"\\s]+)\\?"/i) || html.match(/episodeId\s*:\s*["']([^"']+)["']/i)) :
-                            (html.match(/\\?"movieId\\?"\s*:\s*\\?"([^"\\s]+)\\?"/i) || html.match(/movieId\s*:\s*["']([^"']+)["']/i));
-
-                        var entityId = idMatch ? idMatch[1] : null;
-                        console.log("\n[4] ID extraído:", entityId);
-
-                        if (!entityId) {
-                            console.log("[-] No se pudo extraer el ID del HTML.");
-                            return;
-                        }
-
-                        // PASO 5: CONSULTAR API DE STREAMS
-                        var streamApi = isTv ?
-                            (BASE_URL + "/api/series/episode/" + entityId + "/stream") :
-                            (BASE_URL + "/api/movies/" + entityId + "/stream");
-
-                        console.log("\n[5] Consultando API de streams:", streamApi);
-                        return fetch(streamApi, {
-                            headers: { "User-Agent": USER_AGENT, "Accept": "application/json", "Referer": pageUrl }
-                        })
-                        .then(function(r) { return r.json(); })
-                        .then(function(json) {
-                            var links = json.links || [];
-                            console.log("-> Enlaces devueltos por la API (" + links.length + "):");
-                            links.forEach(function(l, i) {
-                                console.log("   [" + (i + 1) + "] Servidor: " + (l.server || l.name) + " -> " + l.url);
-                            });
-
-                            // PASO 6: PROBAR EL PRIMER RESOLVER
-                            if (links.length > 0) {
-                                var firstLink = links[0];
-                                console.log("\n[6] Probando resolver para el primer enlace:", firstLink.url);
-
-                                return fetch(firstLink.url, {
-                                    headers: { "User-Agent": USER_AGENT, "Referer": firstLink.url },
-                                    redirect: "follow"
-                                })
-                                .then(function(res) {
-                                    console.log("-> Status HTTP del reproductor:", res.status);
-                                    return res.text();
-                                })
-                                .then(function(t) {
-                                    console.log("-> Tamaño HTML del reproductor:", t.length);
-                                    var m3u8 = t.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-                                    console.log("-> ¿Encontró m3u8 directo?:", m3u8 ? m3u8[0].substring(0, 80) + "..." : "No");
-                                });
-                            }
-                        });
-                    });
-            });
-    })
-    .catch(function(err) {
-        console.error("[-] Error en diagnóstico:", err.message);
+    // 4. Buscar palabras clave como 'filecode', 'm3u8', 'sources'
+    var keywords = ["filecode", "sources", "hls", ".m3u8"];
+    console.log("\n[4] Rastreo de palabras clave:");
+    keywords.forEach(function(k) {
+        var pos = code.indexOf(k);
+        if (pos !== -1) {
+            console.log("-> Clave '" + k + "' encontrada en pos " + pos + ":");
+            console.log("   " + code.substring(Math.max(0, pos - 60), pos + 120).replace(/\n/g, " "));
+        }
     });
+})
+.catch(function(err) {
+    console.error("[-] Error:", err.message);
+});
