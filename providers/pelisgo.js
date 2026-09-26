@@ -2,7 +2,8 @@
  * Provider: PelisGO (Películas y Series)
  * Dominio: https://pelisgo.online
  * Arquitectura: Next.js App Router + API REST Interna (/api/movies y /api/series)
- * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Android TV / Desktop)
+ * Resolvers: KeKi (HLS Directo), Flix (GoodStream POST /dl), Magi (Filemoon)
+ * Motor: 100% Cadenas de Promesas (Compatible con Hermes / Android TV / FireTV / Desktop)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -119,7 +120,7 @@ function unpackJS(packed) {
 }
 
 // ==========================================
-// 3. DETECCIÓN DINÁMICA DE RESOLUCIÓN REAL
+// 3. DETECCIÓN DINÁMICA DE CALIDAD REAL
 // ==========================================
 
 function probeM3u8Quality(m3u8Url, headers) {
@@ -160,32 +161,48 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
-// 4. RESOLVERS DE STREAMING INDIVIDUALES
+// 4. RESOLVERS DE STREAMING (PROMISES)
 // ==========================================
 
-function resolveFilemoon(url) {
-    return fetchWithTimeout(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": url },
-        redirect: "follow"
+// Flix (GoodStream): Envía el POST a /dl con file_code
+function resolveGoodStream(url) {
+    var fileCodeMatch = url.match(/\/e\/([a-zA-Z0-9]+)/i);
+    var fileCode = fileCodeMatch ? fileCodeMatch[1] : "";
+    if (!fileCode) return Promise.resolve(null);
+
+    var postUrl = "https://goodstream.one/dl";
+    var postBody = "op=embed&file_code=" + encodeURIComponent(fileCode) + "&auto=1&referer=" + encodeURIComponent(BASE_URL + "/");
+
+    return fetchWithTimeout(postUrl, {
+        method: "POST",
+        headers: {
+            "User-Agent": USER_AGENT,
+            "Referer": url,
+            "Content-Type": "application/x-www-form-urlencoded"
+        },
+        body: postBody
     }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var streamUrl = null;
-        var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-        if (direct) streamUrl = direct[1].replace(/\\/g, "");
-
-        if (!streamUrl) {
-            var unpacked = unpackJS(html);
-            if (unpacked) {
-                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-                if (m3u8) streamUrl = m3u8[0].replace(/\\/g, "");
-            }
+        if (html.indexOf("File is no longer available") !== -1 || html.indexOf("deleted") !== -1) {
+            return null;
         }
 
-        if (streamUrl) {
+        var unpacked = unpackJS(html);
+        var sourceText = unpacked || html;
+        var m3u8Match = sourceText.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i) ||
+                        sourceText.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+
+        if (m3u8Match) {
+            var streamUrl = (m3u8Match[1] || m3u8Match[0]).replace(/\\/g, "");
             var headers = { "User-Agent": USER_AGENT, "Referer": url };
             return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return { url: streamUrl, quality: q || "1080p", server: "Filemoon", headers: headers };
+                return {
+                    url: streamUrl,
+                    quality: q || "720p",
+                    server: "Flix",
+                    headers: headers
+                };
             });
         }
         return null;
@@ -193,29 +210,20 @@ function resolveFilemoon(url) {
     .catch(function() { return null; });
 }
 
-function resolveGoodStream(url) {
+// Filemoon (Magi): Fallback estándar
+function resolveFilemoon(url) {
     return fetchWithTimeout(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" },
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
     .then(function(res) { return res.text(); })
     .then(function(html) {
-        var streamUrl = null;
         var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-        if (direct) streamUrl = direct[1].replace(/\\/g, "");
-
-        if (!streamUrl) {
-            var unpacked = unpackJS(html);
-            if (unpacked) {
-                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-                if (m3u8) streamUrl = m3u8[0].replace(/\\/g, "");
-            }
-        }
-
-        if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" };
+        if (direct) {
+            var streamUrl = direct[1].replace(/\\/g, "");
+            var headers = { "User-Agent": USER_AGENT, "Referer": url };
             return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return { url: streamUrl, quality: q || "720p", server: "GoodStream", headers: headers };
+                return { url: streamUrl, quality: q || "1080p", server: "Filemoon", headers: headers };
             });
         }
         return null;
@@ -228,7 +236,7 @@ function dispatchLinkResolver(item) {
     var u = item.url.toLowerCase();
     var sName = (item.server || item.name || "").toLowerCase();
 
-    // 1. Servidor KeKi: Es un stream directo HLS .m3u8 sin intermediarios
+    // 1. KeKi: Stream directo .m3u8
     if (u.indexOf(".m3u8") !== -1) {
         var headers = { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" };
         return probeM3u8Quality(item.url, headers).then(function(q) {
@@ -241,14 +249,14 @@ function dispatchLinkResolver(item) {
         });
     }
 
-    // 2. Filemoon (Magi)
-    if (sName.indexOf("magi") !== -1 || u.indexOf("filemoon") !== -1) {
-        return resolveFilemoon(item.url);
-    }
-
-    // 3. GoodStream (Flix)
+    // 2. Flix (GoodStream con POST)
     if (sName.indexOf("flix") !== -1 || u.indexOf("goodstream") !== -1) {
         return resolveGoodStream(item.url);
+    }
+
+    // 3. Magi (Filemoon)
+    if (sName.indexOf("magi") !== -1 || u.indexOf("filemoon") !== -1) {
+        return resolveFilemoon(item.url);
     }
 
     return Promise.resolve(null);
@@ -359,7 +367,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         return searchMultiQuery(searchQueries, isTv).then(function(slugs) {
             if (!slugs || slugs.length === 0) return [];
 
-            // Filtrado de calidad estricto score >= 35
             var scoredCandidates = [];
             for (var u = 0; u < slugs.length; u++) {
                 var sc = scoreCandidate(slugs[u], media.titles, media.year);
@@ -388,7 +395,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     .then(function(html) {
                         if (!html) return null;
 
-                        // Extraer ID según sea película (movieId) o serie (episodeId)
                         var idMatch = isTv ?
                             (html.match(/\\?"episodeId\\?"\s*:\s*\\?"([^"\\s]+)\\?"/i) || html.match(/episodeId\s*:\s*["']([^"']+)["']/i)) :
                             (html.match(/\\?"movieId\\?"\s*:\s*\\?"([^"\\s]+)\\?"/i) || html.match(/movieId\s*:\s*["']([^"']+)["']/i));
