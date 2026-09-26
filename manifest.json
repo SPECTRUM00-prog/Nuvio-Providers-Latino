@@ -13,12 +13,17 @@
       "enabled": true,
       "contentLanguage": ["es"]
     },
-{
-  "id": "pelisgo",
-  "name": "PelisGO",
-  "type": "movie,tv",
-  "file": "providers/pelisgo.js"
-},
+    {
+      "id": "pelisgo",
+      "name": "PelisGO",
+      "description": "Películas y Series en Latino y Castellano en 1080p (KeKi Direct HLS, Flix GoodStream, Magi Filemoon).",
+      "version": "1.0.0",
+      "author": "SPECTRUM00-prog",
+      "supportedTypes": ["movie", "tv", "series"],
+      "filename": "providers/pelisgo.js",
+      "enabled": true,
+      "contentLanguage": ["es"]
+    },
     {
       "id": "lamovie",
       "name": "LaMovie",
