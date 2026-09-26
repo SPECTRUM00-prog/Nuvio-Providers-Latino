@@ -14,6 +14,18 @@
       "contentLanguage": ["es"]
     },
     {
+      "id": "pelisgo",
+      "name": "PelisGO",
+      "description": "Películas y Series en Español Latino.",
+      "version": "2.2.0",
+      "author": "SPECTRUM00-prog",
+      "supportedTypes": ["movie", "tv", "series"],
+      "type": "movie,tv",
+      "file": "providers/pelisgo.js",
+      "enabled": true,
+      "contentLanguage": ["es"]
+    },
+    {
       "id": "lamovie",
       "name": "LaMovie",
       "description": "Películas y Series en Español Latino desde LaMovie (Vimeos, GoodStream, StreamWish).",
