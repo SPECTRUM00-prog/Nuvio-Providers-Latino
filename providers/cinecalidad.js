@@ -4,42 +4,79 @@
  * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
  */
 
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+// ==========================================
+// 0. CONFIGURACIÓN
+// ==========================================
+
+var TMDB_API_KEY = "";       // Pega aquí tu API key de TMDB (solo se usa para convertir IDs de IMDb/Cinemeta)
+var TMDB_API = "https://api.themoviedb.org/3";
 var API_BASE = "https://tmdb.cinecalidad.am";
+var EMBED_BASE = "https://vimeos.net";
+var SITE_REFERER = "https://www.cinecalidad.am/";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-var NETWORK_TIMEOUT = 3200;
+
+var API_TIMEOUT = 6000;      // ms para la API
+var EMBED_TIMEOUT = 6000;    // ms para el embed
+var PROBE_TIMEOUT = 2500;    // ms para el probe del m3u8
+var API_RETRIES = 1;         // reintentos extra en la llamada a la API
+
+var ENABLE_PROBE = false;    // true = consulta el m3u8 para detectar calidad real (una petición extra)
+var DEFAULT_QUALITY = "1080p";
+var DEBUG = false;
 
 var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "application/json",
-    "Referer": "https://www.cinecalidad.am/"
+    "Referer": SITE_REFERER
 };
+
+function log() {
+    if (DEBUG && typeof console !== "undefined") {
+        console.log.apply(console, ["[CineCalidad]"].concat(Array.prototype.slice.call(arguments)));
+    }
+}
 
 // ==========================================
 // 1. HELPERS DE RED Y TIMEOUT (HERMES SAFE)
 // ==========================================
 
 function fetchWithTimeout(url, options, timeoutMs) {
-    var limit = timeoutMs || NETWORK_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Timeout"));
-            }, limit);
-        })
-    ]);
+    var limit = timeoutMs || API_TIMEOUT;
+    var timer;
+    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
+    var opts = Object.assign({}, options || {});
+    if (controller) opts.signal = controller.signal;
+
+    var timeout = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            if (controller) {
+                try { controller.abort(); } catch (e) {}
+            }
+            reject(new Error("Timeout"));
+        }, limit);
+    });
+
+    return Promise.race([fetch(url, opts), timeout]).then(
+        function(res) { clearTimeout(timer); return res; },
+        function(err) { clearTimeout(timer); throw err; }
+    );
 }
 
-function cleanTitle(str) {
-    if (!str) return "";
-    return str
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-z0-9\s]+/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
+// Pide JSON con reintentos. Devuelve null si falla o no es 2xx.
+function fetchJson(url, retriesLeft) {
+    return fetchWithTimeout(url, { headers: DEFAULT_HEADERS }, API_TIMEOUT)
+        .then(function(res) {
+            if (!res.ok) {
+                log("HTTP", res.status, url);
+                return null;
+            }
+            return res.json();
+        })
+        .catch(function(err) {
+            log("fetchJson error", url, err && err.message);
+            if (retriesLeft > 0) return fetchJson(url, retriesLeft - 1);
+            return null;
+        });
 }
 
 // ==========================================
@@ -48,18 +85,18 @@ function cleanTitle(str) {
 
 function unpackJS(packed) {
     try {
-        var regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
+        if (!packed || packed.indexOf("eval(function(p,a,c,k,e,") === -1) return null;
+
+        var regex = /\}\s*\(\s*'((?:[^'\\]|\\.)*)'\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*'((?:[^'\\]|\\.)*)'\.split\('\|'\)/;
         var match = packed.match(regex);
         if (!match) return null;
 
-        var p = match[1].slice(1, -1);
-        var a = match[2];
-        var k = match[4];
-        var words = k.split("|");
-        var radix = parseInt(a, 10);
+        var p = match[1].replace(/\\'/g, "'").replace(/\\\\/g, "\\");
+        var radix = parseInt(match[2], 10);
+        var words = match[4].split("|");
 
+        var chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
         var unbase = function(val, base) {
-            var chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
             if (base <= 36) return parseInt(val, base);
             var res = 0;
             for (var i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
@@ -71,6 +108,7 @@ function unpackJS(packed) {
             return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
         });
     } catch (e) {
+        log("unpackJS error", e && e.message);
         return null;
     }
 }
@@ -101,10 +139,11 @@ function detectQualityFromUrl(url) {
         }
     }
 
-    if (/4k|2160p?/i.test(u)) return "4K";
-    if (/1080p?/i.test(u)) return "1080p";
-    if (/720p?/i.test(u)) return "720p";
-    if (/480p?/i.test(u)) return "480p";
+    // Límites de palabra para evitar falsos positivos con tokens/hashes
+    if (/(^|[^a-z0-9])(4k|2160p?)([^a-z0-9]|$)/.test(u)) return "4K";
+    if (/(^|[^a-z0-9])1080p?([^a-z0-9]|$)/.test(u)) return "1080p";
+    if (/(^|[^a-z0-9])720p?([^a-z0-9]|$)/.test(u)) return "720p";
+    if (/(^|[^a-z0-9])480p?([^a-z0-9]|$)/.test(u)) return "480p";
     return null;
 }
 
@@ -112,22 +151,16 @@ function probeM3u8Quality(m3u8Url, headers) {
     var fastQ = detectQualityFromUrl(m3u8Url);
     if (fastQ) return Promise.resolve(fastQ);
 
+    if (!ENABLE_PROBE) return Promise.resolve(DEFAULT_QUALITY);
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
     return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    }, 2500)
-    .then(function(res) {
-        if (!res.ok) return "720p";
-        return res.text();
-    })
+    }, PROBE_TIMEOUT)
+    .then(function(res) { return res.ok ? res.text() : ""; })
     .then(function(text) {
-        if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
-            if (/1080/i.test(m3u8Url)) return "1080p";
-            if (/720/i.test(m3u8Url)) return "720p";
-            return "720p";
-        }
+        if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) return "720p";
 
         var maxH = 0;
         var resRegex = /RESOLUTION=\d+x(\d+)/gi;
@@ -143,7 +176,8 @@ function probeM3u8Quality(m3u8Url, headers) {
         if (maxH >= 480) return "480p";
         return "720p";
     })
-    .catch(function() {
+    .catch(function(err) {
+        log("probe error", err && err.message);
         return "720p";
     });
 }
@@ -152,41 +186,61 @@ function probeM3u8Quality(m3u8Url, headers) {
 // 4. RESOLVER DE VIMEOS (HLS DIRECTO)
 // ==========================================
 
+function normalizeStreamUrl(url) {
+    if (!url) return null;
+    url = url.replace(/\\/g, "");
+    if (url.indexOf("//") === 0) url = "https:" + url;
+    if (url.indexOf("http") !== 0) return null;
+    return url;
+}
+
 function resolveVimeos(fileCode) {
     if (!fileCode) return Promise.resolve(null);
-    var embedUrl = "https://vimeos.net/embed-" + fileCode + ".html";
+    var embedUrl = EMBED_BASE + "/embed-" + encodeURIComponent(fileCode) + ".html";
+    var headers = { "User-Agent": USER_AGENT, "Referer": EMBED_BASE + "/" };
 
-    return fetchWithTimeout(embedUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
-    }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
+    return fetchWithTimeout(embedUrl, { headers: headers }, EMBED_TIMEOUT)
+    .then(function(res) {
+        if (!res.ok) {
+            log("embed HTTP", res.status);
+            return null;
+        }
+        return res.text();
+    })
     .then(function(html) {
+        if (!html) return null;
+
         var streamUrl = null;
         var unpacked = unpackJS(html);
         if (unpacked) {
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) ||
                             unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
-            if (m3u8Match) streamUrl = m3u8Match[1].replace(/\\/g, "");
+            if (m3u8Match) streamUrl = m3u8Match[1];
         }
         if (!streamUrl) {
             var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-            if (direct) streamUrl = direct[1].replace(/\\/g, "");
+            if (direct) streamUrl = direct[1];
         }
 
-        if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" };
-            return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return {
-                    url: streamUrl,
-                    quality: q || "1080p",
-                    server: "Vimeos",
-                    headers: headers
-                };
-            });
+        streamUrl = normalizeStreamUrl(streamUrl);
+        if (!streamUrl) {
+            log("no se encontró m3u8 en el embed");
+            return null;
         }
-        return null;
+
+        return probeM3u8Quality(streamUrl, headers).then(function(q) {
+            return {
+                url: streamUrl,
+                quality: q,
+                server: "Vimeos",
+                headers: headers
+            };
+        });
     })
-    .catch(function() { return null; });
+    .catch(function(err) {
+        log("resolveVimeos error", err && err.message);
+        return null;
+    });
 }
 
 // ==========================================
@@ -194,38 +248,77 @@ function resolveVimeos(fileCode) {
 // ==========================================
 
 function fetchFileCode(tmdbId, isTv, seasonNum, episodeNum) {
-    var endpoint = "";
+    var id = encodeURIComponent(tmdbId);
+
     if (!isTv) {
         // Película: /v1/items/movie/{tmdbId}
-        endpoint = API_BASE + "/v1/items/movie/" + tmdbId;
-        return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
-            .then(function(res) {
-                if (!res.ok) return null;
-                return res.json();
-            })
+        return fetchJson(API_BASE + "/v1/items/movie/" + id, API_RETRIES)
             .then(function(json) {
-                if (json && json.item && json.item.code) {
-                    return json.item.code;
-                }
-                return null;
-            })
-            .catch(function() { return null; });
-    } else {
-        // Serie: /v1/items/tvshow/{tmdbId}/seasons/{season}/episodes/{episode}
-        endpoint = API_BASE + "/v1/items/tvshow/" + tmdbId + "/seasons/" + seasonNum + "/episodes/" + episodeNum;
-        return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
-            .then(function(res) {
-                if (!res.ok) return null;
-                return res.json();
-            })
-            .then(function(json) {
-                if (json && json.episode && json.episode.code) {
-                    return json.episode.code;
-                }
-                return null;
-            })
-            .catch(function() { return null; });
+                return json && json.item && json.item.code ? json.item.code : null;
+            });
     }
+
+    // Serie: /v1/items/tvshow/{tmdbId}/seasons/{season}/episodes/{episode}
+    var url = API_BASE + "/v1/items/tvshow/" + id +
+        "/seasons/" + encodeURIComponent(seasonNum) +
+        "/episodes/" + encodeURIComponent(episodeNum);
+
+    return fetchJson(url, API_RETRIES)
+        .then(function(json) {
+            return json && json.episode && json.episode.code ? json.episode.code : null;
+        });
+}
+
+// ==========================================
+// 5.1 SOPORTE DE IDS CINEMETA (IMDb) -> TMDB
+// ==========================================
+
+var tmdbIdCache = {};
+
+// Acepta: "123", "tmdb:123", "tt1234567", "tt1234567:1:2" (formato Stremio/Cinemeta)
+function parseMediaId(rawId) {
+    var str = String(rawId).trim();
+    if (str.indexOf("tmdb:") === 0) str = str.slice(5);
+    var parts = str.split(":");
+    var out = { id: parts[0], season: null, episode: null };
+    if (parts.length >= 3) {
+        var ps = parseInt(parts[1], 10);
+        var pe = parseInt(parts[2], 10);
+        out.season = isNaN(ps) ? null : ps;
+        out.episode = isNaN(pe) ? null : pe;
+    }
+    return out;
+}
+
+function resolveTmdbId(id, isTv) {
+    if (!/^tt\d+$/i.test(id)) return Promise.resolve(id); // ya es un ID de TMDB
+
+    var cacheKey = (isTv ? "tv:" : "movie:") + id;
+    if (tmdbIdCache[cacheKey]) return Promise.resolve(tmdbIdCache[cacheKey]);
+
+    if (!TMDB_API_KEY) {
+        log("Llegó un ID de IMDb pero TMDB_API_KEY está vacía");
+        return Promise.resolve(null);
+    }
+
+    var url = TMDB_API + "/find/" + encodeURIComponent(id) +
+              "?external_source=imdb_id&api_key=" + encodeURIComponent(TMDB_API_KEY);
+
+    return fetchWithTimeout(url, { headers: { "Accept": "application/json" } }, API_TIMEOUT)
+        .then(function(res) { return res.ok ? res.json() : null; })
+        .then(function(json) {
+            if (!json) return null;
+            var list = isTv ? json.tv_results : json.movie_results;
+            if (list && list.length && list[0].id) {
+                tmdbIdCache[cacheKey] = String(list[0].id);
+                return tmdbIdCache[cacheKey];
+            }
+            return null;
+        })
+        .catch(function(err) {
+            log("resolveTmdbId error", err && err.message);
+            return null;
+        });
 }
 
 // ==========================================
@@ -235,11 +328,21 @@ function fetchFileCode(tmdbId, isTv, seasonNum, episodeNum) {
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
 
-    var isTv = mediaType === "tv" || mediaType === "series";
-    var s = parseInt(seasonNum || 1, 10);
-    var e = parseInt(episodeNum || 1, 10);
+    log("getStreams", tmdbId, mediaType, seasonNum, episodeNum);
 
-    return fetchFileCode(tmdbId, isTv, s, e).then(function(fileCode) {
+    var isTv = mediaType === "tv" || mediaType === "series";
+    var parsed = parseMediaId(tmdbId);
+
+    // Prioriza los parámetros explícitos; si no vienen, usa lo que trae el ID (tt123:1:2)
+    var s = seasonNum != null ? parseInt(seasonNum, 10) : parsed.season;
+    var e = episodeNum != null ? parseInt(episodeNum, 10) : parsed.episode;
+    if (s == null || isNaN(s)) s = 1;
+    if (e == null || isNaN(e)) e = 1;
+
+    return resolveTmdbId(parsed.id, isTv).then(function(realId) {
+        if (!realId) return null;
+        return fetchFileCode(realId, isTv, s, e);
+    }).then(function(fileCode) {
         if (!fileCode) return [];
 
         return resolveVimeos(fileCode).then(function(stream) {
@@ -249,15 +352,13 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     title: stream.quality + " · " + stream.server + " (Latino)",
                     url: stream.url,
                     quality: stream.quality,
-                    headers: stream.headers || {
-                        "User-Agent": USER_AGENT,
-                        "Referer": "https://vimeos.net/"
-                    }
+                    headers: stream.headers
                 }];
             }
             return [];
         });
-    }).catch(function() {
+    }).catch(function(err) {
+        log("getStreams error", err && err.message);
         return [];
     });
 }
