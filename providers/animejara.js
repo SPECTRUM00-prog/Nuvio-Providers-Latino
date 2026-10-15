@@ -1,13 +1,12 @@
 /**
  * Provider: AnimeJara (Anime Series y Películas en Sub, Latino y Castellano)
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
- * Reglas Hermes: ES5 estricto, Zero-Dependencies, Fast Timeout (<= 3000ms).
+ * Reglas Hermes: ES5 estricto, Zero-Dependencies, Fast Timeout (<= 2800ms).
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://animejara.com";
 var AJAX_URL = BASE_URL + "/wp-admin/admin-ajax.php";
-var MULTIPLAYER_HOST = "multiplayer.streamhj.top";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
 var DEFAULT_HEADERS = {
@@ -289,30 +288,18 @@ function resolveMp4upload(url) {
             if (!html) return null;
 
             var quality = "720p";
-            if (html.indexOf("FHD") !== -1 || html.indexOf("fhd.png") !== -1 || html.indexOf("1080") !== -1) {
+            if (html.indexOf("FHD") !== -1 || html.indexOf("1080") !== -1) {
                 quality = "1080p";
-            } else if (html.indexOf("HD") !== -1 || html.indexOf("hd.png") !== -1 || html.indexOf("720") !== -1) {
+            } else if (html.indexOf("HD") !== -1 || html.indexOf("720") !== -1) {
                 quality = "720p";
             } else if (html.indexOf("SD") !== -1 || html.indexOf("480") !== -1) {
                 quality = "480p";
             }
 
-            var unpacked = unpackDeanEdwards(html);
-            if (unpacked) {
-                var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
-                               unpacked.match(/(?:src|file)\s*:\s*["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
-                               unpacked.match(/["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
-                if (srcMatch) {
-                    return { url: srcMatch[1], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
-                }
-            }
-
-            var directMatch = html.match(/(?:src|file)\s*:\s*["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i) ||
-                              html.match(/["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i);
+            var directMatch = html.match(/(?:src|file)\s*:\s*["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i);
             if (directMatch) {
                 return { url: directMatch[1], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
             }
-
             return null;
         })
         .catch(function() { return null; });
@@ -346,53 +333,9 @@ function resolveYourUpload(url) {
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             var fileMatch = html.match(/file:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
-                            html.match(/property=["']og:video["']\s*content=["']([^"']+)["']/i) ||
-                            html.match(/<source[^>]+src=["']([^"']+\.mp4[^"']*)["']/i);
+                            html.match(/property=["']og:video["']\s*content=["']([^"']+)["']/i);
             if (fileMatch) {
                 return { url: fileMatch[1], quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": realUrl } };
-            }
-            return null;
-        })
-        .catch(function() { return null; });
-}
-
-function resolveUqload(url) {
-    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
-        .then(function(html) {
-            var direct = html.match(/sources:\s*\[["'](https?:\/\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i) ||
-                         html.match(/sources:\s*\[\{\s*file:\s*["']([^"']+\.mp4[^"']*)["']/i);
-            if (direct) {
-                return { url: direct[1], quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
-            }
-            return null;
-        })
-        .catch(function() { return null; });
-}
-
-function resolveMixdrop(url) {
-    var embedUrl = url.replace("/f/", "/e/");
-    if (embedUrl.indexOf("http") !== 0) embedUrl = "https:" + embedUrl;
-
-    return fetchWithTimeout(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
-        .then(function(html) {
-            if (!html) return null;
-            var directMatch = html.match(/MDCore\.(?:wurl|vurl)\s*=\s*["']([^"']+)["']/i);
-            if (directMatch) {
-                var vUrl = directMatch[1];
-                if (vUrl.indexOf("//") === 0) vUrl = "https:" + vUrl;
-                return { url: vUrl, quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
-            }
-            var unpacked = unpackDeanEdwards(html);
-            if (unpacked) {
-                var match = unpacked.match(/MDCore\.(?:wurl|vurl)\s*=\s*["']([^"']+)["']/i) ||
-                            unpacked.match(/["'](https?:\/\/[a-zA-Z0-9.-]+(?:\.delivery\.mxcontent\.net|\.mixdrop)[^"'\s<>]+\.mp4[^"'\s<>]*)["']/i);
-                if (match) {
-                    var finalUrl = match[1];
-                    if (finalUrl.indexOf("//") === 0) finalUrl = "https:" + finalUrl;
-                    return { url: finalUrl, quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
-                }
             }
             return null;
         })
@@ -409,14 +352,12 @@ function dispatchResolver(rawUrl) {
     if (u.indexOf("mp4upload") !== -1) return resolveMp4upload(rawUrl);
     if (u.indexOf("streamtape") !== -1 || u.indexOf("tapecontent") !== -1) return resolveStreamtape(rawUrl);
     if (u.indexOf("yourupload") !== -1 || u.indexOf("nyuu.streamhj") !== -1) return resolveYourUpload(rawUrl);
-    if (u.indexOf("uqload") !== -1) return resolveUqload(rawUrl);
-    if (u.indexOf("mixdrop") !== -1 || u.indexOf("mxdrop") !== -1 || u.indexOf("miixdrop") !== -1) return resolveMixdrop(rawUrl);
 
     return Promise.resolve(null);
 }
 
 // ==========================================
-// CONSULTAS API Y MULTIPLAYER
+// CONSULTAS API Y MULTIPLAYER MULTI-IDIOMA
 // ==========================================
 
 function searchAnimeJara(query) {
@@ -452,38 +393,36 @@ function searchMultiQuery(queries) {
     return tryNext(0);
 }
 
-function extractMultiplayerUrlsFromHtml(html, sNum, eNum, absoluteEp) {
+// Extrae array 'enlaces' con mapeo de idiomas exacto
+function extractMultiplayerUrlsFromHtml(html) {
     if (!html) return [];
     var multiplayers = [];
 
-    // 1. Iframes directos de StreamHJ
-    var iframeRegex = /<iframe[^>]+src=["']([^"']*(?:multiplayer\.streamhj\.top|streamhj\.top)[^"']*)["']/gi;
-    var ifMatch;
-    while ((ifMatch = iframeRegex.exec(html)) !== null) {
-        var src = ifMatch[1].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
-        if (src.indexOf("//") === 0) src = "https:" + src;
-        if (multiplayers.indexOf(src) === -1) multiplayers.push(src);
+    // 1. Extraer el array javascript `enlaces = ["...","...","..."]`
+    var enlacesMatch = html.match(/(?:const|var|let)\s+enlaces\s*=\s*\[([\s\S]*?)\];/i);
+    if (enlacesMatch) {
+        var rawContent = enlacesMatch[1].replace(/\\\//g, "/");
+        var urlRegex = /https?:\/\/[^"'\s,]+/g;
+        var m;
+        var idx = 0;
+        var langOrder = ["LAT", "SUB", "CAS"]; // Orden nativo de botones en AnimeJara
+
+        while ((m = urlRegex.exec(rawContent)) !== null) {
+            var cleanUrl = m[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
+            var lang = (idx < langOrder.length) ? langOrder[idx] : "SUB";
+            multiplayers.push({ url: cleanUrl, lang: lang });
+            idx++;
+        }
     }
 
-    // 2. URLs completas de multiplayer en scripts
-    var multiRegex = /https?:\/\/multiplayer\.streamhj\.top\/[a-zA-Z0-9_/.-]+\.php\?[^"'\s<>]+/gi;
-    var mMatch;
-    while ((mMatch = multiRegex.exec(html)) !== null) {
-        var fullUrl = mMatch[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
-        if (multiplayers.indexOf(fullUrl) === -1) multiplayers.push(fullUrl);
-    }
-
-    // 3. Extracción de idanime
-    var idAnimeRegex = /(?:idanime\s*=\s*["']?|data-idanime\s*=\s*["']?|var\s+idanime\s*=\s*["']?|idanime\s*:\s*["']?)(\d+)/gi;
-    var idMatch;
-    while ((idMatch = idAnimeRegex.exec(html)) !== null) {
-        var id = idMatch[1];
-        var urlRel = "https://" + MULTIPLAYER_HOST + "/player/multiplayer/embed.php?idanime=" + id + "&idcapitulo=" + eNum;
-        if (multiplayers.indexOf(urlRel) === -1) multiplayers.push(urlRel);
-
-        if (absoluteEp && absoluteEp !== eNum) {
-            var urlAbs = "https://" + MULTIPLAYER_HOST + "/player/multiplayer/embed.php?idanime=" + id + "&idcapitulo=" + absoluteEp;
-            if (multiplayers.indexOf(urlAbs) === -1) multiplayers.push(urlAbs);
+    // 2. Fallback: Si no había array 'enlaces', extraer del iframe principal
+    if (multiplayers.length === 0) {
+        var ifMatch = html.match(/<iframe[^>]+id=["']iframe-video["'][^>]+src=["']([^"']+)["']/i) ||
+                      html.match(/<iframe[^>]+src=["']([^"']*(?:multiplayer\.streamhj\.top)[^"']*)["']/i);
+        if (ifMatch) {
+            var src = ifMatch[1].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
+            if (src.indexOf("//") === 0) src = "https:" + src;
+            multiplayers.push({ url: src, lang: "LAT" });
         }
     }
 
@@ -509,8 +448,6 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) 
             pageUrls.push(BASE_URL + "/episode/" + slug + "-" + eNum + "/");
             pageUrls.push(BASE_URL + "/episode/" + slug + "-episodio-" + eNum + "/");
         }
-
-        pageUrls.push(BASE_URL + "/anime/" + slug);
     }
 
     function tryNextPage(pIdx) {
@@ -522,24 +459,8 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) 
             .then(function(html) {
                 if (!html || html.length < 150) return tryNextPage(pIdx + 1);
 
-                var multiplayers = extractMultiplayerUrlsFromHtml(html, sNum, eNum, absoluteEp);
+                var multiplayers = extractMultiplayerUrlsFromHtml(html);
                 if (multiplayers.length > 0) return multiplayers;
-
-                if (targetPage.indexOf("/anime/") !== -1) {
-                    var epMatch = html.match(new RegExp('href=["\']([^"\']*(?:episode|ver)\/[^"\']*(?:-' + sNum + 'x' + eNum + '|-' + eNum + '|-' + (absoluteEp || 0) + ')[^"\']*)["\']', 'i'));
-                    if (epMatch && epMatch[1]) {
-                        var specificEpUrl = epMatch[1];
-                        if (specificEpUrl.indexOf("http") !== 0) {
-                            specificEpUrl = BASE_URL + (specificEpUrl.indexOf("/") === 0 ? "" : "/") + specificEpUrl;
-                        }
-                        return fetchWithTimeout(specificEpUrl, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2800)
-                            .then(function(r) { return r ? r.text() : ""; })
-                            .then(function(epHtml) {
-                                return extractMultiplayerUrlsFromHtml(epHtml, sNum, eNum, absoluteEp);
-                            })
-                            .catch(function() { return tryNextPage(pIdx + 1); });
-                    }
-                }
 
                 return tryNextPage(pIdx + 1);
             })
@@ -551,7 +472,10 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) 
     return tryNextPage(0);
 }
 
-function extractStreamsFromMultiplayerUrl(playerUrl) {
+function extractStreamsFromMultiplayerUrl(item) {
+    var playerUrl = item.url;
+    var defaultLang = item.lang || "SUB";
+
     return fetchWithTimeout(playerUrl, {
         headers: {
             "User-Agent": USER_AGENT,
@@ -559,23 +483,13 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
             "Origin": BASE_URL
         },
         redirect: "follow"
-    }, 3000)
+    }, 2800)
     .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
         if (!html || html.length < 50) return [];
 
         var cleanHtml = decodeHtmlEntities(html).replace(/\\\//g, "/");
-
-        var lang = "SUB";
-        var titleHeaderMatch = cleanHtml.match(/<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i);
-        var headerText = titleHeaderMatch ? titleHeaderMatch[1].toUpperCase() : cleanHtml.toUpperCase();
-
-        if (headerText.indexOf("LATINO") !== -1 || headerText.indexOf(" LAT ") !== -1 || headerText.indexOf("- LAT") !== -1) {
-            lang = "LAT";
-        } else if (headerText.indexOf("CASTELLANO") !== -1 || headerText.indexOf(" CAS ") !== -1 || headerText.indexOf("ESP") !== -1) {
-            lang = "CAS";
-        } else if (headerText.indexOf("SUB") !== -1 || headerText.indexOf("JAPONES") !== -1) {
-            lang = "SUB";
+        var lang = defaultLang;
 
         var serverUrls = [];
 
@@ -588,21 +502,12 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
             }
         }
 
-        var lockerRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:streamwish|hlswish|flaswish|hgcloud|audinifer|vibuxer|filemoon|byse|bysekoze|vidhide|filelions|minochinos|callistanise|mp4upload|streamtape|tapecontent|yourupload|uqload|mixdrop|mxdrop|miixdrop)\.[a-z]{2,8}(?::\d+)?\/[^\s"'<>]+/gi;
+        var lockerRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:streamwish|hlswish|flaswish|hgcloud|audinifer|vibuxer|filemoon|byse|bysekoze|vidhide|filelions|minochinos|callistanise|mp4upload|streamtape|tapecontent|yourupload)\.[a-z]{2,8}(?::\d+)?\/[^\s"'<>]+/gi;
         var lMatch;
         while ((lMatch = lockerRegex.exec(cleanHtml)) !== null) {
             var directLocker = lMatch[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&").replace(/\\/g, "");
             if (directLocker && serverUrls.indexOf(directLocker) === -1) {
                 serverUrls.push(directLocker);
-            }
-        }
-
-        var puenteRegex = /nyuu\.streamhj\.top\/go\.php\?v=(https?:\/\/[^\s"'<>]+)/gi;
-        var puMatch;
-        while ((puMatch = puenteRegex.exec(cleanHtml)) !== null) {
-            var unwrapped = decodeURIComponent(puMatch[1]);
-            if (unwrapped && serverUrls.indexOf(unwrapped) === -1) {
-                serverUrls.push(unwrapped);
             }
         }
 
@@ -703,13 +608,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     if (aIdx >= topCandidates.length) return Promise.resolve([]);
                     var targetAnime = topCandidates[aIdx].anime;
 
-                    return resolveEpisodeMultiplayers(targetAnime, sNum, eNum, isMovie, absoluteEp).then(function(multiUrls) {
-                        if (!multiUrls || multiUrls.length === 0) {
+                    return resolveEpisodeMultiplayers(targetAnime, sNum, eNum, isMovie, absoluteEp).then(function(multiItems) {
+                        if (!multiItems || multiItems.length === 0) {
                             return tryNextAnime(aIdx + 1);
                         }
 
-                        var fetchPromises = multiUrls.map(function(mUrl) {
-                            return extractStreamsFromMultiplayerUrl(mUrl);
+                        // Resolver en paralelo todos los idiomas del episodio
+                        var fetchPromises = multiItems.map(function(item) {
+                            return extractStreamsFromMultiplayerUrl(item);
                         });
 
                         return Promise.all(fetchPromises).then(function(allResults) {
