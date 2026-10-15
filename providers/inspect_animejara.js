@@ -1,108 +1,182 @@
 /**
- * Script de auditoría e inspección para AnimeJara
+ * Script de auditoría e inspección técnica para AnimeJara
  * Ejecución: node providers/inspect_animejara.js "jujutsu kaisen"
  */
 
 var query = process.argv[2] || "jujutsu kaisen";
 var BASE_URL = "https://animejara.com";
-var AJAX_URL = BASE_URL + "/wp-admin/admin-ajax.php";
-var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-var headers = {
+var defaultHeaders = {
     "User-Agent": USER_AGENT,
-    "Accept": "application/json, text/javascript, */*; q=0.01",
-    "Referer": BASE_URL + "/",
-    "X-Requested-With": "XMLHttpRequest"
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "Referer": BASE_URL + "/"
 };
 
-console.log("=== 1. AUDITANDO BÚSQUEDA AJAX ===");
-console.log("Consultando query: \"" + query + "\" en " + AJAX_URL);
+function checkCloudflare(headers, html) {
+    var isCfServer = (headers.get("server") || "").toLowerCase().indexOf("cloudflare") !== -1;
+    var cfRay = headers.get("cf-ray");
+    var hasChallenge = html.indexOf("Just a moment...") !== -1 || 
+                       html.indexOf("cf-mitigated") !== -1 || 
+                       html.indexOf("challenge-platform") !== -1 ||
+                       html.indexOf("turnstile") !== -1;
 
-fetch(AJAX_URL, {
-    method: "POST",
-    headers: {
-        "User-Agent": USER_AGENT,
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "Referer": BASE_URL + "/",
-        "X-Requested-With": "XMLHttpRequest"
-    },
-    body: "action=live_search&s=" + encodeURIComponent(query)
-})
+    console.log("   [Cloudflare Header 'Server']:", isCfServer ? "SÍ (Cloudflare activo)" : "No");
+    console.log("   [Cloudflare 'cf-ray']:", cfRay || "Ninguno");
+    console.log("   [Página de Desafío/Captcha]:", hasChallenge ? "¡BLOQUEADO POR CHALLENGE!" : "Limpio (HTML accesible)");
+    return hasChallenge;
+}
+
+console.log("=================================================================");
+console.log(">>> PASO 1: TEST DE ACCESO AL HOME Y DETECCIÓN CLOUDFLARE <<<");
+console.log("=================================================================");
+
+fetch(BASE_URL + "/", { headers: defaultHeaders })
 .then(function(res) {
     console.log("-> Status HTTP:", res.status, res.statusText);
-    return res.text();
-})
-.then(function(text) {
-    console.log("-> Longitud de respuesta:", text.length);
-    console.log("-> Primeros 300 caracteres:");
-    console.log(text.substring(0, 300));
-
-    try {
-        var json = JSON.parse(text);
-        console.log("\n[+] Búsqueda AJAX parseada con éxito:");
-        console.log(JSON.stringify(json, null, 2).substring(0, 500) + "...\n");
-    } catch(e) {
-        console.log("\n[-] No es JSON válido o devolvió HTML/Desafío.");
-    }
-
-    console.log("=== 2. AUDITANDO PÁGINA DEL ANIME ===");
-    var animeUrl = BASE_URL + "/anime/jujutsu-kaisen";
-    console.log("Descargando: " + animeUrl);
-
-    return fetch(animeUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
+    var isCf = (res.headers.get("server") || "").indexOf("cloudflare") !== -1;
+    return res.text().then(function(html) {
+        checkCloudflare(res.headers, html);
+        console.log("-> Bytes recibidos:", html.length);
+        return { status: res.status, html: html };
     });
 })
-.then(function(res) {
-    console.log("-> Status HTTP Anime:", res.status);
-    return res.text();
-})
-.then(function(html) {
-    console.log("-> Tamaño HTML:", html.length);
+.then(function(homeData) {
+    console.log("\n=================================================================");
+    console.log(">>> PASO 2: AUDITANDO BÚSQUEDA (AJAX POST vs BÚSQUEDA GET) <<<");
+    console.log("=================================================================");
 
-    // Buscar cómo estructuran los enlaces de episodios
-    var epMatches = [];
-    var regex = /href=["']([^"']*(?:episode|ver|capitulo)[^"']*)["']/gi;
-    var m;
-    while ((m = regex.exec(html)) !== null) {
-        if (epMatches.indexOf(m[1]) === -1) epMatches.push(m[1]);
-    }
+    var ajaxUrl = BASE_URL + "/wp-admin/admin-ajax.php";
+    var ajaxHeaders = {
+        "User-Agent": USER_AGENT,
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Referer": BASE_URL + "/"
+    };
 
-    console.log("\n[+] Enlaces de episodios encontrados en el HTML (" + epMatches.length + "):");
-    console.log(epMatches.slice(0, 5));
+    console.log("[A] Probando AJAX live_search en:", ajaxUrl);
+    return fetch(ajaxUrl, {
+        method: "POST",
+        headers: ajaxHeaders,
+        body: "action=live_search&s=" + encodeURIComponent(query)
+    })
+    .then(function(res) {
+        console.log("   -> AJAX Status:", res.status);
+        return res.text().then(function(text) {
+            checkCloudflare(res.headers, text);
+            console.log("   -> Tamaño respuesta AJAX:", text.length);
+            console.log("   -> Primeros 200 caracteres:", text.substring(0, 200).replace(/\r?\n/g, " "));
 
-    // Buscar si tienen IDs del anime o datos para el reproductor
-    var idAnime = html.match(/(?:idanime|data-idanime|data-id)\s*[:=]\s*["']?(\d+)/i);
-    console.log("\n[+] ID del Anime detectado en HTML:", idAnime ? idAnime[1] : "No encontrado");
-
-    // Probar estructura de un episodio directo si existe
-    var testEp = epMatches[0] || (BASE_URL + "/episode/jujutsu-kaisen-1x1/");
-    if (testEp.indexOf("http") !== 0) testEp = BASE_URL + testEp;
-    
-    console.log("\n=== 3. AUDITANDO PÁGINA DEL EPISODIO ===");
-    console.log("Descargando episodio de prueba:", testEp);
-
-    return fetch(testEp, {
-        headers: { "User-Agent": USER_AGENT, "Referer": animeUrl }
+            try {
+                var json = JSON.parse(text);
+                console.log("   [+] AJAX devolvió JSON válido con éxito.");
+                return { type: "ajax", data: json };
+            } catch (e) {
+                console.log("   [-] AJAX no devolvió JSON directo. Probando método B (GET search)...");
+                var searchGetUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
+                return fetch(searchGetUrl, { headers: defaultHeaders })
+                .then(function(gRes) {
+                    console.log("   -> GET Search Status:", gRes.status);
+                    return gRes.text().then(function(gHtml) {
+                        return { type: "html", data: gHtml };
+                    });
+                });
+            }
+        });
     });
 })
-.then(function(res) {
-    console.log("-> Status HTTP Episodio:", res.status);
-    return res.text();
-})
-.then(function(epHtml) {
-    console.log("-> Tamaño HTML Episodio:", epHtml.length);
+.then(function(searchResult) {
+    var targetAnimeUrl = null;
 
-    // Buscar iframes o scripts del reproductor
-    var iframes = [];
-    var ifRegex = /<iframe[^>]+src=["']([^"']+)["']/gi;
-    var im;
-    while ((im = ifRegex.exec(epHtml)) !== null) {
-        iframes.push(im[1]);
+    if (searchResult.type === "ajax" && typeof searchResult.data === "object") {
+        // En temas Dooplay, las keys suelen ser títulos o URLs
+        var str = JSON.stringify(searchResult.data);
+        var match = str.match(/https?:\\\/\\\/animejara\.com\\\/anime\\\/([a-zA-Z0-9\-_]+)/);
+        if (match) targetAnimeUrl = BASE_URL + "/anime/" + match[1];
+    } else if (searchResult.type === "html") {
+        var hrefMatch = searchResult.data.match(/href=["'](https?:\/\/animejara\.com\/(?:anime|series)\/[^"']+)["']/i);
+        if (hrefMatch) targetAnimeUrl = hrefMatch[1];
     }
-    console.log("\n[+] Iframes detectados en el episodio:");
-    console.log(iframes);
+
+    if (!targetAnimeUrl) {
+        // Fallback para comprobar estructura si la búsqueda no extrae URL directa
+        targetAnimeUrl = BASE_URL + "/anime/jujutsu-kaisen";
+        console.log("\n[-] No se extrajo URL dinámica del buscador. Usando slug de prueba:", targetAnimeUrl);
+    } else {
+        console.log("\n[+] Slug del anime encontrado:", targetAnimeUrl);
+    }
+
+    console.log("\n=================================================================");
+    console.log(">>> PASO 3: AUDITANDO FICHA DEL ANIME Y LISTA DE EPISODIOS <<<");
+    console.log("=================================================================");
+
+    return fetch(targetAnimeUrl, { headers: defaultHeaders })
+    .then(function(res) {
+        console.log("-> Status HTTP Ficha:", res.status);
+        return res.text().then(function(html) {
+            checkCloudflare(res.headers, html);
+            console.log("-> Tamaño HTML Ficha:", html.length);
+
+            // Extracción de episodios
+            var epLinks = [];
+            var epRegex = /href=["']([^"']*(?:episode|ver|capitulo)[^"']*)["']/gi;
+            var m;
+            while ((m = epRegex.exec(html)) !== null) {
+                if (epLinks.indexOf(m[1]) === -1) epLinks.push(m[1]);
+            }
+
+            console.log("-> Enlaces de episodios encontrados (" + epLinks.length + "):");
+            console.log(epLinks.slice(0, 5));
+
+            var targetEpUrl = epLinks[0] || (BASE_URL + "/episode/jujutsu-kaisen-1x1/");
+            if (targetEpUrl.indexOf("http") !== 0) targetEpUrl = BASE_URL + targetEpUrl;
+
+            return { animeUrl: targetAnimeUrl, epUrl: targetEpUrl };
+        });
+    });
+})
+.then(function(paths) {
+    console.log("\n=================================================================");
+    console.log(">>> PASO 4: AUDITANDO PÁGINA DEL EPISODIO Y SERVIDORES <<<");
+    console.log("=================================================================");
+    console.log("Descargando episodio:", paths.epUrl);
+
+    var epHeaders = {
+        "User-Agent": USER_AGENT,
+        "Referer": paths.animeUrl,
+        "Accept": defaultHeaders.Accept
+    };
+
+    return fetch(paths.epUrl, { headers: epHeaders })
+    .then(function(res) {
+        console.log("-> Status HTTP Episodio:", res.status);
+        return res.text().then(function(html) {
+            checkCloudflare(res.headers, html);
+            console.log("-> Tamaño HTML Episodio:", html.length);
+
+            // Buscar iframes
+            var iframes = [];
+            var ifRegex = /<iframe[^>]+src=["']([^"']+)["']/gi;
+            var im;
+            while ((im = ifRegex.exec(html)) !== null) {
+                if (iframes.indexOf(im[1]) === -1) iframes.push(im[1]);
+            }
+            console.log("\n[+] Iframes directos encontrados:", iframes);
+
+            // Buscar llamadas Dooplay doo_player_ajax (data-post / data-nume)
+            var playerMatches = [];
+            var dooplayRegex = /data-post=["'](\d+)["'][^>]*data-nume=["'](\d+)["']/gi;
+            var dm;
+            while ((dm = dooplayRegex.exec(html)) !== null) {
+                playerMatches.push({ post: dm[1], num: dm[2] });
+            }
+            console.log("[+] Botones del reproductor Dooplay detectados:", playerMatches);
+
+            console.log("\n=== FIN DE LA INSPECCIÓN TÉCNICA ===");
+        });
+    });
 })
 .catch(function(err) {
-    console.error("\n[-] Error durante la auditoría:", err.message);
+    console.error("\n[-] ERROR CRÍTICO DURANTE LA INSPECCIÓN:", err.message);
 });
