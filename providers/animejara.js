@@ -1,27 +1,27 @@
 /**
  * Provider: AnimeJara (Anime Series y Películas en Sub, Latino y Castellano)
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
- * Rendimiento: Multi-Server Exhaustivo, Zero-Dependencies, Fast Timeout.
+ * Reglas Hermes: ES5 estricto, Zero-Dependencies, Fast Timeout (<= 3000ms).
  */
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const BASE_URL = "https://animejara.com";
-const AJAX_URL = `${BASE_URL}/wp-admin/admin-ajax.php`;
-const MULTIPLAYER_HOST = "multiplayer.streamhj.top";
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var BASE_URL = "https://animejara.com";
+var AJAX_URL = BASE_URL + "/wp-admin/admin-ajax.php";
+var MULTIPLAYER_HOST = "multiplayer.streamhj.top";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-const DEFAULT_HEADERS = {
+var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Referer": `${BASE_URL}/`
+    "Referer": BASE_URL + "/"
 };
 
 // ==========================================
-// UTILIDADES, TIMEOUT Y NORMALIZACIÓN
+// UTILIDADES, TIMEOUT Y NORMALIZACIÓN (HERMES SAFE)
 // ==========================================
 
 function fetchWithTimeout(url, options, timeoutMs) {
-    var timeout = timeoutMs || 4500;
+    var timeout = timeoutMs || 2800;
     return Promise.race([
         fetch(url, options),
         new Promise(function(_, reject) {
@@ -150,15 +150,15 @@ function unpackDeanEdwards(p, a, c, k) {
 function probeM3u8Quality(m3u8Url, headers) {
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
-    return fetchWithTimeout(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" }, 3000)
+    return fetchWithTimeout(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" }, 2800)
         .then(function(res) {
             if (!res || !res.ok) return "720p";
             return res.text();
         })
         .then(function(text) {
             if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
-                if (/1080/i.test(m3u8Url)) return "1080p";
-                if (/720/i.test(m3u8Url)) return "720p";
+                if (m3u8Url.indexOf("1080") !== -1) return "1080p";
+                if (m3u8Url.indexOf("720") !== -1) return "720p";
                 return "720p";
             }
 
@@ -203,7 +203,7 @@ function resolveStreamWish(url) {
     var idMatch = url.match(/\/(?:e|v|f)\/([a-zA-Z0-9]+)/);
     var targetUrl = idMatch ? "https://hlswish.com/e/" + idMatch[1] : url;
 
-    return fetchWithTimeout(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" }, 3500)
+    return fetchWithTimeout(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" }, 2800)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
@@ -227,7 +227,7 @@ function resolveStreamWish(url) {
 }
 
 function resolveFilemoon(url) {
-    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 3500)
+    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 2800)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
@@ -251,7 +251,7 @@ function resolveFilemoon(url) {
 }
 
 function resolveVidHide(url) {
-    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 3500)
+    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 2800)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             var direct = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
@@ -283,7 +283,7 @@ function resolveMp4upload(url) {
         }
     }
 
-    return fetchWithTimeout(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" }, redirect: "follow" }, 3500)
+    return fetchWithTimeout(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" }, redirect: "follow" }, 2800)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             if (!html) return null;
@@ -322,7 +322,7 @@ function resolveStreamtape(url) {
     var targetUrl = url.replace("/v/", "/e/");
     if (targetUrl.indexOf("http") !== 0) targetUrl = "https://" + targetUrl.replace(/^\/\//, "");
 
-    return fetchWithTimeout(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" }, 3500)
+    return fetchWithTimeout(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" }, 2800)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             var match = html.match(/document\.getElementById\(['"](?:robotlink|ideoolink|noroot)['"]\)\.innerHTML\s*=\s*['"]([^'"]+)['"]\s*\+\s*(?:\(['"]([^'"]+)['"]\)\.substring\((\d+)\)|['"]([^'"]+)['"])/i);
@@ -342,7 +342,7 @@ function resolveYourUpload(url) {
         if (vPart) realUrl = decodeURIComponent(vPart);
     }
 
-    return fetchWithTimeout(realUrl, { headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` }, redirect: "follow" }, 3500)
+    return fetchWithTimeout(realUrl, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }, redirect: "follow" }, 2800)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             var fileMatch = html.match(/file:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
@@ -357,7 +357,7 @@ function resolveYourUpload(url) {
 }
 
 function resolveUqload(url) {
-    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 3500)
+    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 2800)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             var direct = html.match(/sources:\s*\[["'](https?:\/\/[^"'\s<>]+\.mp4(?:\?[^"'\s<>]*)?)["']/i) ||
@@ -374,7 +374,7 @@ function resolveMixdrop(url) {
     var embedUrl = url.replace("/f/", "/e/");
     if (embedUrl.indexOf("http") !== 0) embedUrl = "https:" + embedUrl;
 
-    return fetchWithTimeout(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }, redirect: "follow" }, 3500)
+    return fetchWithTimeout(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }, redirect: "follow" }, 2800)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             if (!html) return null;
@@ -426,11 +426,11 @@ function searchAnimeJara(query) {
         method: "POST",
         headers: {
             "User-Agent": USER_AGENT,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "Referer": `${BASE_URL}/`
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+            "Referer": BASE_URL + "/"
         },
         body: "action=live_search&s=" + encodeURIComponent(query)
-    }, 3500)
+    }, 2800)
     .then(function(res) { return res ? res.json() : null; })
     .then(function(json) {
         if (json && json.success && json.data && Array.isArray(json.data.animes)) {
@@ -473,7 +473,7 @@ function extractMultiplayerUrlsFromHtml(html, sNum, eNum, absoluteEp) {
         if (multiplayers.indexOf(fullUrl) === -1) multiplayers.push(fullUrl);
     }
 
-    // 3. Extracción ESTRICTA de idanime
+    // 3. Extracción de idanime
     var idAnimeRegex = /(?:idanime\s*=\s*["']?|data-idanime\s*=\s*["']?|var\s+idanime\s*=\s*["']?|idanime\s*:\s*["']?)(\d+)/gi;
     var idMatch;
     while ((idMatch = idAnimeRegex.exec(html)) !== null) {
@@ -495,30 +495,29 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) 
     var pageUrls = [];
 
     if (isMovie) {
-        pageUrls.push(`${BASE_URL}/movie/${slug}`);
-        pageUrls.push(`${BASE_URL}/movie/${slug}/`);
-        pageUrls.push(`${BASE_URL}/anime/${slug}`);
+        pageUrls.push(BASE_URL + "/movie/" + slug);
+        pageUrls.push(BASE_URL + "/movie/" + slug + "/");
+        pageUrls.push(BASE_URL + "/anime/" + slug);
     } else {
-        // Rutas canónicas directas
-        pageUrls.push(`${BASE_URL}/episode/${slug}-${sNum}x${eNum}/`);
-        pageUrls.push(`${BASE_URL}/episode/${slug}-${sNum}x${eNum}`);
+        pageUrls.push(BASE_URL + "/episode/" + slug + "-" + sNum + "x" + eNum + "/");
+        pageUrls.push(BASE_URL + "/episode/" + slug + "-" + sNum + "x" + eNum);
 
         if (absoluteEp && absoluteEp !== eNum) {
-            pageUrls.push(`${BASE_URL}/episode/${slug}-1x${absoluteEp}/`);
-            pageUrls.push(`${BASE_URL}/episode/${slug}-${absoluteEp}/`);
+            pageUrls.push(BASE_URL + "/episode/" + slug + "-1x" + absoluteEp + "/");
+            pageUrls.push(BASE_URL + "/episode/" + slug + "-" + absoluteEp + "/");
         } else {
-            pageUrls.push(`${BASE_URL}/episode/${slug}-${eNum}/`);
-            pageUrls.push(`${BASE_URL}/episode/${slug}-episodio-${eNum}/`);
+            pageUrls.push(BASE_URL + "/episode/" + slug + "-" + eNum + "/");
+            pageUrls.push(BASE_URL + "/episode/" + slug + "-episodio-" + eNum + "/");
         }
 
-        pageUrls.push(`${BASE_URL}/anime/${slug}`);
+        pageUrls.push(BASE_URL + "/anime/" + slug);
     }
 
     function tryNextPage(pIdx) {
         if (pIdx >= pageUrls.length) return Promise.resolve([]);
         var targetPage = pageUrls[pIdx];
 
-        return fetchWithTimeout(targetPage, { headers: DEFAULT_HEADERS, redirect: "follow" }, 3500)
+        return fetchWithTimeout(targetPage, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2800)
             .then(function(res) { return res ? res.text() : ""; })
             .then(function(html) {
                 if (!html || html.length < 150) return tryNextPage(pIdx + 1);
@@ -526,7 +525,6 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) 
                 var multiplayers = extractMultiplayerUrlsFromHtml(html, sNum, eNum, absoluteEp);
                 if (multiplayers.length > 0) return multiplayers;
 
-                // Escaneo en la página del anime si la ruta directa no coincidió
                 if (targetPage.indexOf("/anime/") !== -1) {
                     var epMatch = html.match(new RegExp('href=["\']([^"\']*(?:episode|ver)\/[^"\']*(?:-' + sNum + 'x' + eNum + '|-' + eNum + '|-' + (absoluteEp || 0) + ')[^"\']*)["\']', 'i'));
                     if (epMatch && epMatch[1]) {
@@ -534,7 +532,7 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) 
                         if (specificEpUrl.indexOf("http") !== 0) {
                             specificEpUrl = BASE_URL + (specificEpUrl.indexOf("/") === 0 ? "" : "/") + specificEpUrl;
                         }
-                        return fetchWithTimeout(specificEpUrl, { headers: DEFAULT_HEADERS, redirect: "follow" }, 3500)
+                        return fetchWithTimeout(specificEpUrl, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2800)
                             .then(function(r) { return r ? r.text() : ""; })
                             .then(function(epHtml) {
                                 return extractMultiplayerUrlsFromHtml(epHtml, sNum, eNum, absoluteEp);
@@ -557,16 +555,15 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
     return fetchWithTimeout(playerUrl, {
         headers: {
             "User-Agent": USER_AGENT,
-            "Referer": `${BASE_URL}/`,
+            "Referer": BASE_URL + "/",
             "Origin": BASE_URL
         },
         redirect: "follow"
-    }, 4000)
+    }, 3000)
     .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
         if (!html || html.length < 50) return [];
 
-        // Normalizar y desescapar barras invertidas JSON (\/)
         var cleanHtml = decodeHtmlEntities(html).replace(/\\\//g, "/");
 
         var lang = "SUB";
@@ -579,11 +576,9 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
             lang = "CAS";
         } else if (headerText.indexOf("SUB") !== -1 || headerText.indexOf("JAPONES") !== -1) {
             lang = "SUB";
-        }
 
         var serverUrls = [];
 
-        // 1. playVideo con URLs simples o escapadas
         var playRegex = /playVideo\((?:&quot;|["'])(https?:\/\/[^"'\s<>]+?)(?:&quot;|["'])\)/gi;
         var pMatch;
         while ((pMatch = playRegex.exec(cleanHtml)) !== null) {
@@ -593,7 +588,6 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
             }
         }
 
-        // 2. Escáner universal de enlaces directos a lockers en el HTML
         var lockerRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:streamwish|hlswish|flaswish|hgcloud|audinifer|vibuxer|filemoon|byse|bysekoze|vidhide|filelions|minochinos|callistanise|mp4upload|streamtape|tapecontent|yourupload|uqload|mixdrop|mxdrop|miixdrop)\.[a-z]{2,8}(?::\d+)?\/[^\s"'<>]+/gi;
         var lMatch;
         while ((lMatch = lockerRegex.exec(cleanHtml)) !== null) {
@@ -603,7 +597,6 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
             }
         }
 
-        // 3. Enlaces puente de YourUpload
         var puenteRegex = /nyuu\.streamhj\.top\/go\.php\?v=(https?:\/\/[^\s"'<>]+)/gi;
         var puMatch;
         while ((puMatch = puenteRegex.exec(cleanHtml)) !== null) {
@@ -621,7 +614,7 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
                 if (res && res.url) {
                     return {
                         name: "AnimeJara",
-                        title: `${res.quality || "1080p"} · ${lang} · ${sName}`,
+                        title: (res.quality || "1080p") + " · " + lang + " · " + sName,
                         quality: res.quality || "1080p",
                         url: res.url,
                         headers: res.headers || {}
@@ -643,13 +636,13 @@ function extractStreamsFromMultiplayerUrl(playerUrl) {
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
-    console.log(`[AnimeJara] Buscando TMDB ID ${tmdbId} (${mediaType})`);
+    console.log("[AnimeJara] Buscando TMDB ID " + tmdbId + " (" + mediaType + ")");
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
-    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
+    var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
-    return fetchWithTimeout(tmdbUrl, {}, 4000)
+    return fetchWithTimeout(tmdbUrl, {}, 2800)
         .then(function(res) {
             if (!res || !res.ok) throw new Error("TMDB Error");
             return res.json();
@@ -727,9 +720,16 @@ function getStreams(tmdbId, mediaType, season, episode) {
                                 }
                             }
 
-                            var uniqueStreams = streams.filter(function(st, pos, self) {
-                                return self.findIndex(function(x) { return x.url === st.url && x.title === st.title; }) === pos;
-                            });
+                            // Filtro seguro ES5 para duplicados
+                            var seen = {};
+                            var uniqueStreams = [];
+                            for (var u = 0; u < streams.length; u++) {
+                                var key = streams[u].url + "|" + streams[u].title;
+                                if (!seen[key]) {
+                                    seen[key] = true;
+                                    uniqueStreams.push(streams[u]);
+                                }
+                            }
 
                             if (uniqueStreams.length > 0) return uniqueStreams;
                             return tryNextAnime(aIdx + 1);
@@ -741,11 +741,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
             });
         })
         .then(function(streams) {
-            console.log(`[AnimeJara] ✓ ${streams.length} streams extraídos`);
+            console.log("[AnimeJara] ✓ " + streams.length + " streams extraídos");
             return streams;
         })
         .catch(function(err) {
-            console.log(`[AnimeJara] Error general: ${err.message}`);
+            console.log("[AnimeJara] Error general: " + err.message);
             return [];
         });
 }
