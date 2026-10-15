@@ -1,6 +1,6 @@
 /**
  * Provider: AnimeJara (Anime Series y Películas en Sub, Latino y Castellano)
- * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
+ * Motor: Multi-Catálogo Universal (TMDB, Cinemeta y Kitsu Safe)
  * Reglas Hermes: ES5 estricto, Zero-Dependencies, Fast Timeout (<= 2800ms).
  */
 
@@ -16,7 +16,7 @@ var DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// UTILIDADES, TIMEOUT Y NORMALIZACIÓN (HERMES SAFE)
+// 1. HELPERS DE RED & TIMEOUT (HERMES SAFE)
 // ==========================================
 
 function fetchWithTimeout(url, options, timeoutMs) {
@@ -51,9 +51,9 @@ function cleanTitle(str) {
         .trim();
 }
 
-function hasJapaneseChars(str) {
+function hasAsianChars(str) {
     if (!str) return false;
-    return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf]/.test(str);
+    return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\uac00-\ud7af]/.test(str);
 }
 
 function scoreAnime(item, titles, year, sNum) {
@@ -100,16 +100,39 @@ function scoreAnime(item, titles, year, sNum) {
     return score;
 }
 
-function getAbsoluteEpisodeNumber(meta, season, episode) {
-    if (!meta || !meta.seasons || season <= 1) return episode || 1;
+// ==========================================
+// 2. MATEMÁTICAS UNIVERSALES (TMDB / CINEMETA / KITSU)
+// ==========================================
+
+function calculateAbsoluteEp(seasons, sNum, eNum) {
+    if (!seasons || seasons.length === 0 || sNum <= 1) return eNum;
     var totalPrevious = 0;
-    for (var i = 0; i < meta.seasons.length; i++) {
-        var s = meta.seasons[i];
-        if (s.season_number > 0 && s.season_number < season) {
+    for (var i = 0; i < seasons.length; i++) {
+        var s = seasons[i];
+        if (s.season_number > 0 && s.season_number < sNum) {
             totalPrevious += (s.episode_count || 0);
         }
     }
-    return totalPrevious + (parseInt(episode, 10) || 1);
+    return totalPrevious + eNum;
+}
+
+function decomposeAbsoluteEp(seasons, absEp) {
+    if (!seasons || seasons.length === 0) return { season: 1, episode: absEp };
+    var accumulated = 0;
+    for (var i = 0; i < seasons.length; i++) {
+        var s = seasons[i];
+        if (s.season_number > 0) {
+            var count = s.episode_count || 0;
+            if (accumulated + count >= absEp) {
+                return {
+                    season: s.season_number,
+                    episode: absEp - accumulated
+                };
+            }
+            accumulated += count;
+        }
+    }
+    return { season: 1, episode: absEp };
 }
 
 function unpackDeanEdwards(p, a, c, k) {
@@ -189,13 +212,11 @@ function getServerLabel(url) {
     if (u.indexOf("mp4upload") !== -1) return "MP4Upload";
     if (u.indexOf("streamtape") !== -1 || u.indexOf("tapecontent") !== -1) return "Streamtape";
     if (u.indexOf("yourupload") !== -1 || u.indexOf("nyuu.streamhj") !== -1) return "YourUpload";
-    if (u.indexOf("uqload") !== -1) return "Uqload";
-    if (u.indexOf("mixdrop") !== -1 || u.indexOf("mxdrop") !== -1 || u.indexOf("miixdrop") !== -1) return "Mixdrop";
     return "Online";
 }
 
 // ==========================================
-// RESOLVERS DE STREAMING
+// 3. RESOLVERS DE VIDEO
 // ==========================================
 
 function resolveStreamWish(url) {
@@ -300,6 +321,7 @@ function resolveMp4upload(url) {
             if (directMatch) {
                 return { url: directMatch[1], quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": embedUrl } };
             }
+
             return null;
         })
         .catch(function() { return null; });
@@ -357,11 +379,11 @@ function dispatchResolver(rawUrl) {
 }
 
 // ==========================================
-// CONSULTAS API Y MULTIPLAYER MULTI-IDIOMA
+// 4. CONSULTAS API Y MULTIPLAYER MULTI-IDIOMA
 // ==========================================
 
 function searchAnimeJara(query) {
-    if (!query || hasJapaneseChars(query)) return Promise.resolve([]);
+    if (!query || hasAsianChars(query)) return Promise.resolve([]);
 
     return fetchWithTimeout(AJAX_URL, {
         method: "POST",
@@ -393,19 +415,18 @@ function searchMultiQuery(queries) {
     return tryNext(0);
 }
 
-// Extrae array 'enlaces' con mapeo de idiomas exacto
 function extractMultiplayerUrlsFromHtml(html) {
     if (!html) return [];
     var multiplayers = [];
 
-    // 1. Extraer el array javascript `enlaces = ["...","...","..."]`
+    // Array Javascript enlaces = ["...", "..."]
     var enlacesMatch = html.match(/(?:const|var|let)\s+enlaces\s*=\s*\[([\s\S]*?)\];/i);
     if (enlacesMatch) {
         var rawContent = enlacesMatch[1].replace(/\\\//g, "/");
         var urlRegex = /https?:\/\/[^"'\s,]+/g;
         var m;
         var idx = 0;
-        var langOrder = ["LAT", "SUB", "CAS"]; // Orden nativo de botones en AnimeJara
+        var langOrder = ["LAT", "SUB", "CAS"];
 
         while ((m = urlRegex.exec(rawContent)) !== null) {
             var cleanUrl = m[0].replace(/&amp;/g, "&").replace(/&#038;/g, "&");
@@ -415,7 +436,7 @@ function extractMultiplayerUrlsFromHtml(html) {
         }
     }
 
-    // 2. Fallback: Si no había array 'enlaces', extraer del iframe principal
+    // Fallback de iframe principal
     if (multiplayers.length === 0) {
         var ifMatch = html.match(/<iframe[^>]+id=["']iframe-video["'][^>]+src=["']([^"']+)["']/i) ||
                       html.match(/<iframe[^>]+src=["']([^"']*(?:multiplayer\.streamhj\.top)[^"']*)["']/i);
@@ -438,9 +459,11 @@ function resolveEpisodeMultiplayers(animeItem, sNum, eNum, isMovie, absoluteEp) 
         pageUrls.push(BASE_URL + "/movie/" + slug + "/");
         pageUrls.push(BASE_URL + "/anime/" + slug);
     } else {
+        // Prioridad 1: Formato estándar Canónico AnimeJara ({slug}-{season}x{episode})
         pageUrls.push(BASE_URL + "/episode/" + slug + "-" + sNum + "x" + eNum + "/");
         pageUrls.push(BASE_URL + "/episode/" + slug + "-" + sNum + "x" + eNum);
 
+        // Prioridad 2: Soporte para animes continuos (One Piece) o numeración absoluta de Kitsu
         if (absoluteEp && absoluteEp !== eNum) {
             pageUrls.push(BASE_URL + "/episode/" + slug + "-1x" + absoluteEp + "/");
             pageUrls.push(BASE_URL + "/episode/" + slug + "-" + absoluteEp + "/");
@@ -537,7 +560,7 @@ function extractStreamsFromMultiplayerUrl(item) {
 }
 
 // ==========================================
-// FUNCIÓN PRINCIPAL EXPORTADA
+// 5. FUNCIÓN PRINCIPAL EXPORTADA
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
@@ -553,6 +576,22 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return res.json();
         })
         .then(function(meta) {
+            var origLang = meta.original_language || "";
+            var isAsianAnim = (origLang === "ja" || origLang === "zh" || origLang === "ko");
+
+            if (!isAsianAnim && meta.origin_country) {
+                for (var c = 0; c < meta.origin_country.length; c++) {
+                    var co = meta.origin_country[c];
+                    if (co === "JP" || co === "CN" || co === "KR" || co === "TW" || co === "HK") {
+                        isAsianAnim = true;
+                        break;
+                    }
+                }
+            }
+
+            // Si es un título occidental y no animación asiática, AnimeJara no lo contiene
+            if (!isAsianAnim) return [];
+
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
             var year = (isMovie ? meta.release_date : meta.first_air_date || "").slice(0, 4);
@@ -573,7 +612,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var searchQueries = [];
             for (var j = 0; j < uniqueTitles.length; j++) {
                 var rawT = uniqueTitles[j];
-                if (!rawT || hasJapaneseChars(rawT)) continue;
+                if (!rawT || hasAsianChars(rawT)) continue;
 
                 var clean = cleanTitle(rawT);
                 if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
@@ -585,12 +624,32 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            var absoluteEp = isMovie ? 1 : getAbsoluteEpisodeNumber(meta, sNum, eNum);
+            // RESOLUCIÓN MATEMÁTICA UNIVERSAL DE TEMPORADAS Y EPISODIOS
+            var seasonsList = meta.seasons || [];
+            var s1Count = (seasonsList[0] && seasonsList[0].episode_count) || 60;
+            var effectiveSeason = sNum;
+            var effectiveEpisode = eNum;
+            var absoluteEp = eNum;
+
+            if (!isMovie) {
+                // Caso Kitsu: Manda Temporada 1 pero con número acumulado total (eNum > temporada 1)
+                if (sNum === 1 && eNum > s1Count && seasonsList.length > 1) {
+                    absoluteEp = eNum;
+                    var decomp = decomposeAbsoluteEp(seasonsList, eNum);
+                    effectiveSeason = decomp.season;
+                    effectiveEpisode = decomp.episode;
+                } else {
+                    // Caso TMDB / Cinemeta: Manda Temporada N y Episodio relativo dentro de la temporada
+                    absoluteEp = calculateAbsoluteEp(seasonsList, sNum, eNum);
+                    effectiveSeason = sNum;
+                    effectiveEpisode = eNum;
+                }
+            }
 
             return searchMultiQuery(searchQueries).then(function(animes) {
                 var scored = [];
                 for (var a = 0; a < animes.length; a++) {
-                    var sc = scoreAnime(animes[a], uniqueTitles, year, sNum);
+                    var sc = scoreAnime(animes[a], uniqueTitles, year, effectiveSeason);
                     if (sc >= 35) {
                         scored.push({ anime: animes[a], score: sc });
                     }
@@ -608,12 +667,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     if (aIdx >= topCandidates.length) return Promise.resolve([]);
                     var targetAnime = topCandidates[aIdx].anime;
 
-                    return resolveEpisodeMultiplayers(targetAnime, sNum, eNum, isMovie, absoluteEp).then(function(multiItems) {
+                    return resolveEpisodeMultiplayers(targetAnime, effectiveSeason, effectiveEpisode, isMovie, absoluteEp).then(function(multiItems) {
                         if (!multiItems || multiItems.length === 0) {
                             return tryNextAnime(aIdx + 1);
                         }
 
-                        // Resolver en paralelo todos los idiomas del episodio
                         var fetchPromises = multiItems.map(function(item) {
                             return extractStreamsFromMultiplayerUrl(item);
                         });
@@ -656,4 +714,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
         });
 }
 
-module.exports = { getStreams };
+if (typeof module !== "undefined") {
+    module.exports = { getStreams: getStreams };
+}
