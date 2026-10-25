@@ -1,5 +1,5 @@
 /**
- * Auditoría nativa de www.cinecalidad.am
+ * Auditoría nativa de www.cinecalidad.am (Filtrado estricto)
  * Ejecución: node providers/inspect_cinecalidad_am.js "deadpool"
  */
 
@@ -14,12 +14,11 @@ var headers = {
 };
 
 console.log("=================================================================");
-console.log(">>> AUDITANDO EXCLUSIVAMENTE: www.cinecalidad.am <<<");
+console.log(">>> AUDITANDO www.cinecalidad.am (Búsqueda: \"" + query + "\") <<<");
 console.log("=================================================================\n");
 
-// 1. Probar búsqueda nativa en cinecalidad.am
 var searchUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
-console.log("[A] Consultando buscador en:", searchUrl);
+console.log("[A] Consultando:", searchUrl);
 
 fetch(searchUrl, { headers: headers })
 .then(function(res) {
@@ -29,55 +28,89 @@ fetch(searchUrl, { headers: headers })
 .then(function(html) {
     console.log("-> Tamaño HTML:", html.length, "bytes");
 
-    // 2. Extraer enlaces a películas en cinecalidad.am
-    var links = [];
-    var regex = /href=["'](https?:\/\/(?:www\.)?cinecalidad\.am\/[^"']+)["']/gi;
+    // Extraer enlaces limpiando assets estáticos
+    var movieLinks = [];
+    var regex = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
     var m;
+
     while ((m = regex.exec(html)) !== null) {
-        var h = m[1];
-        // Filtrar páginas del sistema, categorías o feeds
-        if (h.indexOf("/page/") === -1 && h.indexOf("/category/") === -1 && 
-            h.indexOf("/genero/") === -1 && h.indexOf("?s=") === -1 && 
-            h.indexOf("/feed/") === -1 && h !== BASE_URL + "/") {
-            if (links.indexOf(h) === -1) links.push(h);
+        var href = m[1];
+        var text = m[2].replace(/<[^>]+>/g, "").trim();
+
+        // Ignorar assets, feeds y enlaces de navegación
+        if (href.indexOf("wp-content") === -1 && 
+            href.indexOf("wp-includes") === -1 && 
+            href.indexOf(".css") === -1 && 
+            href.indexOf(".png") === -1 && 
+            href.indexOf(".jpg") === -1 && 
+            href.indexOf(".ico") === -1 && 
+            href.indexOf("xmlrpc") === -1 && 
+            href.indexOf("/wp-json/") === -1 && 
+            href.indexOf("/category/") === -1 && 
+            href.indexOf("/genero/") === -1 && 
+            href.indexOf("/tag/") === -1 && 
+            href.indexOf("?s=") === -1 && 
+            href !== BASE_URL && 
+            href !== BASE_URL + "/") {
+            
+            // Si es relativo, completar con BASE_URL
+            if (href.indexOf("http") !== 0) {
+                href = BASE_URL + (href.indexOf("/") === 0 ? "" : "/") + href;
+            }
+
+            if (movieLinks.map(function(x) { return x.url; }).indexOf(href) === -1) {
+                movieLinks.push({ url: href, title: text });
+            }
         }
     }
 
-    console.log("\n[+] Enlaces a películas encontrados en cinecalidad.am (" + links.length + "):");
-    for (var i = 0; i < Math.min(5, links.length); i++) {
-        console.log("    [" + (i + 1) + "] " + links[i]);
+    console.log("\n[+] Películas reales encontradas (" + movieLinks.length + "):");
+    for (var i = 0; i < Math.min(5, movieLinks.length); i++) {
+        console.log("    [" + (i + 1) + "] " + movieLinks[i].url + " | " + movieLinks[i].title);
     }
 
-    if (links.length === 0) {
-        console.log("[-] No se extrajeron enlaces con filtro. Mostrando primeros 300 caracteres del HTML:");
-        console.log(html.substring(0, 300));
+    if (movieLinks.length === 0) {
+        console.log("[-] No se encontraron enlaces con el filtro.");
         return;
     }
 
-    // 3. Descargar la primera película y ver sus reproductores reales
-    var movieUrl = links[0];
-    console.log("\n[B] Descargando ficha de película:", movieUrl);
+    // Tomar la primera película real
+    var targetMovie = movieLinks[0].url;
+    console.log("\n=================================================================");
+    console.log("[B] DESCARGANDO FICHA DE PELÍCULA:", targetMovie);
+    console.log("=================================================================");
 
-    return fetch(movieUrl, { headers: headers })
+    return fetch(targetMovie, { headers: headers })
     .then(function(r) { return r.text(); })
     .then(function(movieHtml) {
         console.log("-> Tamaño HTML de la película:", movieHtml.length, "bytes");
 
-        // Buscar Vimeos, lockers o iframes
-        var lockers = [];
-        var vimeosRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:vimeos|embed|player|streamwish|hlswish|filemoon|goodstream|videoapp)[^\s"'<>]+/gi;
-        var vm;
-        while ((vm = vimeosRegex.exec(movieHtml)) !== null) {
-            var lk = vm[0].replace(/\\/g, "");
-            if (lockers.indexOf(lk) === -1) lockers.push(lk);
+        // 1. Buscar iframes directos
+        var iframes = [];
+        var ifRegex = /<iframe[^>]+src=["']([^"']+)["']/gi;
+        var im;
+        while ((im = ifRegex.exec(movieHtml)) !== null) {
+            iframes.push(im[1]);
         }
+        console.log("\n[+] Iframes encontrados:", iframes);
 
-        console.log("\n[+] Reproductores detectados en cinecalidad.am (" + lockers.length + "):");
-        for (var j = 0; j < lockers.length; j++) {
-            console.log("    - " + lockers[j]);
+        // 2. Buscar enlaces a Vimeos / reproductores en scripts o botones
+        var players = [];
+        var pRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:vimeos|embed|player|streamwish|hlswish|filemoon|goodstream|videoapp|turboviplay)[^\s"'<>]+/gi;
+        var pm;
+        while ((pm = pRegex.exec(movieHtml)) !== null) {
+            var cleanUrl = pm[0].replace(/\\/g, "").replace(/&amp;/g, "&");
+            if (players.indexOf(cleanUrl) === -1) players.push(cleanUrl);
+        }
+        console.log("\n[+] Reproductores / Servidores detectados:", players);
+
+        // 3. Buscar llamadas AJAX de reproducción (como dooplay o cinecalidad player)
+        var ajaxActions = movieHtml.match(/action\s*[:=]\s*["']([^"']+)["']/gi);
+        if (ajaxActions) {
+            console.log("[+] Acciones AJAX detectadas:", ajaxActions);
         }
     });
 })
 .catch(function(err) {
-    console.error("[-] Error auditando cinecalidad.am:", err.message);
+    console.error("[-] Error:", err.message);
 });
