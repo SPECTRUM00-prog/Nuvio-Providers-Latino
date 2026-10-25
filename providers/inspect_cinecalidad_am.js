@@ -1,5 +1,5 @@
 /**
- * Auditoría nativa de www.cinecalidad.am (Filtrado estricto)
+ * Extractor exacto de tarjetas y reproductores para www.cinecalidad.am
  * Ejecución: node providers/inspect_cinecalidad_am.js "deadpool"
  */
 
@@ -14,78 +14,71 @@ var headers = {
 };
 
 console.log("=================================================================");
-console.log(">>> AUDITANDO www.cinecalidad.am (Búsqueda: \"" + query + "\") <<<");
+console.log(">>> INSPECCIONANDO RESULTADOS EN www.cinecalidad.am <<<");
 console.log("=================================================================\n");
 
-var searchUrl = BASE_URL + "/?s=" + encodeURIComponent(query);
-console.log("[A] Consultando:", searchUrl);
-
-fetch(searchUrl, { headers: headers })
-.then(function(res) {
-    console.log("-> Status HTTP:", res.status, res.statusText);
-    return res.text();
-})
+fetch(BASE_URL + "/?s=" + encodeURIComponent(query), { headers: headers })
+.then(function(res) { return res.text(); })
 .then(function(html) {
-    console.log("-> Tamaño HTML:", html.length, "bytes");
-
-    // Extraer enlaces limpiando assets estáticos
-    var movieLinks = [];
+    // 1. Extraer todos los enlaces que tienen texto relevante o imagen de póster
+    var candidates = [];
     var regex = /<a[^>]+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
     var m;
 
     while ((m = regex.exec(html)) !== null) {
         var href = m[1];
-        var text = m[2].replace(/<[^>]+>/g, "").trim();
+        var inner = m[2];
+        var text = inner.replace(/<[^>]+>/g, "").trim();
 
-        // Ignorar assets, feeds y enlaces de navegación
-        if (href.indexOf("wp-content") === -1 && 
-            href.indexOf("wp-includes") === -1 && 
-            href.indexOf(".css") === -1 && 
-            href.indexOf(".png") === -1 && 
-            href.indexOf(".jpg") === -1 && 
-            href.indexOf(".ico") === -1 && 
-            href.indexOf("xmlrpc") === -1 && 
-            href.indexOf("/wp-json/") === -1 && 
-            href.indexOf("/category/") === -1 && 
-            href.indexOf("/genero/") === -1 && 
-            href.indexOf("/tag/") === -1 && 
-            href.indexOf("?s=") === -1 && 
-            href !== BASE_URL && 
-            href !== BASE_URL + "/") {
+        // Descartar navegación, cabecera y enlaces externos
+        if (href.indexOf("cinecalidad.am") !== -1 &&
+            href.indexOf("/espana") === -1 &&
+            href.indexOf("/ver-serie") === -1 &&
+            href.indexOf("/fecha-de-lanzamiento") === -1 &&
+            href.indexOf("/page/") === -1 &&
+            href.indexOf("?s=") === -1 &&
+            href.indexOf("wp-") === -1 &&
+            href !== BASE_URL && href !== BASE_URL + "/") {
+
+            // Comprobar si el texto o la URL contiene la búsqueda
+            var isRelevant = href.toLowerCase().indexOf("deadpool") !== -1 || text.toLowerCase().indexOf("deadpool") !== -1;
             
-            // Si es relativo, completar con BASE_URL
-            if (href.indexOf("http") !== 0) {
-                href = BASE_URL + (href.indexOf("/") === 0 ? "" : "/") + href;
-            }
-
-            if (movieLinks.map(function(x) { return x.url; }).indexOf(href) === -1) {
-                movieLinks.push({ url: href, title: text });
+            if (candidates.map(function(x){ return x.url; }).indexOf(href) === -1) {
+                candidates.push({ url: href, title: text, relevant: isRelevant });
             }
         }
     }
 
-    console.log("\n[+] Películas reales encontradas (" + movieLinks.length + "):");
-    for (var i = 0; i < Math.min(5, movieLinks.length); i++) {
-        console.log("    [" + (i + 1) + "] " + movieLinks[i].url + " | " + movieLinks[i].title);
+    console.log("[+] Enlaces internos filtrados (" + candidates.length + "):");
+    for (var i = 0; i < Math.min(10, candidates.length); i++) {
+        console.log("    [" + (i + 1) + "] " + candidates[i].url + (candidates[i].title ? " | " + candidates[i].title : ""));
     }
 
-    if (movieLinks.length === 0) {
-        console.log("[-] No se encontraron enlaces con el filtro.");
+    // Elegir el primer candidato que coincida con la película
+    var targetMovie = null;
+    for (var c = 0; c < candidates.length; c++) {
+        if (candidates[c].relevant) {
+            targetMovie = candidates[c].url;
+            break;
+        }
+    }
+    if (!targetMovie && candidates.length > 0) targetMovie = candidates[0].url;
+
+    if (!targetMovie) {
+        console.log("[-] No se encontró ninguna URL de película.");
         return;
     }
 
-    // Tomar la primera película real
-    var targetMovie = movieLinks[0].url;
     console.log("\n=================================================================");
-    console.log("[B] DESCARGANDO FICHA DE PELÍCULA:", targetMovie);
+    console.log(">>> DESCARGANDO FICHA REAL:", targetMovie);
     console.log("=================================================================");
 
     return fetch(targetMovie, { headers: headers })
     .then(function(r) { return r.text(); })
     .then(function(movieHtml) {
-        console.log("-> Tamaño HTML de la película:", movieHtml.length, "bytes");
+        console.log("-> Tamaño HTML:", movieHtml.length, "bytes");
 
-        // 1. Buscar iframes directos
+        // Buscar iframes
         var iframes = [];
         var ifRegex = /<iframe[^>]+src=["']([^"']+)["']/gi;
         var im;
@@ -94,20 +87,25 @@ fetch(searchUrl, { headers: headers })
         }
         console.log("\n[+] Iframes encontrados:", iframes);
 
-        // 2. Buscar enlaces a Vimeos / reproductores en scripts o botones
-        var players = [];
-        var pRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:vimeos|embed|player|streamwish|hlswish|filemoon|goodstream|videoapp|turboviplay)[^\s"'<>]+/gi;
-        var pm;
-        while ((pm = pRegex.exec(movieHtml)) !== null) {
-            var cleanUrl = pm[0].replace(/\\/g, "").replace(/&amp;/g, "&");
-            if (players.indexOf(cleanUrl) === -1) players.push(cleanUrl);
+        // Buscar lockers (Vimeos, StreamWish, etc.)
+        var lockers = [];
+        var lkRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:vimeos|embed|player|streamwish|hlswish|filemoon|goodstream|videoapp|turboviplay)[^\s"'<>]+/gi;
+        var lm;
+        while ((lm = lkRegex.exec(movieHtml)) !== null) {
+            var clk = lm[0].replace(/\\/g, "").replace(/&amp;/g, "&");
+            if (lockers.indexOf(clk) === -1) lockers.push(clk);
         }
-        console.log("\n[+] Reproductores / Servidores detectados:", players);
+        console.log("\n[+] Reproductores detectados:", lockers);
 
-        // 3. Buscar llamadas AJAX de reproducción (como dooplay o cinecalidad player)
-        var ajaxActions = movieHtml.match(/action\s*[:=]\s*["']([^"']+)["']/gi);
-        if (ajaxActions) {
-            console.log("[+] Acciones AJAX detectadas:", ajaxActions);
+        // Buscar si los servidores vienen en atributos data- (ej: Dooplay o Cinecalidad tabs)
+        var dataUrls = [];
+        var dRegex = /data-(?:url|link|player|embed|code)=["']([^"']+)["']/gi;
+        var dm;
+        while ((dm = dRegex.exec(movieHtml)) !== null) {
+            dataUrls.push(dm[1]);
+        }
+        if (dataUrls.length > 0) {
+            console.log("\n[+] Enlaces en atributos data-*:", dataUrls.slice(0, 8));
         }
     });
 })
