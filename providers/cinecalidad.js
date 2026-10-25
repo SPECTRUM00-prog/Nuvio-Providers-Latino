@@ -1,18 +1,17 @@
 /**
- * Provider: Cinecalidad (Películas en Español Latino y Dual)
- * Motor: FastApi v1 (cinecalidad.org) + Multi-Resolver (Vimeos, StreamWish, Filemoon)
+ * Provider: Cinecalidad Oficial (www.cinecalidad.am)
+ * Motor: Scraper Nativo HTML (Buscador + Ficha /ver-pelicula/) + Resolver Vimeos
  * Reglas Hermes: ES5 estricto, 100% Promesas, Zero-Dependencies, Fast Timeout (<= 2800ms)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-var BASE_URL = "https://cinecalidad.org";
-var API_BASE = BASE_URL + "/wp-api/v1";
+var BASE_URL = "https://www.cinecalidad.am";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var NETWORK_TIMEOUT = 2800;
 
 var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
-    "Accept": "application/json, text/plain, */*",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": BASE_URL + "/"
 };
 
@@ -43,16 +42,16 @@ function cleanTitle(str) {
         .trim();
 }
 
-function scoreCandidate(itemTitle, targetTitles, targetYear) {
-    if (!itemTitle) return 0;
-    var cTitle = cleanTitle(itemTitle);
+function scoreCandidate(candidateUrl, candidateText, targetTitles, targetYear) {
+    var cleanUrlText = cleanTitle(candidateUrl.replace(BASE_URL, "").replace(/\//g, " "));
+    var cleanInnerText = cleanTitle(candidateText || "");
     var score = 0;
 
     for (var i = 0; i < targetTitles.length; i++) {
         var t = cleanTitle(targetTitles[i]);
         if (!t) continue;
 
-        if (cTitle === t || cTitle.indexOf(t) === 0) {
+        if (cleanUrlText.indexOf(t) !== -1 || cleanInnerText.indexOf(t) === 0) {
             score = Math.max(score, 100);
             continue;
         }
@@ -60,7 +59,7 @@ function scoreCandidate(itemTitle, targetTitles, targetYear) {
         var words = t.split(/\s+/).filter(function(w) { return w.length > 2; });
         var matches = 0;
         for (var j = 0; j < words.length; j++) {
-            if (cTitle.indexOf(words[j]) !== -1) {
+            if (cleanUrlText.indexOf(words[j]) !== -1 || cleanInnerText.indexOf(words[j]) !== -1) {
                 matches++;
             }
         }
@@ -71,8 +70,10 @@ function scoreCandidate(itemTitle, targetTitles, targetYear) {
         }
     }
 
-    if (score > 0 && targetYear && cTitle.indexOf(String(targetYear)) !== -1) {
-        score += 20;
+    if (score > 0 && targetYear) {
+        if (cleanUrlText.indexOf(String(targetYear)) !== -1 || cleanInnerText.indexOf(String(targetYear)) !== -1) {
+            score += 20;
+        }
     }
 
     return score;
@@ -242,36 +243,11 @@ function resolveStreamWish(url) {
         .catch(function() { return null; });
 }
 
-function resolveFilemoon(url) {
-    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
-        .then(function(html) {
-            var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-            if (direct) {
-                return probeM3u8Quality(direct[1], { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
-                    return { url: direct[1], quality: q, server: "Filemoon", headers: { "User-Agent": USER_AGENT, "Referer": url } };
-                });
-            }
-            var unpacked = unpackJS(html);
-            if (unpacked) {
-                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-                if (m3u8) {
-                    return probeM3u8Quality(m3u8[0], { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
-                        return { url: m3u8[0], quality: q, server: "Filemoon", headers: { "User-Agent": USER_AGENT, "Referer": url } };
-                    });
-                }
-            }
-            return null;
-        })
-        .catch(function() { return null; });
-}
-
 function dispatchResolver(rawUrl) {
     if (!rawUrl) return Promise.resolve(null);
     var u = rawUrl.toLowerCase();
     if (u.indexOf("vimeos.net") !== -1) return resolveVimeos(rawUrl);
     if (u.indexOf("hlswish") !== -1 || u.indexOf("streamwish") !== -1) return resolveStreamWish(rawUrl);
-    if (u.indexOf("filemoon") !== -1) return resolveFilemoon(rawUrl);
     return Promise.resolve(null);
 }
 
@@ -279,14 +255,13 @@ function dispatchResolver(rawUrl) {
 // 4. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
 
-function getStreams(tmdbId, mediaType) {
+function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
 
-    // Cinecalidad es un catálogo enfocado en películas
-    var isMovie = mediaType === "movie";
-    if (!isMovie) return Promise.resolve([]);
-
-    var tmdbUrl = "https://api.themoviedb.org/3/movie/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
+    var isTv = mediaType === "tv" || mediaType === "series";
+    var s = parseInt(seasonNum || 1, 10);
+    var e = parseInt(episodeNum || 1, 10);
+    var tmdbUrl = "https://api.themoviedb.org/3/" + (isTv ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
     return fetchWithTimeout(tmdbUrl, {}, 2500)
         .then(function(res) {
@@ -294,9 +269,9 @@ function getStreams(tmdbId, mediaType) {
             return res.json();
         })
         .then(function(meta) {
-            var title = meta.title || meta.original_title || "";
-            var origTitle = meta.original_title || "";
-            var year = (meta.release_date || "").substring(0, 4);
+            var title = isTv ? (meta.name || meta.original_name) : (meta.title || meta.original_title);
+            var origTitle = isTv ? meta.original_name : meta.original_title;
+            var year = ((isTv ? meta.first_air_date : meta.release_date) || "").substring(0, 4);
 
             var titles = [];
             if (title) titles.push(title);
@@ -309,51 +284,71 @@ function getStreams(tmdbId, mediaType) {
                 }
             }
 
-            // Consultar la API rápida de búsqueda
             var searchQuery = cleanTitle(title || origTitle);
-            var searchUrl = API_BASE + "/search?q=" + encodeURIComponent(searchQuery);
+            var searchUrl = BASE_URL + "/?s=" + encodeURIComponent(searchQuery);
 
             return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2800)
                 .then(function(res) {
-                    if (!res || !res.ok) return null;
-                    return res.json();
+                    if (!res || !res.ok) return "";
+                    return res.text();
                 })
-                .then(function(searchRes) {
-                    var posts = (searchRes && searchRes.data && searchRes.data.posts) || [];
-                    if (posts.length === 0) return [];
+                .then(function(html) {
+                    if (!html) return [];
 
-                    var scored = [];
-                    for (var p = 0; p < posts.length; p++) {
-                        var post = posts[p];
-                        var sc = scoreCandidate(post.title, titles, year);
-                        if (sc >= 35) {
-                            scored.push({ post: post, score: sc });
+                    // Extraer enlaces a películas o series
+                    var candidates = [];
+                    var regex = /<a[^>]+href=["']([^"']*(?:ver-pelicula|ver-serie)\/[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
+                    var m;
+
+                    while ((m = regex.exec(html)) !== null) {
+                        var href = m[1];
+                        var innerText = m[2].replace(/<[^>]+>/g, "").trim();
+
+                        if (candidates.map(function(c) { return c.url; }).indexOf(href) === -1) {
+                            var sc = scoreCandidate(href, innerText, titles, year);
+                            if (sc >= 35) {
+                                candidates.push({ url: href, score: sc });
+                            }
                         }
                     }
 
-                    if (scored.length === 0) return [];
+                    if (candidates.length === 0) return [];
 
-                    scored.sort(function(a, b) { return b.score - a.score; });
-                    var targetPostId = scored[0].post._id;
+                    candidates.sort(function(a, b) { return b.score - a.score; });
+                    var targetUrl = candidates[0].url;
 
-                    // Consultar los reproductores del post en FastApi
-                    var playerUrl = API_BASE + "/player?postId=" + targetPostId + "&demo=0";
+                    if (targetUrl.indexOf("http") !== 0) {
+                        targetUrl = BASE_URL + (targetUrl.indexOf("/") === 0 ? "" : "/") + targetUrl;
+                    }
 
-                    return fetchWithTimeout(playerUrl, { headers: DEFAULT_HEADERS }, 2800)
-                        .then(function(r) { return r ? r.json() : null; })
-                        .then(function(playerJson) {
-                            var embeds = (playerJson && playerJson.data && playerJson.data.embeds) || [];
-                            if (embeds.length === 0) return [];
+                    // Si es serie, probar la ruta canónica de episodio
+                    if (isTv) {
+                        var epPath = targetUrl.replace(/\/$/, "") + "-" + s + "x" + e + "/";
+                        targetUrl = epPath;
+                    }
 
-                            var promises = embeds.map(function(item) {
-                                var sUrl = item.url;
-                                var lang = item.lang || "Latino";
+                    return fetchWithTimeout(targetUrl, { headers: DEFAULT_HEADERS }, 2800)
+                        .then(function(r) { return r ? r.text() : ""; })
+                        .then(function(pageHtml) {
+                            if (!pageHtml) return [];
 
+                            // Extraer lockers
+                            var lockers = [];
+                            var lRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:vimeos|streamwish|hlswish)\.[a-z]{2,6}\/[^\s"'<>]+/gi;
+                            var lm;
+                            while ((lm = lRegex.exec(pageHtml)) !== null) {
+                                var clk = lm[0].replace(/\\/g, "").replace(/&amp;/g, "&");
+                                if (lockers.indexOf(clk) === -1) lockers.push(clk);
+                            }
+
+                            if (lockers.length === 0) return [];
+
+                            var promises = lockers.map(function(sUrl) {
                                 return dispatchResolver(sUrl).then(function(stream) {
                                     if (stream && stream.url) {
                                         return {
                                             name: "CineCalidad",
-                                            title: stream.quality + " · " + lang + " · " + stream.server,
+                                            title: stream.quality + " · Latino · " + stream.server,
                                             quality: stream.quality,
                                             url: stream.url,
                                             headers: stream.headers || {
