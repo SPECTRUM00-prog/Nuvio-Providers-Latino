@@ -1,14 +1,15 @@
 /**
- * Provider: JKAnime (Anime, Donghua y Películas)
+ * Provider: JKAnime (Anime Series, Películas, Donghua)
  * Motor: AniList GraphQL + Algoritmo Universal Split-Cour y Continuo (Agnóstico)
- * Soporte Completo: TMDB, Cinemeta y Kitsu sin dependencias y 100% Hermes Safe
+ * Correcciones: Unpacker universal, limpieza de guiones, batches en paralelo, género animación.
+ * Reglas Hermes: ES5 estricto, 100% Promesas, Zero-Dependencies, Fast Timeout (<= 2800ms)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var ANILIST_GRAPHQL = "https://graphql.anilist.co";
 var BASE_URL = "https://jkanime.net";
-var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-var NETWORK_TIMEOUT = 3200;
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 2800;
 
 var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -22,14 +23,23 @@ var DEFAULT_HEADERS = {
 
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Timeout"));
-            }, limit);
+    var timer = null;
+
+    var timeoutPromise = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            reject(new Error("Timeout"));
+        }, limit);
+    });
+
+    return Promise.race([fetch(url, options), timeoutPromise])
+        .then(function(res) {
+            if (timer) clearTimeout(timer);
+            return res;
         })
-    ]);
+        .catch(function() {
+            if (timer) clearTimeout(timer);
+            return null;
+        });
 }
 
 function decodeBase64Safe(input) {
@@ -60,13 +70,18 @@ function decodeBase64Safe(input) {
 
 function cleanTitle(text) {
     if (!text) return "";
-    return text
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
+    var normalized = text;
+    try {
+        normalized = text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    } catch (e) {}
+
+    return normalized
         .toLowerCase()
+        .replace(/['’]/g, "")
         .replace(/[^a-z0-9\s-]/g, " ")
         .replace(/\s+/g, "-")
         .replace(/-+/g, "-")
+        .replace(/^-+|-+$/g, "")
         .trim();
 }
 
@@ -81,7 +96,6 @@ function hasAsianChars(str) {
     return /[\u3000-\u303f\u3040-\u309f\u30a0-\u30ff\uff00-\uff9f\u4e00-\u9faf\uac00-\ud7af]/.test(str);
 }
 
-// Clasificador universal de temporada por número romano, cardinal u ordinal
 function getSeasonRank(text) {
     if (!text) return 1;
     var t = (" " + text.toLowerCase() + " ").replace(/[:\-_]/g, " ");
@@ -97,15 +111,16 @@ function isPartTwo(text) {
     return t.indexOf("part 2") !== -1 || t.indexOf("part-2") !== -1 || t.indexOf("cour 2") !== -1 || t.indexOf("cour-2") !== -1;
 }
 
+// Detección estricta de marcadores estacionales evitando falsos positivos con palabras ("vinland", "violet")
 function isSeasonalSlug(slug) {
     if (!slug) return false;
-    var s = slug.toLowerCase();
+    var s = "-" + slug.toLowerCase() + "-";
     var markers = [
         "-season-", "-temporada-", "-part-", "-cour-",
-        "-1st", "-2nd", "-3rd", "-4th", "-5th", "-6th",
-        "-s1", "-s2", "-s3", "-s4", "-s5",
-        "-ii", "-iii", "-iv", "-v",
-        "-movie", "-pelicula"
+        "-1st-", "-2nd-", "-3rd-", "-4th-", "-5th-", "-6th-",
+        "-s1-", "-s2-", "-s3-", "-s4-", "-s5-",
+        "-ii-", "-iii-", "-iv-", "-v-",
+        "-movie-", "-pelicula-"
     ];
     for (var i = 0; i < markers.length; i++) {
         if (s.indexOf(markers[i]) !== -1) return true;
@@ -148,7 +163,23 @@ function scoreCandidate(candidateSlug, titles, year) {
     return score;
 }
 
-function unpackDeanEdwards(p, a, c, k) {
+// ==========================================
+// 2. DESEMPAQUETADOR UNIVERSAL DEAN EDWARDS
+// ==========================================
+
+function unpackFromHtml(html) {
+    if (!html) return "";
+    var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\(\s*['"]([\s\S]+?)['"]\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*['"]([\s\S]+?)['"]\.split\('\|'\)/);
+    if (!packMatch) {
+        packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+    }
+    if (!packMatch) return "";
+
+    var p = packMatch[1];
+    var a = parseInt(packMatch[2], 10);
+    var c = parseInt(packMatch[3], 10);
+    var k = packMatch[4].split("|");
+
     var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
     function decodeBase(val, radix) {
         var res = 0;
@@ -159,6 +190,7 @@ function unpackDeanEdwards(p, a, c, k) {
         }
         return res;
     }
+
     return p.replace(/\b([0-9a-zA-Z]+)\b/g, function(token) {
         var index = decodeBase(token, a);
         if (isNaN(index) || index >= k.length) return token;
@@ -166,14 +198,41 @@ function unpackDeanEdwards(p, a, c, k) {
     });
 }
 
+function detectQualityFromUrl(url) {
+    if (!url) return null;
+    var u = url.toLowerCase();
+    if (u.indexOf("vimeos") !== -1 || u.indexOf(".urlset") !== -1) {
+        var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
+        if (urlsetMatch) {
+            var tags = urlsetMatch[1].split(",");
+            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1) return "1080p";
+            if (tags.indexOf("h") !== -1) return "720p";
+            if (tags.indexOf("n") !== -1) return "480p";
+            if (tags.indexOf("l") !== -1) return "360p";
+        }
+    }
+    if (u.indexOf("4k") !== -1 || u.indexOf("2160") !== -1) return "4K";
+    if (u.indexOf("1080") !== -1) return "1080p";
+    if (u.indexOf("720") !== -1) return "720p";
+    if (u.indexOf("480") !== -1) return "480p";
+    return null;
+}
+
 function probeM3u8Quality(m3u8Url, headers) {
+    var fastQ = detectQualityFromUrl(m3u8Url);
+    if (fastQ) return Promise.resolve(fastQ);
+
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
+
     return fetchWithTimeout(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" }, 2500)
-        .then(function(res) { return res.ok ? res.text() : ""; })
+        .then(function(res) {
+            if (!res || !res.ok) return "720p";
+            return res.text();
+        })
         .then(function(text) {
             if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
-                if (/1080/i.test(m3u8Url)) return "1080p";
-                if (/720/i.test(m3u8Url)) return "720p";
+                if (m3u8Url.indexOf("1080") !== -1) return "1080p";
+                if (m3u8Url.indexOf("720") !== -1) return "720p";
                 return "720p";
             }
             var maxH = 0, resRegex = /RESOLUTION=\d+x(\d+)/gi, match;
@@ -181,6 +240,7 @@ function probeM3u8Quality(m3u8Url, headers) {
                 var h = parseInt(match[1], 10);
                 if (h > maxH) maxH = h;
             }
+            if (maxH >= 2160) return "4K";
             if (maxH >= 1080) return "1080p";
             if (maxH >= 720) return "720p";
             if (maxH >= 480) return "480p";
@@ -190,7 +250,7 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
-// 2. MATEMÁTICAS UNIVERSALES DE EPISODIOS
+// 3. MATEMÁTICAS UNIVERSALES DE EPISODIOS
 // ==========================================
 
 function calculateAbsoluteEp(seasons, sNum, eNum) {
@@ -225,7 +285,7 @@ function decomposeAbsoluteEp(seasons, absEp) {
 }
 
 // ==========================================
-// 3. ANILIST GRAPHQL: RESOLUTOR SPLIT-COUR
+// 4. ANILIST GRAPHQL
 // ==========================================
 
 function fetchAniListMapping(searchName) {
@@ -241,7 +301,7 @@ function fetchAniListMapping(searchName) {
         },
         body: JSON.stringify({ query: gqlQuery, variables: { search: searchName } })
     }, 2800)
-    .then(function(res) { return res.json(); })
+    .then(function(res) { return res ? res.json() : null; })
     .then(function(json) {
         return (json && json.data && json.data.Page && json.data.Page.media) || [];
     })
@@ -309,13 +369,8 @@ function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
     };
 }
 
-// ==========================================
-// 4. BUSCADOR NATIVO DE JKANIME (SIN /1/ FINAL)
-// ==========================================
-
 function searchJKAnime(query) {
     if (!query || hasAsianChars(query)) return Promise.resolve([]);
-    // URL limpia sin /1/ que devuelve 200 OK
     var searchUrl = BASE_URL + "/buscar/" + encodeURIComponent(query) + "/";
 
     return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2800)
@@ -337,7 +392,7 @@ function searchJKAnime(query) {
 }
 
 // ==========================================
-// 5. RESOLVERS DE STREAMING (HERMES SAFE)
+// 5. RESOLVERS DE STREAMING ROBUSTOS
 // ==========================================
 
 function resolveStreamWish(url) {
@@ -356,7 +411,8 @@ function resolveStreamWish(url) {
                 return { url: direct[1], serverName: "StreamWish", quality: q, headers: { "User-Agent": USER_AGENT, "Referer": targetUrl } };
             });
         }
-        var unpacked = unpackDeanEdwards(html);
+
+        var unpacked = unpackFromHtml(html);
         if (unpacked) {
             var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
             if (m3u8) {
@@ -371,33 +427,33 @@ function resolveStreamWish(url) {
 }
 
 function resolveVidHide(url) {
+    var hostMatch = url.match(/^(https?:\/\/[^/]+)/i);
+    var host = hostMatch ? hostMatch[1] : "https://callistanise.com";
+
     return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }, redirect: "follow" }, 2800)
-        .then(function(res) {
-            if (!res) return null;
-            var finalUrl = res.url || url;
-            var hostMatch = finalUrl.match(/^(https?:\/\/[^/]+)/i);
-            var host = hostMatch ? hostMatch[1] : "https://callistanise.com";
-            return res.text().then(function(html) {
-                var streamUrl = null;
-                var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-                if (packMatch) {
-                    var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-                    var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
-                    if (m3u8Match) streamUrl = m3u8Match[1];
-                }
-                if (!streamUrl) {
-                    var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
-                    if (directMatch) streamUrl = directMatch[0];
-                }
-                if (streamUrl) {
-                    if (streamUrl.indexOf("/") === 0) streamUrl = host + streamUrl;
-                    return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": finalUrl }).then(function(q) {
-                        return { url: streamUrl, serverName: "VidHide", quality: q, headers: { "User-Agent": USER_AGENT, "Referer": finalUrl } };
-                    });
-                }
-                return null;
-            });
-        }).catch(function() { return null; });
+        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(html) {
+            var streamUrl = null;
+            var unpacked = unpackFromHtml(html);
+            if (unpacked) {
+                var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) || unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
+                if (m3u8Match) streamUrl = m3u8Match[1] || m3u8Match[0];
+            }
+
+            if (!streamUrl) {
+                var directMatch = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)["']/i);
+                if (directMatch) streamUrl = directMatch[1];
+            }
+
+            if (streamUrl) {
+                if (streamUrl.indexOf("/") === 0) streamUrl = host + streamUrl;
+                return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
+                    return { url: streamUrl, serverName: "VidHide", quality: q, headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                });
+            }
+            return null;
+        })
+        .catch(function() { return null; });
 }
 
 function resolveMp4upload(url) {
@@ -405,41 +461,37 @@ function resolveMp4upload(url) {
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             if (!html) return null;
-            var quality = "1080p";
-            if (html.indexOf("FHD") !== -1 || html.indexOf("1080") !== -1) {
-                quality = "1080p";
-            } else if (html.indexOf("HD") !== -1 || html.indexOf("720") !== -1) {
-                quality = "720p";
-            } else if (html.indexOf("SD") !== -1 || html.indexOf("480") !== -1) {
-                quality = "480p";
-            }
 
-            var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-            if (packMatch) {
-                var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
+            var unpacked = unpackFromHtml(html);
+            if (unpacked) {
                 var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
                                unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
-                if (srcMatch) return { url: srcMatch[1], serverName: "MP4Upload", quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                if (srcMatch) return { url: srcMatch[1], serverName: "MP4Upload", quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
             }
             var directMatch = html.match(/https?:\/\/[a-zA-Z0-9.-]+\.mp4upload\.com(?::\d+)?\/[a-zA-Z0-9/._-]+\.mp4/i);
-            if (directMatch) return { url: directMatch[0], serverName: "MP4Upload", quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": url } };
+            if (directMatch) return { url: directMatch[0], serverName: "MP4Upload", quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
             return null;
-        }).catch(function() { return null; });
+        })
+        .catch(function() { return null; });
 }
 
 function resolveStreamtape(url) {
     var targetUrl = url.replace("/v/", "/e/");
     if (targetUrl.indexOf("http") !== 0) targetUrl = "https://" + targetUrl.replace(/^\/\//, "");
+
     return fetchWithTimeout(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" }, 2500)
         .then(function(res) { return res ? res.text() : ""; })
         .then(function(html) {
             var match = html.match(/document\.getElementById\(['"](?:robotlink|ideoolink|noroot)['"]\)\.innerHTML\s*=\s*['"]([^'"]+)['"]\s*\+\s*(?:\(['"]([^'"]+)['"]\)\.substring\((\d+)\)|['"]([^'"]+)['"])/i);
             if (match) {
                 var p2 = (match[2] && match[3]) ? match[2].substring(parseInt(match[3], 10)) : (match[4] || "");
-                return { url: "https:" + match[1] + p2, serverName: "Streamtape", quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": targetUrl } };
+                var full = match[1] + p2;
+                if (full.indexOf("//") === 0) full = "https:" + full;
+                return { url: full, serverName: "Streamtape", quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": targetUrl } };
             }
             return null;
-        }).catch(function() { return null; });
+        })
+        .catch(function() { return null; });
 }
 
 function resolveDesuMagi(url) {
@@ -454,14 +506,15 @@ function resolveDesuMagi(url) {
                 });
             }
             return null;
-        }).catch(function() { return null; });
+        })
+        .catch(function() { return null; });
 }
 
 function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
-    if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("strwish") !== -1 || u.indexOf("sfasthwish") !== -1 || u.indexOf("flaswish") !== -1 || u.indexOf("fasthwish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("vibuxer") !== -1) return resolveStreamWish(url);
-    if (u.indexOf("vidhide") !== -1 || u.indexOf("vidhidevip") !== -1 || u.indexOf("callistanise") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("filelions") !== -1 || u.indexOf("morencius") !== -1) return resolveVidHide(url);
+    if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("strwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("flaswish") !== -1) return resolveStreamWish(url);
+    if (u.indexOf("vidhide") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) return resolveVidHide(url);
     if (u.indexOf("mp4upload") !== -1) return resolveMp4upload(url);
     if (u.indexOf("streamtape") !== -1) return resolveStreamtape(url);
     if (u.indexOf("/jkplayer/") !== -1 || u.indexOf("playmudos") !== -1) return resolveDesuMagi(url);
@@ -469,7 +522,7 @@ function dispatchResolver(url) {
 }
 
 function extractStreamsFromEpisodePage(pageUrl) {
-    return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 3000)
+    return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 2800)
         .then(function(res) { return res && res.ok ? res.text() : ""; })
         .then(function(html) {
             var rawEmbeds = [];
@@ -547,13 +600,24 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
     return fetchWithTimeout(tmdbUrl, null, 2500)
         .then(function(res) {
-            if (!res.ok) throw new Error("TMDB HTTP " + res.status);
+            if (!res || !res.ok) throw new Error("TMDB HTTP Error");
             return res.json();
         })
         .then(function(meta) {
+            // Exigir explícitamente género Animación (ID 16) para no procesar doramas o películas de acción real
+            var isAnimation = false;
+            if (meta.genres && Array.isArray(meta.genres)) {
+                for (var g = 0; g < meta.genres.length; g++) {
+                    if (meta.genres[g].id === 16) {
+                        isAnimation = true;
+                        break;
+                    }
+                }
+            }
+            if (!isAnimation) return [];
+
             var origLang = meta.original_language || "";
             var isAsianAnim = (origLang === "ja" || origLang === "zh" || origLang === "ko");
-
             if (!isAsianAnim && meta.origin_country) {
                 for (var c = 0; c < meta.origin_country.length; c++) {
                     var co = meta.origin_country[c];
@@ -563,7 +627,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
             }
-
             if (!isAsianAnim) return [];
 
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
@@ -582,7 +645,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            // EXTRACCIÓN ROBUSTA DE CONSULTA (EVITA QUE KANJI EN ORIGINAL_NAME DEJE LA BÚSQUEDA EN BLANCO)
             var cleanSearchTitle = "";
             if (origTitle && !hasAsianChars(origTitle)) {
                 cleanSearchTitle = origTitle;
@@ -602,23 +664,27 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var words = cleanT.split(/\s+/).filter(function(w) { return w.length > 2; });
             var searchKeyword = words.length >= 2 ? words.slice(0, 2).join(" ") : cleanT;
 
-            // RESOLUCIÓN MATEMÁTICA UNIVERSAL DE TEMPORADAS Y EPISODIOS
+            // Búsqueda precisa de la temporada 1 descartando temporada 0 de especiales
             var seasonsList = meta.seasons || [];
-            var s1Count = (seasonsList[0] && seasonsList[0].episode_count) || 60;
+            var s1Count = 60;
+            for (var sIdx = 0; sIdx < seasonsList.length; sIdx++) {
+                if (seasonsList[sIdx].season_number === 1) {
+                    s1Count = seasonsList[sIdx].episode_count || 60;
+                    break;
+                }
+            }
             
             var effectiveSeason = sNum;
             var effectiveEpisode = eNum;
             var absoluteEp = eNum;
 
             if (!isMovie) {
-                // Caso Kitsu: Manda Temporada 1 pero con número acumulado total (eNum > temporada 1)
                 if (sNum === 1 && eNum > s1Count && seasonsList.length > 1) {
                     absoluteEp = eNum;
                     var decomp = decomposeAbsoluteEp(seasonsList, eNum);
                     effectiveSeason = decomp.season;
                     effectiveEpisode = decomp.episode;
                 } else {
-                    // Caso TMDB / Cinemeta: Manda Temporada N y Episodio dentro de la temporada
                     absoluteEp = calculateAbsoluteEp(seasonsList, sNum, eNum);
                     effectiveSeason = sNum;
                     effectiveEpisode = eNum;
@@ -636,8 +702,18 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 var candidateSlugs = [];
 
                 if (aniTarget && aniTarget.slug) {
-                    candidateSlugs.push({ slug: aniTarget.slug, targetEp: aniTarget.targetEp });
-                    if (year) candidateSlugs.push({ slug: aniTarget.slug + "-" + year, targetEp: aniTarget.targetEp });
+                    candidateSlugs.push({
+                        slug: aniTarget.slug,
+                        targetEp: aniTarget.targetEp,
+                        isContinuous: aniTarget.isContinuous // Propagación corregida
+                    });
+                    if (year) {
+                        candidateSlugs.push({
+                            slug: aniTarget.slug + "-" + year,
+                            targetEp: aniTarget.targetEp,
+                            isContinuous: aniTarget.isContinuous
+                        });
+                    }
                 }
 
                 for (var n = 0; n < nativeSlugs.length; n++) {
@@ -646,7 +722,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     for (var ex = 0; ex < candidateSlugs.length; ex++) {
                         if (candidateSlugs[ex].slug === nSlug) { exists = true; break; }
                     }
-                    if (!exists) candidateSlugs.push({ slug: nSlug, targetEp: null });
+                    if (!exists) candidateSlugs.push({ slug: nSlug, targetEp: null, isContinuous: false });
                 }
 
                 for (var t = 0; t < titles.length; t++) {
@@ -656,7 +732,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         for (var e1 = 0; e1 < candidateSlugs.length; e1++) {
                             if (candidateSlugs[e1].slug === sBase) { ex1 = true; break; }
                         }
-                        if (!ex1) candidateSlugs.push({ slug: sBase, targetEp: null });
+                        if (!ex1) candidateSlugs.push({ slug: sBase, targetEp: null, isContinuous: false });
 
                         if (year) {
                             var sYear = sBase + "-" + year;
@@ -664,7 +740,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             for (var e2 = 0; e2 < candidateSlugs.length; e2++) {
                                 if (candidateSlugs[e2].slug === sYear) { ex2 = true; break; }
                             }
-                            if (!ex2) candidateSlugs.push({ slug: sYear, targetEp: null });
+                            if (!ex2) candidateSlugs.push({ slug: sYear, targetEp: null, isContinuous: false });
                         }
                     }
                 }
@@ -674,16 +750,15 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     var cand = candidateSlugs[k];
                     var sc = scoreCandidate(cand.slug, titles, year);
                     if (sc >= 35) {
-                        // BONIFICACIÓN JERÁRQUICA SEGÚN TEMPORADA EXACTA
                         var slugRank = getSeasonRank(cand.slug);
                         if (slugRank === effectiveSeason) {
-                            sc += 30; // Impulso grande a la temporada correcta (ej. II para T2)
+                            sc += 30;
                             if (isPartTwo(cand.slug) && effectiveEpisode > 12) sc += 15;
                             if (!isPartTwo(cand.slug) && effectiveEpisode <= 12) sc += 15;
                         } else if (effectiveSeason > 1 && slugRank === 1 && !cand.isContinuous) {
-                            sc -= 30; // Penaliza temporada 1 si pedimos temporada 2 o 3
+                            sc -= 30;
                         }
-                        scoredSlugs.push({ slug: cand.slug, score: sc, targetEp: cand.targetEp });
+                        scoredSlugs.push({ slug: cand.slug, score: sc, targetEp: cand.targetEp, isContinuous: cand.isContinuous });
                     }
                 }
 
@@ -691,7 +766,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                 scoredSlugs.sort(function(a, b) { return b.score - a.score; });
 
-                // CONSTRUCCIÓN INTELIGENTE DE RUTAS DE EPISODIO
                 var pageUrlsToTry = [];
                 for (var sIdx = 0; sIdx < scoredSlugs.length; sIdx++) {
                     var item = scoredSlugs[sIdx];
@@ -731,17 +805,25 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                function tryPageUrls(pIdx) {
-                    if (pIdx >= uniquePageUrls.length) return Promise.resolve([]);
-                    var targetUrl = uniquePageUrls[pIdx];
+                // Ejecución en paralelo por lotes pequeños (máximo 3 concurrentes) para cumplir Regla 4
+                function tryBatch(urls, batchSize) {
+                    if (urls.length === 0) return Promise.resolve([]);
+                    var currentBatch = urls.slice(0, batchSize);
+                    var remaining = urls.slice(batchSize);
 
-                    return extractStreamsFromEpisodePage(targetUrl).then(function(streams) {
-                        if (streams && streams.length > 0) return streams;
-                        return tryPageUrls(pIdx + 1);
+                    var batchPromises = currentBatch.map(function(url) {
+                        return extractStreamsFromEpisodePage(url);
+                    });
+
+                    return Promise.all(batchPromises).then(function(results) {
+                        for (var r = 0; r < results.length; r++) {
+                            if (results[r] && results[r].length > 0) return results[r];
+                        }
+                        return tryBatch(remaining, batchSize);
                     });
                 }
 
-                return tryPageUrls(0);
+                return tryBatch(uniquePageUrls, 3);
             });
         })
         .catch(function() {
