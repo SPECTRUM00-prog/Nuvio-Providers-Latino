@@ -200,28 +200,30 @@ function unpackFromHtml(html) {
 
 function detectQualityFromUrl(url) {
     if (!url) return null;
-    var u = url.toLowerCase();
+    // 1. Quitar parámetros (?st=..., tokens, hashes) para no coincidir con letras aleatorias en Base64
+    var clean = url.split("?")[0].toLowerCase();
 
-    // Detección precisa de patrones multi-bitrate .urlset (VidHide / StreamWish)
-    if (u.indexOf(".urlset") !== -1) {
-        var urlsetMatch = u.match(/[_,]([a-z,]+)\.urlset/i);
+    // 2. Detección precisa de patrones multi-bitrate .urlset (VidHide / StreamWish)
+    if (clean.indexOf(".urlset") !== -1) {
+        var urlsetMatch = clean.match(/[_,]([a-z,]+)\.urlset/i);
         if (urlsetMatch) {
             var tags = urlsetMatch[1].split(",");
-            // 'x' = 1080p, 'o' = original/1080p, 'h' = 720p, 'n' = 480p, 'l' = 360p
+            // 'x' = 1080p, 'o' = original (1080p), 'h' = 720p, 'n' = 480p, 'l' = 360p
             if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("fhd") !== -1) return "1080p";
-            if (tags.indexOf("h") !== -1 || tags.indexOf("hd") !== -1) return "720p";
-            if (tags.indexOf("n") !== -1 || tags.indexOf("sd") !== -1) return "480p";
+            if (tags.indexOf("h") !== -1) return "720p";
+            if (tags.indexOf("n") !== -1) return "480p";
             if (tags.indexOf("l") !== -1) return "360p";
         }
     }
 
-    if (u.indexOf("4k") !== -1 || u.indexOf("2160") !== -1) return "4K";
-    if (u.indexOf("1080") !== -1 || u.indexOf("fhd") !== -1) return "1080p";
-    if (u.indexOf("720") !== -1 || u.indexOf("hd") !== -1) return "720p";
-    if (u.indexOf("480") !== -1 || u.indexOf("sd") !== -1) return "480p";
+    // 3. Patrones numéricos estrictos en la ruta del archivo (sin coincidir con letras aleatorias)
+    if (/(?:[-_./]|^)(?:4k|2160p?)(?:[-_./]|$)/i.test(clean)) return "4K";
+    if (/(?:[-_./]|^)(?:1080p?|fhd)(?:[-_./]|$)/i.test(clean)) return "1080p";
+    if (/(?:[-_./]|^)(?:720p?)(?:[-_./]|$)/i.test(clean)) return "720p";
+    if (/(?:[-_./]|^)(?:480p?)(?:[-_./]|$)/i.test(clean)) return "480p";
+
     return null;
 }
-
 function probeM3u8Quality(m3u8Url, headers, defaultQuality) {
     var fallback = defaultQuality || "720p";
     var fastQ = detectQualityFromUrl(m3u8Url);
