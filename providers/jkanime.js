@@ -1,7 +1,8 @@
 /**
  * Provider: JKAnime (Anime Series, Películas, Donghua)
  * Motor: AniList GraphQL + Algoritmo Universal Split-Cour y Continuo (Agnóstico)
- * Correcciones: Unpacker universal, limpieza de guiones, batches en paralelo, género animación.
+ * Correcciones: Detección dinámica de resolución (1080p en Desu/VidHide/MP4Upload),
+ *               ancho/alto cinemascope, unpacker universal, batches en paralelo y timer cleanup.
  * Reglas Hermes: ES5 estricto, 100% Promesas, Zero-Dependencies, Fast Timeout (<= 2800ms)
  */
 
@@ -111,7 +112,6 @@ function isPartTwo(text) {
     return t.indexOf("part 2") !== -1 || t.indexOf("part-2") !== -1 || t.indexOf("cour 2") !== -1 || t.indexOf("cour-2") !== -1;
 }
 
-// Detección estricta de marcadores estacionales evitando falsos positivos con palabras ("vinland", "violet")
 function isSeasonalSlug(slug) {
     if (!slug) return false;
     var s = "-" + slug.toLowerCase() + "-";
@@ -164,7 +164,7 @@ function scoreCandidate(candidateSlug, titles, year) {
 }
 
 // ==========================================
-// 2. DESEMPAQUETADOR UNIVERSAL DEAN EDWARDS
+// 2. DESEMPAQUETADOR Y DETECCIÓN DE CALIDAD
 // ==========================================
 
 function unpackFromHtml(html) {
@@ -201,52 +201,64 @@ function unpackFromHtml(html) {
 function detectQualityFromUrl(url) {
     if (!url) return null;
     var u = url.toLowerCase();
-    if (u.indexOf("vimeos") !== -1 || u.indexOf(".urlset") !== -1) {
-        var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
+
+    // Detección precisa de patrones multi-bitrate .urlset (VidHide / StreamWish)
+    if (u.indexOf(".urlset") !== -1) {
+        var urlsetMatch = u.match(/[_,]([a-z,]+)\.urlset/i);
         if (urlsetMatch) {
             var tags = urlsetMatch[1].split(",");
-            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1) return "1080p";
-            if (tags.indexOf("h") !== -1) return "720p";
-            if (tags.indexOf("n") !== -1) return "480p";
+            // 'x' = 1080p, 'o' = original/1080p, 'h' = 720p, 'n' = 480p, 'l' = 360p
+            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("fhd") !== -1) return "1080p";
+            if (tags.indexOf("h") !== -1 || tags.indexOf("hd") !== -1) return "720p";
+            if (tags.indexOf("n") !== -1 || tags.indexOf("sd") !== -1) return "480p";
             if (tags.indexOf("l") !== -1) return "360p";
         }
     }
+
     if (u.indexOf("4k") !== -1 || u.indexOf("2160") !== -1) return "4K";
-    if (u.indexOf("1080") !== -1) return "1080p";
-    if (u.indexOf("720") !== -1) return "720p";
-    if (u.indexOf("480") !== -1) return "480p";
+    if (u.indexOf("1080") !== -1 || u.indexOf("fhd") !== -1) return "1080p";
+    if (u.indexOf("720") !== -1 || u.indexOf("hd") !== -1) return "720p";
+    if (u.indexOf("480") !== -1 || u.indexOf("sd") !== -1) return "480p";
     return null;
 }
 
-function probeM3u8Quality(m3u8Url, headers) {
+function probeM3u8Quality(m3u8Url, headers, defaultQuality) {
+    var fallback = defaultQuality || "720p";
     var fastQ = detectQualityFromUrl(m3u8Url);
     if (fastQ) return Promise.resolve(fastQ);
 
-    if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
+    if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve(fallback);
 
     return fetchWithTimeout(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" }, 2500)
         .then(function(res) {
-            if (!res || !res.ok) return "720p";
+            if (!res || !res.ok) return fallback;
             return res.text();
         })
         .then(function(text) {
             if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
                 if (m3u8Url.indexOf("1080") !== -1) return "1080p";
                 if (m3u8Url.indexOf("720") !== -1) return "720p";
-                return "720p";
+                return fallback;
             }
-            var maxH = 0, resRegex = /RESOLUTION=\d+x(\d+)/gi, match;
+
+            var maxW = 0, maxH = 0;
+            var resRegex = /RESOLUTION=(\d+)x(\d+)/gi;
+            var match;
             while ((match = resRegex.exec(text)) !== null) {
-                var h = parseInt(match[1], 10);
+                var w = parseInt(match[1], 10);
+                var h = parseInt(match[2], 10);
+                if (w > maxW) maxW = w;
                 if (h > maxH) maxH = h;
             }
-            if (maxH >= 2160) return "4K";
-            if (maxH >= 1080) return "1080p";
-            if (maxH >= 720) return "720p";
-            if (maxH >= 480) return "480p";
-            return "720p";
+
+            // Detección por ancho o alto (soporta 1920x1080 y 1920x804 cinemascope)
+            if (maxW >= 3840 || maxH >= 2160) return "4K";
+            if (maxW >= 1920 || maxH >= 1080) return "1080p";
+            if (maxW >= 1280 || maxH >= 720) return "720p";
+            if (maxW >= 854 || maxH >= 480) return "480p";
+            return fallback;
         })
-        .catch(function() { return "720p"; });
+        .catch(function() { return fallback; });
 }
 
 // ==========================================
@@ -462,14 +474,24 @@ function resolveMp4upload(url) {
         .then(function(html) {
             if (!html) return null;
 
+            var quality = "720p";
+            if (html.indexOf("FHD") !== -1 || html.indexOf("1080") !== -1 || html.indexOf("fhd.png") !== -1) {
+                quality = "1080p";
+            } else if (html.indexOf("HD") !== -1 || html.indexOf("720") !== -1 || html.indexOf("hd.png") !== -1) {
+                quality = "720p";
+            } else if (html.indexOf("SD") !== -1 || html.indexOf("480") !== -1) {
+                quality = "480p";
+            }
+
             var unpacked = unpackFromHtml(html);
             if (unpacked) {
                 var srcMatch = unpacked.match(/player\.src\(\s*\{[^{}]*src:\s*["']([^"']+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
-                               unpacked.match(/["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
-                if (srcMatch) return { url: srcMatch[1], serverName: "MP4Upload", quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                               unpacked.match(/(?:src|file)\s*:\s*["'](https?:\/\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i) ||
+                               unpacked.match(/["'](https?:\/\/[a-zA-Z0-9.-]*mp4upload\.com(?::\d+)?\/[^"'\s\\]+\.mp4(?:\?[^"'\s\\]*)?)["']/i);
+                if (srcMatch) return { url: srcMatch[1], serverName: "MP4Upload", quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": url } };
             }
             var directMatch = html.match(/https?:\/\/[a-zA-Z0-9.-]+\.mp4upload\.com(?::\d+)?\/[a-zA-Z0-9/._-]+\.mp4/i);
-            if (directMatch) return { url: directMatch[0], serverName: "MP4Upload", quality: "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+            if (directMatch) return { url: directMatch[0], serverName: "MP4Upload", quality: quality, headers: { "User-Agent": USER_AGENT, "Referer": url } };
             return null;
         })
         .catch(function() { return null; });
@@ -501,13 +523,13 @@ function resolveDesuMagi(url) {
             var m3u8Match = html.match(/https?:\/\/[^"'\s\\]+playmudos\.com\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i) ||
                             html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
             if (m3u8Match) {
-                return probeM3u8Quality(m3u8Match[0], { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
+                // Desu entrega siempre stream 1080p directo sin master playlist
+                return probeM3u8Quality(m3u8Match[0], { "User-Agent": USER_AGENT, "Referer": url }, "1080p").then(function(q) {
                     return { url: m3u8Match[0], serverName: "Desu", quality: q || "1080p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
                 });
             }
             return null;
-        })
-        .catch(function() { return null; });
+        }).catch(function() { return null; });
 }
 
 function dispatchResolver(url) {
@@ -604,7 +626,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return res.json();
         })
         .then(function(meta) {
-            // Exigir explícitamente género Animación (ID 16) para no procesar doramas o películas de acción real
+            // Exigir explícitamente género Animación (ID 16) para no procesar doramas o películas live-action
             var isAnimation = false;
             if (meta.genres && Array.isArray(meta.genres)) {
                 for (var g = 0; g < meta.genres.length; g++) {
@@ -705,7 +727,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     candidateSlugs.push({
                         slug: aniTarget.slug,
                         targetEp: aniTarget.targetEp,
-                        isContinuous: aniTarget.isContinuous // Propagación corregida
+                        isContinuous: aniTarget.isContinuous
                     });
                     if (year) {
                         candidateSlugs.push({
@@ -805,7 +827,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                // Ejecución en paralelo por lotes pequeños (máximo 3 concurrentes) para cumplir Regla 4
                 function tryBatch(urls, batchSize) {
                     if (urls.length === 0) return Promise.resolve([]);
                     var currentBatch = urls.slice(0, batchSize);
