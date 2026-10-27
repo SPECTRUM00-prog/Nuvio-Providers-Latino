@@ -1,13 +1,14 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
+ * Motor: Criptografía PoW Dinámica + AES-256-CBC en JS Puro (Zero-Dependencies)
  * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
- * Resolvers: VidHide (morencius), StreamWish (hlswish)
+ * Resolvers: VidHide (morencius), StreamWish (hglink)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://embed69.org";
-var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-var NETWORK_TIMEOUT = 3200;
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 2800;
 
 // ==========================================
 // 1. HELPERS DE RED & STRINGS (HERMES SAFE)
@@ -15,14 +16,23 @@ var NETWORK_TIMEOUT = 3200;
 
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Timeout"));
-            }, limit);
+    var timer = null;
+
+    var timeoutPromise = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            reject(new Error("Timeout"));
+        }, limit);
+    });
+
+    return Promise.race([fetch(url, options), timeoutPromise])
+        .then(function(res) {
+            if (timer) clearTimeout(timer);
+            return res;
         })
-    ]);
+        .catch(function() {
+            if (timer) clearTimeout(timer);
+            return null;
+        });
 }
 
 function decodeB64ToBytes(b64) {
@@ -97,7 +107,7 @@ function solvePoW(challengeStr, difficulty) {
     var fullBytes = difficulty >> 1;
     var hasHalfByte = (difficulty & 1) === 1;
 
-    for (var nonce = 0; nonce < 200000; nonce++) {
+    for (var nonce = 0; nonce < 300000; nonce++) {
         var n = nonce, nDigits = 0, tempN = n;
         do { nDigits++; tempN = (tempN / 10) | 0; } while (tempN > 0);
 
@@ -319,54 +329,59 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
 }
 
 // ==========================================
-// 4. DESEMPAQUETADOR DEAN EDWARDS
+// 4. DESEMPAQUETADOR DEAN EDWARDS UNIVERSAL
 // ==========================================
 
-function unpackJS(packed) {
-    try {
-        var regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
-        var match = packed.match(regex);
-        if (!match) return null;
-        var p = match[1].slice(1, -1);
-        var a = match[2];
-        var k = match[4];
-        var words = k.split("|");
-        var radix = parseInt(a, 10);
-        var unbase = function(val, base) {
-            var chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-            if (base <= 36) return parseInt(val, base);
-            var res = 0;
-            for (var i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
-            return res;
-        };
-        return p.replace(/\b[0-9a-zA-Z]+\b/g, function(token) {
-            var idx = unbase(token, radix);
-            return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
-        });
-    } catch (e) {
-        return null;
+function unpackDeanEdwards(p, a, c, k) {
+    var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+    function decodeBase(val, radix) {
+        var res = 0;
+        for (var i = 0; i < val.length; i++) {
+            var idx = dict.indexOf(val[i]);
+            if (idx === -1) return NaN;
+            res = res * radix + idx;
+        }
+        return res;
     }
+    return p.replace(/\b([0-9a-zA-Z]+)\b/g, function(token) {
+        var index = decodeBase(token, a);
+        if (isNaN(index) || index >= k.length) return token;
+        return (k[index] && k[index] !== "") ? k[index] : token;
+    });
 }
 
 // ==========================================
 // 5. DETECCIÓN DINÁMICA DE CALIDAD REAL
 // ==========================================
 
+function detectQualityFromUrl(url) {
+    if (!url) return null;
+    var u = url.toLowerCase();
+    if (u.indexOf("4k") !== -1 || u.indexOf("2160") !== -1) return "4K";
+    if (u.indexOf("1080") !== -1) return "1080p";
+    if (u.indexOf("720") !== -1) return "720p";
+    if (u.indexOf("480") !== -1) return "480p";
+    return null;
+}
+
 function probeM3u8Quality(m3u8Url, headers) {
+    var fastQ = detectQualityFromUrl(m3u8Url);
+    if (fastQ) return Promise.resolve(fastQ);
+
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
     return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    }, 2000)
+    }, 2500)
     .then(function(res) {
-        if (!res.ok) return "720p";
+        if (!res || !res.ok) return "720p";
         return res.text();
     })
     .then(function(text) {
         if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
-            if (/1080/i.test(m3u8Url)) return "1080p";
-            if (/720/i.test(m3u8Url)) return "720p";
+            if (m3u8Url.indexOf("1080") !== -1) return "1080p";
+            if (m3u8Url.indexOf("720") !== -1) return "720p";
             return "720p";
         }
         var maxH = 0;
@@ -388,33 +403,37 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
-// 6. RESOLVERS DE STREAMING (PROMISE BASED)
+// 6. RESOLVERS DE STREAMING ROBUSTOS
 // ==========================================
 
 function resolveVidHide(url) {
+    var hostMatch = url.match(/^(https?:\/\/[^/]+)/i);
+    var host = hostMatch ? hostMatch[1] : "https://morencius.com";
+
     return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
+    .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
         var streamUrl = null;
-        var direct = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-        if (direct) streamUrl = direct[1].replace(/\\/g, "");
+        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+        if (packMatch) {
+            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
+            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) || unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
+            if (m3u8Match) streamUrl = m3u8Match[1] || m3u8Match[0];
+        }
 
         if (!streamUrl) {
-            var unpacked = unpackJS(html);
-            if (unpacked) {
-                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-                if (m3u8) streamUrl = m3u8[0].replace(/\\/g, "");
-            }
+            var direct = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+            if (direct) streamUrl = direct[1].replace(/\\/g, "");
         }
 
         if (streamUrl) {
-            // Referer exacto de la URL embed para que el CDN privado no corte la conexión
-            var headers = { "User-Agent": USER_AGENT, "Referer": url };
-            return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: headers };
+            if (streamUrl.indexOf("/") === 0) streamUrl = host + streamUrl;
+            var hdrs = { "User-Agent": USER_AGENT, "Referer": url };
+            return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
+                return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: hdrs };
             });
         }
         return null;
@@ -423,36 +442,35 @@ function resolveVidHide(url) {
 }
 
 function resolveStreamWish(url) {
-    var cleanUrl = url.split("?")[0].replace(/\/$/, "");
-    var id = cleanUrl.split("/").pop();
-    
-    // Consulta directa por hlswish.com que responde el m3u8 empaquetado
-    var targetUrl = "https://hlswish.com/e/" + id;
+    // Usar la URL directa activa dada por embed69 (hglink.to) sin forzar dominios caídos
+    var targetUrl = url;
+    if (targetUrl.indexOf("/f/") !== -1 || targetUrl.indexOf("/v/") !== -1) {
+        targetUrl = targetUrl.replace("/f/", "/e/").replace("/v/", "/e/");
+    }
 
     return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
+    .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
         var streamUrl = null;
-        var directMatch = html.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
-                          html.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-        if (directMatch) streamUrl = directMatch[1].replace(/\\/g, "");
+        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+        if (packMatch) {
+            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
+            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
+            if (m3u8) streamUrl = m3u8[0];
+        }
 
         if (!streamUrl) {
-            var unpacked = unpackJS(html);
-            if (unpacked) {
-                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i) ||
-                           unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-                if (m3u8) streamUrl = (m3u8[1] || m3u8[0]).replace(/\\/g, "");
-            }
+            var directMatch = html.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+            if (directMatch) streamUrl = directMatch[1].replace(/\\/g, "");
         }
 
         if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": targetUrl };
-            return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: headers };
+            var hdrs = { "User-Agent": USER_AGENT, "Referer": targetUrl };
+            return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
+                return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: hdrs };
             });
         }
         return null;
@@ -470,23 +488,24 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
     var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=external_ids";
 
     return fetchWithTimeout(url, null, 2500)
-        .then(function(res) { return res.json(); })
+        .then(function(res) { return res ? res.json() : null; })
         .then(function(data) {
+            if (!data) return null;
             var imdbId = (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null;
 
             if (!imdbId && isTv) {
-                var s = parseInt(seasonNum || 1, 10);
-                var e = parseInt(episodeNum || 1, 10);
+                var s = seasonNum !== undefined && seasonNum !== null ? parseInt(seasonNum, 10) : 1;
+                var e = episodeNum !== undefined && episodeNum !== null ? parseInt(episodeNum, 10) : 1;
                 var epUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + s + "/episode/" + e + "/external_ids?api_key=" + TMDB_API_KEY;
 
                 return fetchWithTimeout(epUrl, null, 2500)
-                    .then(function(epRes) { return epRes.json(); })
+                    .then(function(epRes) { return epRes ? epRes.json() : null; })
                     .then(function(epData) {
                         return {
                             title: data.name,
                             year: (data.first_air_date || "").substring(0, 4),
-                            imdbId: epData.imdb_id || null,
-                            isEpisodeImdb: !!epData.imdb_id
+                            imdbId: (epData && epData.imdb_id) ? epData.imdb_id : null,
+                            isEpisodeImdb: !!(epData && epData.imdb_id)
                         };
                     })
                     .catch(function() {
@@ -518,10 +537,12 @@ function fetchAndDecryptEmbed69(targetUrl) {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
     }, NETWORK_TIMEOUT)
     .then(function(res) {
-        if (!res.ok) return [];
+        if (!res || !res.ok) return "";
         return res.text();
     })
     .then(function(html) {
+        if (!html) return [];
+
         var challengeMatch = html.match(/(?:const|let|var)\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
         var difficultyMatch = html.match(/(?:const|let|var)\s+POW_DIFFICULTY\s*=\s*(\d+)/i);
         var saltMatch = html.match(/(?:const|let|var)\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/i);
@@ -572,8 +593,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
 
     var isTv = mediaType === "tv" || mediaType === "series";
-    var s = parseInt(seasonNum || 1, 10);
-    var e = parseInt(episodeNum || 1, 10);
+    var s = seasonNum !== undefined && seasonNum !== null ? parseInt(seasonNum, 10) : 1;
+    var e = episodeNum !== undefined && episodeNum !== null ? parseInt(episodeNum, 10) : 1;
 
     return getMediaData(tmdbId, mediaType, s, e).then(function(media) {
         if (!media || !media.imdbId || !/^tt\d+$/.test(media.imdbId)) return [];
@@ -585,53 +606,67 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             if (media.isEpisodeImdb) {
                 candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
             }
-            var epPadded = ("0" + e).slice(-2);
+            var epPadded = e < 10 ? "0" + e : String(e);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-s" + s + "e" + epPadded);
         }
 
-        function tryNextUrl(idx) {
-            if (idx >= candidateUrls.length) return Promise.resolve([]);
-            var targetUrl = candidateUrls[idx];
-
-            return fetchAndDecryptEmbed69(targetUrl).then(function(embeds) {
-                if (embeds && embeds.length > 0) return embeds;
-                return tryNextUrl(idx + 1);
-            });
+        var uniqueUrls = [];
+        for (var u = 0; u < candidateUrls.length; u++) {
+            if (uniqueUrls.indexOf(candidateUrls[u]) === -1) {
+                uniqueUrls.push(candidateUrls[u]);
+            }
         }
 
-        return tryNextUrl(0).then(function(embedsToResolve) {
-            if (!embedsToResolve || embedsToResolve.length === 0) return [];
+        var fetchPromises = uniqueUrls.map(function(url) {
+            return fetchAndDecryptEmbed69(url);
+        });
+
+        return Promise.all(fetchPromises).then(function(allEmbeds) {
+            var embedsToResolve = [];
+            for (var a = 0; a < allEmbeds.length; a++) {
+                if (allEmbeds[a] && allEmbeds[a].length > 0) {
+                    embedsToResolve = allEmbeds[a];
+                    break;
+                }
+            }
+
+            if (embedsToResolve.length === 0) return [];
 
             var resolvePromises = embedsToResolve.map(function(item) {
-                var u = item.url.toLowerCase();
+                var urlLower = item.url.toLowerCase();
                 var sName = (item.server || "").toLowerCase();
                 var promise = null;
 
-                if (sName.indexOf("vidhide") !== -1 || u.indexOf("vidhide") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) {
+                if (sName.indexOf("vidhide") !== -1 || urlLower.indexOf("vidhide") !== -1 || urlLower.indexOf("morencius") !== -1 || urlLower.indexOf("minochinos") !== -1 || urlLower.indexOf("callistanise") !== -1) {
                     promise = resolveVidHide(item.url);
-                } else if (sName.indexOf("streamwish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
+                } else if (sName.indexOf("streamwish") !== -1 || urlLower.indexOf("streamwish") !== -1 || urlLower.indexOf("hglink") !== -1 || urlLower.indexOf("hlswish") !== -1 || urlLower.indexOf("flaswish") !== -1) {
                     promise = resolveStreamWish(item.url);
                 } else {
                     promise = Promise.resolve(null);
                 }
 
-                return promise.then(function(res) {
-                    if (res && res.url) {
-                        return {
-                            name: "SoloLatino",
-                            title: res.quality + " · " + res.server + " (" + item.lang + ")",
-                            url: res.url,
-                            quality: res.quality,
-                            headers: res.headers || {
-                                "User-Agent": USER_AGENT,
-                                "Referer": item.url
-                            }
-                        };
-                    }
-                    return null;
-                });
+                // Aislamiento: si un locker falla, devuelve null sin hacer caer a los demás
+                return promise
+                    .then(function(res) {
+                        if (res && res.url) {
+                            return {
+                                name: "SoloLatino",
+                                title: res.quality + " · " + res.server + " (" + item.lang + ")",
+                                url: res.url,
+                                quality: res.quality,
+                                headers: res.headers || {
+                                    "User-Agent": USER_AGENT,
+                                    "Referer": item.url
+                                }
+                            };
+                        }
+                        return null;
+                    })
+                    .catch(function() {
+                        return null;
+                    });
             });
 
             return Promise.all(resolvePromises).then(function(results) {
