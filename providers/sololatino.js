@@ -1,13 +1,14 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
+ * Motor: Criptografía PoW Dinámica + AES-256-CBC en JS Puro (Zero-Dependencies)
  * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
  * Resolvers: VidHide (morencius), StreamWish (hlswish)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://embed69.org";
-var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-var NETWORK_TIMEOUT = 3200;
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 2800;
 
 // ==========================================
 // 1. HELPERS DE RED & STRINGS (HERMES SAFE)
@@ -15,14 +16,23 @@ var NETWORK_TIMEOUT = 3200;
 
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Timeout"));
-            }, limit);
+    var timer = null;
+
+    var timeoutPromise = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            reject(new Error("Timeout"));
+        }, limit);
+    });
+
+    return Promise.race([fetch(url, options), timeoutPromise])
+        .then(function(res) {
+            if (timer) clearTimeout(timer);
+            return res;
         })
-    ]);
+        .catch(function(err) {
+            if (timer) clearTimeout(timer);
+            return null;
+        });
 }
 
 function decodeB64ToBytes(b64) {
@@ -73,7 +83,7 @@ function utf8BytesToString(bytes) {
 }
 
 // ==========================================
-// 2. MOTOR SHA-256 ZERO-ALLOCATION (PoW)
+// 2. MOTOR SHA-256 ZERO-ALLOCATION (PoW DINÁMICO)
 // ==========================================
 
 var SHA256_K = [
@@ -87,58 +97,58 @@ var SHA256_K = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-var POW_W = new Uint32Array(64);
-var POW_BUFFER = new Uint8Array(128);
-var POW_VIEW = new DataView(POW_BUFFER.buffer);
+function sha256Transform(H, W) {
+    var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (var t = 0; t < 64; t++) {
+        var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+        var ch = (e & f) ^ (~e & g);
+        var temp1 = (h + S1 + ch + SHA256_K[t] + W[t]) | 0;
+        var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+        var maj = (a & b) ^ (a & c) ^ (b & c);
+        var temp2 = (S0 + maj) | 0;
+
+        h = g; g = f; f = e; e = (d + temp1) | 0;
+        d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+    }
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+}
 
 function solvePoW(challengeStr, difficulty) {
     var cBytes = stringToUtf8Bytes(challengeStr);
-    var cLen = cBytes.length;
     var fullBytes = difficulty >> 1;
     var hasHalfByte = (difficulty & 1) === 1;
 
-    for (var nonce = 0; nonce < 200000; nonce++) {
-        var n = nonce, nDigits = 0, tempN = n;
-        do { nDigits++; tempN = (tempN / 10) | 0; } while (tempN > 0);
+    for (var nonce = 0; nonce < 300000; nonce++) {
+        var nStr = String(nonce);
+        var nBytes = stringToUtf8Bytes(nStr);
+        var totalLen = cBytes.length + nBytes.length;
 
-        var totalLen = cLen + nDigits;
-        POW_BUFFER.fill(0);
-        POW_BUFFER.set(cBytes, 0);
+        var bitLen = totalLen * 8;
+        var newLen = (((totalLen + 8) >> 6) + 1) << 6;
+        var padded = new Uint8Array(newLen);
+        padded.set(cBytes, 0);
+        padded.set(nBytes, cBytes.length);
+        padded[totalLen] = 0x80;
 
-        var pos = totalLen - 1;
-        tempN = n;
-        do {
-            POW_BUFFER[pos--] = 48 + (tempN % 10);
-            tempN = (tempN / 10) | 0;
-        } while (tempN > 0);
+        var view = new DataView(padded.buffer);
+        view.setUint32(newLen - 4, bitLen, false);
 
-        POW_BUFFER[totalLen] = 0x80;
-        POW_VIEW.setUint32(60, totalLen * 8, false);
+        var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+        var W = new Uint32Array(64);
 
-        for (var t = 0; t < 16; t++) POW_W[t] = POW_VIEW.getUint32(t * 4, false);
-        for (var t = 16; t < 64; t++) {
-            var g0 = ((POW_W[t - 15] >>> 7) | (POW_W[t - 15] << 25)) ^ ((POW_W[t - 15] >>> 18) | (POW_W[t - 15] << 14)) ^ (POW_W[t - 15] >>> 3);
-            var g1 = ((POW_W[t - 2] >>> 17) | (POW_W[t - 2] << 15)) ^ ((POW_W[t - 2] >>> 19) | (POW_W[t - 2] << 13)) ^ (POW_W[t - 2] >>> 10);
-            POW_W[t] = (POW_W[t - 16] + g0 + POW_W[t - 7] + g1) | 0;
+        for (var b = 0; b < newLen; b += 64) {
+            for (var t = 0; t < 16; t++) W[t] = view.getUint32(b + t * 4, false);
+            for (var t = 16; t < 64; t++) {
+                var g0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
+                var g1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
+                W[t] = (W[t - 16] + g0 + W[t - 7] + g1) | 0;
+            }
+            sha256Transform(H, W);
         }
 
-        var a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
-        var e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
-
-        for (var t = 0; t < 64; t++) {
-            var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-            var ch = (e & f) ^ (~e & g);
-            var temp1 = (h + S1 + ch + SHA256_K[t] + POW_W[t]) | 0;
-            var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-            var maj = (a & b) ^ (a & c) ^ (b & c);
-            var temp2 = (S0 + maj) | 0;
-
-            h = g; g = f; f = e; e = (d + temp1) | 0;
-            d = c; c = b; b = a; a = (temp1 + temp2) | 0;
-        }
-
-        var h0 = (0x6a09e667 + a) >>> 0;
-        var h1 = (0xbb67ae85 + b) >>> 0;
+        var h0 = H[0] >>> 0;
+        var h1 = H[1] >>> 0;
 
         var match = true;
         if (fullBytes >= 1 && (h0 >>> 24) !== 0) match = false;
@@ -176,22 +186,7 @@ function sha256(input) {
             var g1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
             W[t] = (W[t - 16] + g0 + W[t - 7] + g1) | 0;
         }
-
-        var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
-        for (var t = 0; t < 64; t++) {
-            var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-            var ch = (e & f) ^ (~e & g);
-            var temp1 = (h + S1 + ch + SHA256_K[t] + W[t]) | 0;
-            var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-            var maj = (a & b) ^ (a & c) ^ (b & c);
-            var temp2 = (S0 + maj) | 0;
-
-            h = g; g = f; f = e; e = (d + temp1) | 0;
-            d = c; c = b; b = a; a = (temp1 + temp2) | 0;
-        }
-
-        H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
-        H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+        sha256Transform(H, W);
     }
 
     var out = new Uint8Array(32);
@@ -352,21 +347,34 @@ function unpackJS(packed) {
 // 5. DETECCIÓN DINÁMICA DE CALIDAD REAL
 // ==========================================
 
+function detectQualityFromUrl(url) {
+    if (!url) return null;
+    var u = url.toLowerCase();
+    if (u.indexOf("4k") !== -1 || u.indexOf("2160") !== -1) return "4K";
+    if (u.indexOf("1080") !== -1) return "1080p";
+    if (u.indexOf("720") !== -1) return "720p";
+    if (u.indexOf("480") !== -1) return "480p";
+    return null;
+}
+
 function probeM3u8Quality(m3u8Url, headers) {
+    var fastQ = detectQualityFromUrl(m3u8Url);
+    if (fastQ) return Promise.resolve(fastQ);
+
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
     return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    }, 2000)
+    }, 2500)
     .then(function(res) {
-        if (!res.ok) return "720p";
+        if (!res || !res.ok) return "720p";
         return res.text();
     })
     .then(function(text) {
         if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
-            if (/1080/i.test(m3u8Url)) return "1080p";
-            if (/720/i.test(m3u8Url)) return "720p";
+            if (m3u8Url.indexOf("1080") !== -1) return "1080p";
+            if (m3u8Url.indexOf("720") !== -1) return "720p";
             return "720p";
         }
         var maxH = 0;
@@ -388,7 +396,7 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
-// 6. RESOLVERS DE STREAMING (PROMISE BASED)
+// 6. RESOLVERS DE STREAMING
 // ==========================================
 
 function resolveVidHide(url) {
@@ -396,7 +404,7 @@ function resolveVidHide(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
+    .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
         var streamUrl = null;
         var direct = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
@@ -411,10 +419,9 @@ function resolveVidHide(url) {
         }
 
         if (streamUrl) {
-            // Referer exacto de la URL embed para que el CDN privado no corte la conexión
-            var headers = { "User-Agent": USER_AGENT, "Referer": url };
-            return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: headers };
+            var hdrs = { "User-Agent": USER_AGENT, "Referer": url };
+            return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
+                return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: hdrs };
             });
         }
         return null;
@@ -425,15 +432,13 @@ function resolveVidHide(url) {
 function resolveStreamWish(url) {
     var cleanUrl = url.split("?")[0].replace(/\/$/, "");
     var id = cleanUrl.split("/").pop();
-    
-    // Consulta directa por hlswish.com que responde el m3u8 empaquetado
     var targetUrl = "https://hlswish.com/e/" + id;
 
     return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
+    .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
         var streamUrl = null;
         var directMatch = html.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
@@ -450,9 +455,9 @@ function resolveStreamWish(url) {
         }
 
         if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": targetUrl };
-            return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: headers };
+            var hdrs = { "User-Agent": USER_AGENT, "Referer": targetUrl };
+            return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
+                return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: hdrs };
             });
         }
         return null;
@@ -470,23 +475,24 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
     var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=external_ids";
 
     return fetchWithTimeout(url, null, 2500)
-        .then(function(res) { return res.json(); })
+        .then(function(res) { return res ? res.json() : null; })
         .then(function(data) {
+            if (!data) return null;
             var imdbId = (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null;
 
             if (!imdbId && isTv) {
-                var s = parseInt(seasonNum || 1, 10);
-                var e = parseInt(episodeNum || 1, 10);
+                var s = seasonNum !== undefined && seasonNum !== null ? parseInt(seasonNum, 10) : 1;
+                var e = episodeNum !== undefined && episodeNum !== null ? parseInt(episodeNum, 10) : 1;
                 var epUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + s + "/episode/" + e + "/external_ids?api_key=" + TMDB_API_KEY;
 
                 return fetchWithTimeout(epUrl, null, 2500)
-                    .then(function(epRes) { return epRes.json(); })
+                    .then(function(epRes) { return epRes ? epRes.json() : null; })
                     .then(function(epData) {
                         return {
                             title: data.name,
                             year: (data.first_air_date || "").substring(0, 4),
-                            imdbId: epData.imdb_id || null,
-                            isEpisodeImdb: !!epData.imdb_id
+                            imdbId: (epData && epData.imdb_id) ? epData.imdb_id : null,
+                            isEpisodeImdb: !!(epData && epData.imdb_id)
                         };
                     })
                     .catch(function() {
@@ -518,10 +524,12 @@ function fetchAndDecryptEmbed69(targetUrl) {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
     }, NETWORK_TIMEOUT)
     .then(function(res) {
-        if (!res.ok) return [];
+        if (!res || !res.ok) return "";
         return res.text();
     })
     .then(function(html) {
+        if (!html) return [];
+
         var challengeMatch = html.match(/(?:const|let|var)\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
         var difficultyMatch = html.match(/(?:const|let|var)\s+POW_DIFFICULTY\s*=\s*(\d+)/i);
         var saltMatch = html.match(/(?:const|let|var)\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/i);
@@ -572,8 +580,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
 
     var isTv = mediaType === "tv" || mediaType === "series";
-    var s = parseInt(seasonNum || 1, 10);
-    var e = parseInt(episodeNum || 1, 10);
+    var s = seasonNum !== undefined && seasonNum !== null ? parseInt(seasonNum, 10) : 1;
+    var e = episodeNum !== undefined && episodeNum !== null ? parseInt(episodeNum, 10) : 1;
 
     return getMediaData(tmdbId, mediaType, s, e).then(function(media) {
         if (!media || !media.imdbId || !/^tt\d+$/.test(media.imdbId)) return [];
@@ -585,33 +593,44 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             if (media.isEpisodeImdb) {
                 candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
             }
-            var epPadded = ("0" + e).slice(-2);
+            var epPadded = e < 10 ? "0" + e : String(e);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e);
             candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-s" + s + "e" + epPadded);
         }
 
-        function tryNextUrl(idx) {
-            if (idx >= candidateUrls.length) return Promise.resolve([]);
-            var targetUrl = candidateUrls[idx];
-
-            return fetchAndDecryptEmbed69(targetUrl).then(function(embeds) {
-                if (embeds && embeds.length > 0) return embeds;
-                return tryNextUrl(idx + 1);
-            });
+        // Deduplicar URLs candidatas
+        var uniqueUrls = [];
+        for (var u = 0; u < candidateUrls.length; u++) {
+            if (uniqueUrls.indexOf(candidateUrls[u]) === -1) {
+                uniqueUrls.push(candidateUrls[u]);
+            }
         }
 
-        return tryNextUrl(0).then(function(embedsToResolve) {
-            if (!embedsToResolve || embedsToResolve.length === 0) return [];
+        // Resolución en paralelo para cumplir < 3.0 segundos
+        var fetchPromises = uniqueUrls.map(function(url) {
+            return fetchAndDecryptEmbed69(url);
+        });
+
+        return Promise.all(fetchPromises).then(function(allEmbeds) {
+            var embedsToResolve = [];
+            for (var a = 0; a < allEmbeds.length; a++) {
+                if (allEmbeds[a] && allEmbeds[a].length > 0) {
+                    embedsToResolve = allEmbeds[a];
+                    break;
+                }
+            }
+
+            if (embedsToResolve.length === 0) return [];
 
             var resolvePromises = embedsToResolve.map(function(item) {
-                var u = item.url.toLowerCase();
+                var urlLower = item.url.toLowerCase();
                 var sName = (item.server || "").toLowerCase();
                 var promise = null;
 
-                if (sName.indexOf("vidhide") !== -1 || u.indexOf("vidhide") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) {
+                if (sName.indexOf("vidhide") !== -1 || urlLower.indexOf("vidhide") !== -1 || urlLower.indexOf("morencius") !== -1 || urlLower.indexOf("minochinos") !== -1 || urlLower.indexOf("callistanise") !== -1) {
                     promise = resolveVidHide(item.url);
-                } else if (sName.indexOf("streamwish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
+                } else if (sName.indexOf("streamwish") !== -1 || urlLower.indexOf("streamwish") !== -1 || urlLower.indexOf("hglink") !== -1 || urlLower.indexOf("hlswish") !== -1 || urlLower.indexOf("hanerix") !== -1 || urlLower.indexOf("flaswish") !== -1) {
                     promise = resolveStreamWish(item.url);
                 } else {
                     promise = Promise.resolve(null);
