@@ -1,12 +1,14 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
- * Motor: Criptografía PoW Dinámica + AES-256-CBC en JS Puro (Zero-Dependencies)
- * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
- * Resolvers: VidHide (morencius), StreamWish (hglink)
+ * Motor Híbrido:
+ *   1. Principal (player.peliserieshoy.com) -> MP4 Directo de MediaFire / VidHide HLS
+ *   2. SLPLAYER (embed69.org) -> PoW Zero-Allocation + AES-256 (VidHide, StreamWish)
+ * Reglas Hermes: ES5 estricto, 100% Promesas, Zero-Dependencies, Fast Timeout (<= 2800ms)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-var BASE_URL = "https://embed69.org";
+var BASE_EMBED = "https://embed69.org";
+var BASE_PELISERIES = "https://player.peliserieshoy.com";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var NETWORK_TIMEOUT = 2800;
 
@@ -343,7 +345,6 @@ function detectQualityFromUrl(url) {
     if (!url) return null;
     var clean = url.split("?")[0].toLowerCase();
 
-    // Detección en .urlset (VidHide / StreamWish)
     if (clean.indexOf(".urlset") !== -1) {
         var urlsetMatch = clean.match(/[_,]([a-z,]+)\.urlset/i);
         if (urlsetMatch) {
@@ -410,7 +411,7 @@ function resolveVidHide(url) {
     var host = hostMatch ? hostMatch[1] : "https://morencius.com";
 
     return fetchWithTimeout(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_EMBED + "/" },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
     .then(function(res) { return res ? res.text() : ""; })
@@ -527,12 +528,12 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
 }
 
 // ==========================================
-// 8. OBTENER Y DESCIFRAR EMBEDS DE EMBED69
+// 8. OBTENER Y DESCIFRAR EMBEDS DE EMBED69 (SLPLAYER)
 // ==========================================
 
 function fetchAndDecryptEmbed69(targetUrl) {
     return fetchWithTimeout(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_EMBED + "/" }
     }, NETWORK_TIMEOUT)
     .then(function(res) {
         if (!res || !res.ok) return "";
@@ -584,7 +585,80 @@ function fetchAndDecryptEmbed69(targetUrl) {
 }
 
 // ==========================================
-// 9. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// 9. MOTOR PRINCIPAL: PELISERIESHOY (MEDIAFIRE / DIRECTO)
+// ==========================================
+
+function fetchPrincipalStreams(imdbId) {
+    if (!imdbId) return Promise.resolve([]);
+
+    var pageUrl = BASE_PELISERIES + "/" + imdbId;
+    return fetchWithTimeout(pageUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" }
+    }, 2500)
+    .then(function(res) { return res && res.ok ? res.text() : ""; })
+    .then(function(html) {
+        if (!html) return [];
+
+        var tokMatch = html.match(/tok\s*=\s*["']([^"']+)["']/i) || html.match(/var\s+tok\s*=\s*["']([^"']+)["']/i);
+        var rtMatch = html.match(/rt\s*=\s*["']([^"']+)["']/i) || html.match(/var\s+rt\s*=\s*["']([^"']+)["']/i);
+        var tkMatch = html.match(/tk\s*=\s*["']([^"']+)["']/i) || html.match(/var\s+tk\s*=\s*["']([^"']+)["']/i);
+
+        var tok = tokMatch ? tokMatch[1] : "";
+        var rt = rtMatch ? rtMatch[1] : "";
+        var tk = tkMatch ? tkMatch[1] : "";
+
+        return fetchWithTimeout(BASE_PELISERIES + "/s.php", {
+            method: "POST",
+            headers: {
+                "User-Agent": USER_AGENT,
+                "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                "Referer": pageUrl,
+                "X-Requested-With": "XMLHttpRequest"
+            },
+            body: "id=" + imdbId
+        }, 2500)
+        .then(function(sRes) { return sRes && sRes.ok ? sRes.json() : null; })
+        .then(function(sJson) {
+            if (!sJson || !sJson.langs_s || !sJson.langs_s.LAT || sJson.langs_s.LAT.length === 0) return [];
+
+            var firstOption = sJson.langs_s.LAT[0];
+            var hash = firstOption[1];
+
+            var reqBody = "a=2&v=" + encodeURIComponent(hash) + "&tok=" + encodeURIComponent(tok) + "&rt=" + encodeURIComponent(rt) + "&tk=" + encodeURIComponent(tk) + "&ao=https://sololatino.net";
+
+            return fetchWithTimeout(BASE_PELISERIES + "/s.php", {
+                method: "POST",
+                headers: {
+                    "User-Agent": USER_AGENT,
+                    "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+                    "Referer": pageUrl,
+                    "X-Requested-With": "XMLHttpRequest"
+                },
+                body: reqBody
+            }, 2500)
+            .then(function(pRes) { return pRes && pRes.ok ? pRes.json() : null; })
+            .then(function(pJson) {
+                if (pJson && pJson.u) {
+                    var fullPlayUrl = BASE_PELISERIES + (pJson.u.indexOf("/") === 0 ? "" : "/") + pJson.u;
+                    return [{
+                        name: "SoloLatino",
+                        title: "1080p · Latino · Principal (MediaFire)",
+                        quality: "1080p",
+                        url: fullPlayUrl,
+                        headers: { "User-Agent": USER_AGENT, "Referer": pageUrl }
+                    }];
+                }
+                return [];
+            });
+        });
+    })
+    .catch(function() {
+        return [];
+    });
+}
+
+// ==========================================
+// 10. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
@@ -599,15 +673,15 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
         var candidateUrls = [];
         if (!isTv) {
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
+            candidateUrls.push(BASE_EMBED + "/f/" + media.imdbId);
         } else {
             if (media.isEpisodeImdb) {
-                candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
+                candidateUrls.push(BASE_EMBED + "/f/" + media.imdbId);
             }
             var epPadded = e < 10 ? "0" + e : String(e);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-s" + s + "e" + epPadded);
+            candidateUrls.push(BASE_EMBED + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
+            candidateUrls.push(BASE_EMBED + "/f/" + media.imdbId + "-" + s + "x" + e);
+            candidateUrls.push(BASE_EMBED + "/f/" + media.imdbId + "-s" + s + "e" + epPadded);
         }
 
         var uniqueUrls = [];
@@ -617,11 +691,16 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             }
         }
 
-        var fetchPromises = uniqueUrls.map(function(url) {
+        // Consultar Principal (Mediafire) y SLPLAYER (Embed69) en paralelo
+        var pPrincipal = (!isTv) ? fetchPrincipalStreams(media.imdbId) : Promise.resolve([]);
+        var pEmbed69 = Promise.all(uniqueUrls.map(function(url) {
             return fetchAndDecryptEmbed69(url);
-        });
+        }));
 
-        return Promise.all(fetchPromises).then(function(allEmbeds) {
+        return Promise.all([pPrincipal, pEmbed69]).then(function(results) {
+            var principalStreams = results[0] || [];
+            var allEmbeds = results[1] || [];
+
             var embedsToResolve = [];
             for (var a = 0; a < allEmbeds.length; a++) {
                 if (allEmbeds[a] && allEmbeds[a].length > 0) {
@@ -629,8 +708,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     break;
                 }
             }
-
-            if (embedsToResolve.length === 0) return [];
 
             var resolvePromises = embedsToResolve.map(function(item) {
                 var urlLower = item.url.toLowerCase();
@@ -666,12 +743,13 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     });
             });
 
-            return Promise.all(resolvePromises).then(function(results) {
-                var streams = [];
-                for (var i = 0; i < results.length; i++) {
-                    if (results[i]) streams.push(results[i]);
+            return Promise.all(resolvePromises).then(function(slStreams) {
+                var validSl = [];
+                for (var i = 0; i < slStreams.length; i++) {
+                    if (slStreams[i]) validSl.push(slStreams[i]);
                 }
-                return streams;
+                // Si Principal (MediaFire) devolvió enlaces, se unen al inicio con prioridad
+                return principalStreams.concat(validSl);
             });
         });
     }).catch(function() {
