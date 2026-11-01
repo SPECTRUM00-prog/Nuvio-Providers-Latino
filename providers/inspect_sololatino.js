@@ -1,60 +1,99 @@
 /**
- * Extractor de la ruta real del reproductor en app-*.js de sololatino.net
+ * Extracción real de los 3 servidores (Principal, SLPLAYER, VIP) vía /api/player-url
  * Ejecución: node providers/inspect_sololatino.js
  */
 
-var APP_JS_URL = "https://sololatino.net/build/assets/app-Bd31cN3M.js";
+var TARGET_URL = "https://sololatino.net/pelicula/coraline-y-la-puerta-secreta";
+var BASE_URL = "https://sololatino.net";
+var API_URL = BASE_URL + "/api/player-url";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 
-var headers = {
-    "User-Agent": USER_AGENT,
-    "Referer": "https://sololatino.net/pelicula/coraline-y-la-puerta-secreta"
-};
-
 console.log("=================================================================");
-console.log(">>> DESCARGANDO Y ANALIZANDO: " + APP_JS_URL + " <<<");
+console.log(">>> [1/2] OBTENIENDO TOKENS Y CSRF DE SOLOLATINO.NET <<<");
 console.log("=================================================================");
 
-fetch(APP_JS_URL, { headers: headers })
-.then(function(res) { return res.text(); })
-.then(function(code) {
-    console.log("-> app.js descargado:", code.length, "bytes\n");
-
-    var searchTerms = [
-        "data-player-token",
-        "data-server-btn",
-        "player-frame",
-        "player-tab"
-    ];
-
-    for (var i = 0; i < searchTerms.length; i++) {
-        var term = searchTerms[i];
-        var pos = code.indexOf(term);
-
-        console.log("=================================================================");
-        console.log("Buscando término: \"" + term + "\"");
-        console.log("=================================================================");
-
-        if (pos === -1) {
-            console.log("[-] No se encontró el término.\n");
-            continue;
-        }
-
-        var matchCount = 0;
-        while (pos !== -1) {
-            matchCount++;
-            var start = Math.max(0, pos - 400);
-            var end = Math.min(code.length, pos + 600);
-            var snippet = code.substring(start, end).replace(/\r?\n\s*/g, " ");
-
-            console.log("\n--- Coincidencia [" + matchCount + "] en pos " + pos + " ---");
-            console.log(snippet);
-
-            pos = code.indexOf(term, pos + term.length + 1);
-        }
-        console.log("\n");
+fetch(TARGET_URL, {
+    headers: {
+        "User-Agent": USER_AGENT,
+        "Referer": BASE_URL + "/"
     }
 })
+.then(function(res) { return res.text(); })
+.then(function(html) {
+    // 1. Extraer CSRF Token
+    var csrfMatch = html.match(/<meta[^>]+name=["']csrf-token["'][^>]+content=["']([^"']+)["']/i);
+    var csrfToken = csrfMatch ? csrfMatch[1] : "";
+    console.log("[+] CSRF Token detectado:", csrfToken);
+
+    // 2. Extraer todos los botones de reproductor (Principal, SLPLAYER, VIP)
+    var buttons = [];
+    var btnRegex = /<button[^>]+data-server-btn[^>]+data-player-token=["']([^"']+)["'][^>]*>([\s\S]*?)<\/button>/gi;
+    var bm;
+
+    while ((bm = btnRegex.exec(html)) !== null) {
+        var token = bm[1];
+        var label = bm[2].replace(/<[^>]+>/g, "").trim();
+        buttons.push({ label: label, token: token });
+    }
+
+    console.log("[+] Total de botones encontrados:", buttons.length);
+
+    console.log("\n=================================================================");
+    console.log(">>> [2/2] RESOLVIENDO CADA SERVIDOR EN /api/player-url <<<");
+    console.log("=================================================================");
+
+    function resolveButton(index) {
+        if (index >= buttons.length) {
+            console.log("\n=================================================================");
+            console.log(">>> INSPECCIÓN COMPLETADA CON ÉXITO <<<");
+            console.log("=================================================================");
+            return;
+        }
+
+        var btn = buttons[index];
+        console.log("\n-----------------------------------------------------------------");
+        console.log("[" + (index + 1) + "/" + buttons.length + "] Consultando botón: \"" + btn.label + "\"");
+
+        var apiHeaders = {
+            "User-Agent": USER_AGENT,
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain, */*",
+            "X-CSRF-TOKEN": csrfToken,
+            "X-Requested-With": "XMLHttpRequest",
+            "Referer": TARGET_URL,
+            "Origin": BASE_URL
+        };
+
+        fetch(API_URL, {
+            method: "POST",
+            headers: apiHeaders,
+            body: JSON.stringify({ t: btn.token })
+        })
+        .then(function(res) {
+            return res.text().then(function(text) {
+                console.log("   -> Status HTTP API:", res.status);
+                try {
+                    var json = JSON.parse(text);
+                    console.log("   [+] RESPUESTA JSON:", JSON.stringify(json, null, 2));
+
+                    if (json.url) {
+                        console.log("   -> URL RESUELTA:", json.url);
+                        console.log("   -> TIPO:", json.type || "iframe");
+                    }
+                } catch(e) {
+                    console.log("   [-] No es JSON:", text.substring(0, 200));
+                }
+                resolveButton(index + 1);
+            });
+        })
+        .catch(function(err) {
+            console.log("   [-] Error en petición:", err.message);
+            resolveButton(index + 1);
+        });
+    }
+
+    resolveButton(0);
+})
 .catch(function(err) {
-    console.error("[-] ERROR:", err.message);
+    console.error("[-] ERROR GENERAL:", err.message);
 });
