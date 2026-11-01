@@ -97,58 +97,58 @@ var SHA256_K = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-var POW_W = new Uint32Array(64);
-var POW_BUFFER = new Uint8Array(128);
-var POW_VIEW = new DataView(POW_BUFFER.buffer);
+function sha256Transform(H, W) {
+    var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
+    for (var t = 0; t < 64; t++) {
+        var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+        var ch = (e & f) ^ (~e & g);
+        var temp1 = (h + S1 + ch + SHA256_K[t] + W[t]) | 0;
+        var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+        var maj = (a & b) ^ (a & c) ^ (b & c);
+        var temp2 = (S0 + maj) | 0;
+
+        h = g; g = f; f = e; e = (d + temp1) | 0;
+        d = c; c = b; b = a; a = (temp1 + temp2) | 0;
+    }
+    H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
+    H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+}
 
 function solvePoW(challengeStr, difficulty) {
     var cBytes = stringToUtf8Bytes(challengeStr);
-    var cLen = cBytes.length;
     var fullBytes = difficulty >> 1;
     var hasHalfByte = (difficulty & 1) === 1;
 
     for (var nonce = 0; nonce < 300000; nonce++) {
-        var n = nonce, nDigits = 0, tempN = n;
-        do { nDigits++; tempN = (tempN / 10) | 0; } while (tempN > 0);
+        var nStr = String(nonce);
+        var nBytes = stringToUtf8Bytes(nStr);
+        var totalLen = cBytes.length + nBytes.length;
 
-        var totalLen = cLen + nDigits;
-        POW_BUFFER.fill(0);
-        POW_BUFFER.set(cBytes, 0);
+        var bitLen = totalLen * 8;
+        var newLen = (((totalLen + 8) >> 6) + 1) << 6;
+        var padded = new Uint8Array(newLen);
+        padded.set(cBytes, 0);
+        padded.set(nBytes, cBytes.length);
+        padded[totalLen] = 0x80;
 
-        var pos = totalLen - 1;
-        tempN = n;
-        do {
-            POW_BUFFER[pos--] = 48 + (tempN % 10);
-            tempN = (tempN / 10) | 0;
-        } while (tempN > 0);
+        var view = new DataView(padded.buffer);
+        view.setUint32(newLen - 4, bitLen, false);
 
-        POW_BUFFER[totalLen] = 0x80;
-        POW_VIEW.setUint32(60, totalLen * 8, false);
+        var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+        var W = new Uint32Array(64);
 
-        for (var t = 0; t < 16; t++) POW_W[t] = POW_VIEW.getUint32(t * 4, false);
-        for (var t = 16; t < 64; t++) {
-            var g0 = ((POW_W[t - 15] >>> 7) | (POW_W[t - 15] << 25)) ^ ((POW_W[t - 15] >>> 18) | (POW_W[t - 15] << 14)) ^ (POW_W[t - 15] >>> 3);
-            var g1 = ((POW_W[t - 2] >>> 17) | (POW_W[t - 2] << 15)) ^ ((POW_W[t - 2] >>> 19) | (POW_W[t - 2] << 13)) ^ (POW_W[t - 2] >>> 10);
-            POW_W[t] = (POW_W[t - 16] + g0 + POW_W[t - 7] + g1) | 0;
+        for (var b = 0; b < newLen; b += 64) {
+            for (var t = 0; t < 16; t++) W[t] = view.getUint32(b + t * 4, false);
+            for (var t = 16; t < 64; t++) {
+                var g0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
+                var g1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
+                W[t] = (W[t - 16] + g0 + W[t - 7] + g1) | 0;
+            }
+            sha256Transform(H, W);
         }
 
-        var a = 0x6a09e667, b = 0xbb67ae85, c = 0x3c6ef372, d = 0xa54ff53a;
-        var e = 0x510e527f, f = 0x9b05688c, g = 0x1f83d9ab, h = 0x5be0cd19;
-
-        for (var t = 0; t < 64; t++) {
-            var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-            var ch = (e & f) ^ (~e & g);
-            var temp1 = (h + S1 + ch + SHA256_K[t] + POW_W[t]) | 0;
-            var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-            var maj = (a & b) ^ (a & c) ^ (b & c);
-            var temp2 = (S0 + maj) | 0;
-
-            h = g; g = f; f = e; e = (d + temp1) | 0;
-            d = c; c = b; b = a; a = (temp1 + temp2) | 0;
-        }
-
-        var h0 = (0x6a09e667 + a) >>> 0;
-        var h1 = (0xbb67ae85 + b) >>> 0;
+        var h0 = H[0] >>> 0;
+        var h1 = H[1] >>> 0;
 
         var match = true;
         if (fullBytes >= 1 && (h0 >>> 24) !== 0) match = false;
@@ -186,22 +186,7 @@ function sha256(input) {
             var g1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
             W[t] = (W[t - 16] + g0 + W[t - 7] + g1) | 0;
         }
-
-        var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
-        for (var t = 0; t < 64; t++) {
-            var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-            var ch = (e & f) ^ (~e & g);
-            var temp1 = (h + S1 + ch + SHA256_K[t] + W[t]) | 0;
-            var S0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-            var maj = (a & b) ^ (a & c) ^ (b & c);
-            var temp2 = (S0 + maj) | 0;
-
-            h = g; g = f; f = e; e = (d + temp1) | 0;
-            d = c; c = b; b = a; a = (temp1 + temp2) | 0;
-        }
-
-        H[0] = (H[0] + a) | 0; H[1] = (H[1] + b) | 0; H[2] = (H[2] + c) | 0; H[3] = (H[3] + d) | 0;
-        H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
+        sha256Transform(H, W);
     }
 
     var out = new Uint8Array(32);
@@ -356,11 +341,25 @@ function unpackDeanEdwards(p, a, c, k) {
 
 function detectQualityFromUrl(url) {
     if (!url) return null;
-    var u = url.toLowerCase();
-    if (u.indexOf("4k") !== -1 || u.indexOf("2160") !== -1) return "4K";
-    if (u.indexOf("1080") !== -1) return "1080p";
-    if (u.indexOf("720") !== -1) return "720p";
-    if (u.indexOf("480") !== -1) return "480p";
+    var clean = url.split("?")[0].toLowerCase();
+
+    // Detección en .urlset (VidHide / StreamWish)
+    if (clean.indexOf(".urlset") !== -1) {
+        var urlsetMatch = clean.match(/[_,]([a-z,]+)\.urlset/i);
+        if (urlsetMatch) {
+            var tags = urlsetMatch[1].split(",");
+            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("fhd") !== -1) return "1080p";
+            if (tags.indexOf("h") !== -1 || tags.indexOf("hd") !== -1) return "720p";
+            if (tags.indexOf("n") !== -1 || tags.indexOf("sd") !== -1) return "480p";
+            if (tags.indexOf("l") !== -1) return "360p";
+        }
+    }
+
+    if (/(?:[-_./]|^)(?:4k|2160p?)(?:[-_./]|$)/i.test(clean)) return "4K";
+    if (/(?:[-_./]|^)(?:1080p?|fhd)(?:[-_./]|$)/i.test(clean)) return "1080p";
+    if (/(?:[-_./]|^)(?:720p?)(?:[-_./]|$)/i.test(clean)) return "720p";
+    if (/(?:[-_./]|^)(?:480p?)(?:[-_./]|$)/i.test(clean)) return "480p";
+
     return null;
 }
 
@@ -442,7 +441,6 @@ function resolveVidHide(url) {
 }
 
 function resolveStreamWish(url) {
-    // Usar la URL directa activa dada por embed69 (hglink.to) sin forzar dominios caídos
     var targetUrl = url;
     if (targetUrl.indexOf("/f/") !== -1 || targetUrl.indexOf("/v/") !== -1) {
         targetUrl = targetUrl.replace("/f/", "/e/").replace("/v/", "/e/");
@@ -647,15 +645,14 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                     promise = Promise.resolve(null);
                 }
 
-                // Aislamiento: si un locker falla, devuelve null sin hacer caer a los demás
                 return promise
                     .then(function(res) {
                         if (res && res.url) {
                             return {
                                 name: "SoloLatino",
                                 title: res.quality + " · " + res.server + " (" + item.lang + ")",
-                                url: res.url,
                                 quality: res.quality,
+                                url: res.url,
                                 headers: res.headers || {
                                     "User-Agent": USER_AGENT,
                                     "Referer": item.url
