@@ -1,7 +1,5 @@
 /**
- * Auditoría profunda y exhaustiva de SoloLatino (sololatino.net)
- * Inspecciona: Pestaña Latino/Sub, botones "Principal", "SLPLAYER", "VIP",
- *              iframes ocultos, llamadas AJAX y servidores lockers reales.
+ * Auditoría profunda de los botones Principal, SLPLAYER y VIP de sololatino.net
  * Ejecución: node providers/inspect_sololatino.js
  */
 
@@ -11,222 +9,127 @@ var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 
 var defaultHeaders = {
     "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "Accept-Language": "es-ES,es;q=0.9,en;q=0.8",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Referer": BASE_URL + "/"
 };
 
-function fetchHtml(url, customHeaders) {
-    return fetch(url, { headers: customHeaders || defaultHeaders, redirect: "follow" })
-        .then(function(res) {
-            return res.text().then(function(text) {
-                return { status: res.status, url: res.url, html: text };
-            });
-        })
-        .catch(function(err) {
-            return { status: 0, url: url, html: "", error: err.message };
-        });
-}
-
 console.log("=================================================================");
-console.log(">>> [FASE 1] DESCARGANDO FICHA COMPLETA DE CORALINE EN SOLOLATINO <<<");
+console.log(">>> [1/3] DESCARGANDO PÁGINA Y BUSCANDO EL CONTROLADOR JS <<<");
 console.log("=================================================================");
-console.log("URL:", TARGET_URL);
 
-fetchHtml(TARGET_URL).then(function(res) {
-    if (res.status !== 200 || !res.html) {
-        console.log("[-] Error descargando la página. Status:", res.status);
-        return;
+fetch(TARGET_URL, { headers: defaultHeaders })
+.then(function(res) { return res.text(); })
+.then(function(html) {
+    // 1. Extraer CSRF Token si existe en <meta>
+    var csrfMatch = html.match(/<meta[^>]+name=["']csrf-token["'][^>]+content=["']([^"']+)["']/i);
+    var csrfToken = csrfMatch ? csrfMatch[1] : "";
+    console.log("[+] CSRF Token:", csrfToken || "No encontrado");
+
+    // 2. Extraer los tokens de los 3 botones
+    var buttons = [];
+    var btnRegex = /<button[^>]+data-server-btn[^>]+data-player-token=["']([^"']+)["'][^>]*>([\s\S]*?)<\/button>/gi;
+    var bm;
+    while ((bm = btnRegex.exec(html)) !== null) {
+        var token = bm[1];
+        var label = bm[2].replace(/<[^>]+>/g, "").trim();
+        buttons.push({ label: label, token: token });
     }
 
-    var html = res.html;
-    console.log("-> Status HTTP:", res.status);
-    console.log("-> Tamaño HTML:", html.length, "bytes\n");
-
-    // =============================================================
-    // 1. RASTREAR ESTRUCTURA DE PESTAÑAS (Principal, SLPLAYER, VIP)
-    // =============================================================
-    console.log("=================================================================");
-    console.log(">>> [FASE 2] EXTRAYENDO BOTONES Y ATRIBUTOS DE CADA REPRODUCTOR <<<");
-    console.log("=================================================================");
-
-    // Buscar cualquier elemento que contenga Principal, SLPLAYER o VIP
-    var playerTargets = [];
-    var elemRegex = /<(?:button|li|a|div)[^>]+(?:data-[a-zA-Z0-9_-]+=["'][^"']*["'][^>]*)*>[\s\S]*?<\/(?:button|li|a|div)>/gi;
-    var em;
-
-    while ((em = elemRegex.exec(html)) !== null) {
-        var str = em[0];
-        if (str.indexOf("Principal") !== -1 || str.indexOf("SLPLAYER") !== -1 || str.indexOf("VIP") !== -1) {
-            // Extraer todos los atributos data-* de este botón
-            var attrs = {};
-            var attrRegex = /(data-[a-zA-Z0-9_-]+)=["']([^"']*)["']/gi;
-            var am;
-            while ((am = attrRegex.exec(str)) !== null) {
-                attrs[am[1]] = am[2];
-            }
-            var label = str.replace(/<[^>]+>/g, "").trim();
-            playerTargets.push({ label: label, rawHtml: str.trim(), attrs: attrs });
-        }
+    console.log("\n[+] Botones encontrados (" + buttons.length + "):");
+    for (var b = 0; b < buttons.length; b++) {
+        console.log("    [" + (b + 1) + "] " + buttons[b].label + " -> Token: " + buttons[b].token.substring(0, 45) + "...");
     }
 
-    console.log("[+] Botones del reproductor detectados en el DOM (" + playerTargets.length + "):");
-    for (var i = 0; i < playerTargets.length; i++) {
-        var pt = playerTargets[i];
-        console.log("\n   [" + (i + 1) + "] BOTÓN: \"" + pt.label + "\"");
-        console.log("       Atributos data-*:", JSON.stringify(pt.attrs, null, 2));
-        console.log("       HTML original:", pt.rawHtml.substring(0, 150));
-    }
-
-    // =============================================================
-    // 2. EXTRAER CONTENEDORES OCULTOS (DIVS CON IFRAMES / REPRODUCTORES)
-    // =============================================================
+    // 3. Buscar en todos los scripts inline la lógica que manipula 'data-player-token'
     console.log("\n=================================================================");
-    console.log(">>> [FASE 3] INSPECCIONANDO CONTENEDORES OCULTOS (IFRAMES / TABS) <<<");
+    console.log(">>> [2/3] RASTREANDO CÓDIGO JS QUE MANIPULA data-player-token <<<");
     console.log("=================================================================");
 
-    // Buscar contenedores de reproductor tipo #source-player-*, .player-box, .tab-pane, etc.
-    var tabDivRegex = /<div[^>]+id=["']([^"']*(?:player|source|opt|server|video|embed)[^"']*)["'][^>]*>([\s\S]*?)<\/div>/gi;
-    var tm;
-    var foundContainers = [];
+    var scripts = [];
+    var sRegex = /<script(?:\s+[^>]*)?>([\s\S]*?)<\/script>/gi;
+    var sm;
+    var foundLogic = false;
 
-    while ((tm = tabDivRegex.exec(html)) !== null) {
-        var divId = tm[1];
-        var divContent = tm[2];
-        var iframesInDiv = [];
-        var ifRegex = /<iframe[^>]+src=["']([^"']+)["']/gi;
-        var ifm;
-        while ((ifm = ifRegex.exec(divContent)) !== null) {
-            iframesInDiv.push(ifm[1]);
-        }
-
-        if (iframesInDiv.length > 0 || divContent.indexOf("http") !== 0) {
-            foundContainers.push({ id: divId, iframes: iframesInDiv, snippet: divContent.trim().substring(0, 200) });
+    while ((sm = sRegex.exec(html)) !== null) {
+        var jsContent = sm[1];
+        if (jsContent.indexOf("data-player-token") !== -1 || jsContent.indexOf("server-btn") !== -1 || jsContent.indexOf("player-frame") !== -1) {
+            foundLogic = true;
+            console.log("[!] ¡LÓGICA DEL REPRODUCTOR ENCONTRADA EN SCRIPT INLINE!:\n");
+            console.log(jsContent.trim().substring(0, 1200));
+            console.log("\n-------------------------------------------------------------\n");
         }
     }
 
-    console.log("[+] Contenedores de reproducción encontrados (" + foundContainers.length + "):");
-    for (var c = 0; c < foundContainers.length; c++) {
-        console.log("\n   * Contenedor ID: #" + foundContainers[c].id);
-        console.log("     Iframes dentro:", foundContainers[c].iframes);
-        console.log("     Muestra interna:", foundContainers[c].snippet.replace(/\r?\n\s*/g, " "));
-    }
-
-    // =============================================================
-    // 3. RASTREAR VARIABLES Y ARRAYS EN SCRIPTS JS
-    // =============================================================
-    console.log("\n=================================================================");
-    console.log(">>> [FASE 4] RASTREANDO CONFIGURACIONES GLOBALES Y ARRAYS JS <<<");
-    console.log("=================================================================");
-
-    var scriptVars = [];
-    var jsVarRegex = /(?:var|let|const)\s+([a-zA-Z0-9_$]+)\s*=\s*([\[\{][\s\S]*?[\]\}]);/gi;
-    var jvm;
-
-    while ((jvm = jsVarRegex.exec(html)) !== null) {
-        var vName = jvm[1];
-        var vVal = jvm[2];
-        // Filtrar variables que contengan referencias a embeds, players, servers o urls
-        if (vVal.indexOf("http") !== -1 || vVal.indexOf("embed") !== -1 || vVal.indexOf("server") !== -1 || vVal.indexOf("slplayer") !== -1) {
-            scriptVars.push({ name: vName, preview: vVal.substring(0, 300) });
-        }
-    }
-
-    console.log("[+] Variables relevantes encontradas en scripts (" + scriptVars.length + "):");
-    for (var v = 0; v < scriptVars.length; v++) {
-        console.log("\n   * Variable: " + scriptVars[v].name);
-        console.log("     Valor:", scriptVars[v].preview.replace(/\r?\n\s*/g, " ") + "...");
-    }
-
-    // =============================================================
-    // 4. RECOLECTAR TODAS LAS URLs DE IFRAMES Y EMBEDS PARA AUDITARLAS
-    // =============================================================
-    console.log("\n=================================================================");
-    console.log(">>> [FASE 5] AUDITANDO EN VIVO LOS REPRODUCTORES DESCUBIERTOS <<<");
-    console.log("=================================================================");
-
-    var rawUrlsToTest = [];
-
-    // Agregar de iframes
-    var allIframes = html.match(/<iframe[^>]+src=["']([^"']+)["']/gi) || [];
-    for (var af = 0; af < allIframes.length; af++) {
-        var srcMatch = allIframes[af].match(/src=["']([^"']+)["']/i);
-        if (srcMatch && rawUrlsToTest.indexOf(srcMatch[1]) === -1) {
-            rawUrlsToTest.push({ source: "Iframe Directo", url: srcMatch[1] });
-        }
-    }
-
-    // Agregar de data-attrs
-    for (var pIdx = 0; pIdx < playerTargets.length; pIdx++) {
-        var at = playerTargets[pIdx].attrs;
-        for (var k in at) {
-            var val = at[k];
-            if (val.indexOf("http") === 0 || val.indexOf("//") === 0) {
-                if (val.indexOf("//") === 0) val = "https:" + val;
-                rawUrlsToTest.push({ source: "Botón [" + playerTargets[pIdx].label + "] (" + k + ")", url: val });
+    if (!foundLogic) {
+        console.log("[-] No está inline. Buscando en los archivos .js referenciados...");
+        var srcRegex = /<script[^>]+src=["']([^"']+\.js(?:\?[^"']*)?)["']/gi;
+        var srcMatch;
+        var extScripts = [];
+        while ((srcMatch = srcRegex.exec(html)) !== null) {
+            var sUrl = srcMatch[1];
+            if (sUrl.indexOf("gtag") === -1 && sUrl.indexOf("cloudflare") === -1) {
+                if (sUrl.indexOf("http") !== 0) sUrl = BASE_URL + (sUrl.indexOf("/") === 0 ? "" : "/") + sUrl;
+                extScripts.push(sUrl);
             }
         }
+        console.log("Scripts externos a revisar (" + extScripts.length + "):", extScripts);
     }
 
-    // Agregar lockers incrustados en código general
-    var genericLockers = html.match(/https?:\/\/[a-zA-Z0-9.-]*(?:embed69|slplayer|morencius|vidhide|streamwish|hglink|filemoon|voe|vimeos)[^\s"'<>]+/gi) || [];
-    for (var gl = 0; gl < genericLockers.length; gl++) {
-        var cleanGl = genericLockers[gl].replace(/\\/g, "").replace(/&amp;/g, "&");
-        var already = false;
-        for (var u = 0; u < rawUrlsToTest.length; u++) {
-            if (rawUrlsToTest[u].url === cleanGl) { already = true; break; }
-        }
-        if (!already) {
-            rawUrlsToTest.push({ source: "Locker detectado en script", url: cleanGl });
-        }
-    }
+    // 4. Probar las peticiones candidatas para enviar el token
+    console.log("=================================================================");
+    console.log(">>> [3/3] PROBANDO RUTAS CANDIDATAS PARA LOS TOKENS <<<");
+    console.log("=================================================================");
 
-    console.log("[+] Total de enlaces/reproductores para probar en vivo (" + rawUrlsToTest.length + "):\n");
+    if (buttons.length === 0) return;
 
-    function probePlayer(index) {
-        if (index >= rawUrlsToTest.length) {
-            console.log("\n=================================================================");
-            console.log(">>> AUDITORÍA PROFUNDA DE SOLOLATINO COMPLETADA <<<");
-            console.log("=================================================================");
+    var testBtn = buttons[0]; // Usar el primero (ej. Principal)
+    console.log("Probando con botón:", testBtn.label);
+
+    var candidateRequests = [
+        // Método POST con JSON
+        { method: "POST", url: BASE_URL + "/player", body: JSON.stringify({ token: testBtn.token }), headers: { "Content-Type": "application/json", "X-CSRF-TOKEN": csrfToken, "X-Requested-With": "XMLHttpRequest", "Referer": TARGET_URL } },
+        { method: "POST", url: BASE_URL + "/api/player", body: JSON.stringify({ token: testBtn.token }), headers: { "Content-Type": "application/json", "X-CSRF-TOKEN": csrfToken, "X-Requested-With": "XMLHttpRequest", "Referer": TARGET_URL } },
+        { method: "POST", url: BASE_URL + "/ajax/player", body: "token=" + encodeURIComponent(testBtn.token), headers: { "Content-Type": "application/x-www-form-urlencoded", "X-CSRF-TOKEN": csrfToken, "X-Requested-With": "XMLHttpRequest", "Referer": TARGET_URL } },
+        // Método GET con query params
+        { method: "GET", url: BASE_URL + "/player?token=" + encodeURIComponent(testBtn.token), headers: { "Referer": TARGET_URL } },
+        { method: "GET", url: BASE_URL + "/play/" + encodeURIComponent(testBtn.token), headers: { "Referer": TARGET_URL } },
+        { method: "GET", url: BASE_URL + "/reproductor?token=" + encodeURIComponent(testBtn.token), headers: { "Referer": TARGET_URL } }
+    ];
+
+    function runCandidate(idx) {
+        if (idx >= candidateRequests.length) {
+            console.log("\n=== FIN DE PRUEBAS CANDIDATAS ===");
             return;
         }
 
-        var item = rawUrlsToTest[index];
-        console.log("-----------------------------------------------------------------");
-        console.log("[" + (index + 1) + "/" + rawUrlsToTest.length + "] Origen: " + item.source);
-        console.log("URL:", item.url);
+        var req = candidateRequests[idx];
+        var opts = {
+            method: req.method,
+            headers: Object.assign({}, defaultHeaders, req.headers || {})
+        };
+        if (req.body) opts.body = req.body;
 
-        fetchHtml(item.url, { "User-Agent": USER_AGENT, "Referer": TARGET_URL })
-            .then(function(embedRes) {
-                console.log("   -> Status HTTP:", embedRes.status);
-                console.log("   -> URL final tras redirección:", embedRes.url);
-                console.log("   -> Tamaño respuesta:", embedRes.html.length, "bytes");
-
-                // Buscar lockers dentro de este reproductor
-                var subIframes = [];
-                var sifRegex = /<iframe[^>]+src=["']([^"']+)["']/gi;
-                var sm;
-                while ((sm = sifRegex.exec(embedRes.html)) !== null) {
-                    subIframes.push(sm[1]);
+        fetch(req.url, opts)
+        .then(function(res) {
+            return res.text().then(function(text) {
+                var preview = text.substring(0, 200).replace(/\r?\n\s*/g, " ");
+                console.log("\n[" + res.status + "] " + req.method + " -> " + req.url.substring(0, 60) + "...");
+                if (res.status === 200) {
+                    console.log("    [+] ¡RESPUESTA 200 OK! Contenido: " + preview);
+                } else {
+                    console.log("    [-] Status " + res.status + ": " + preview);
                 }
-                if (subIframes.length > 0) {
-                    console.log("   [+] Iframes internos:", subIframes);
-                }
-
-                // Detectar si tiene m3u8 directo
-                var m3u8 = embedRes.html.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-                if (m3u8) {
-                    console.log("   [+] ¡STREAM M3U8 DIRECTO ENCONTRADO!:", m3u8[0]);
-                }
-
-                // Detectar PoW o AES
-                if (embedRes.html.indexOf("POW_CHALLENGE") !== -1) {
-                    console.log("   [!] Requiere reto Proof of Work (Embed69 engine)");
-                }
-
-                probePlayer(index + 1);
+                runCandidate(idx + 1);
             });
+        })
+        .catch(function(err) {
+            console.log("    [-] Error en " + req.url + ":", err.message);
+            runCandidate(idx + 1);
+        });
     }
 
-    probePlayer(0);
+    runCandidate(0);
+})
+.catch(function(err) {
+    console.error("[-] ERROR GENERAL:", err.message);
 });
