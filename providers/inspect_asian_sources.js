@@ -1,78 +1,70 @@
 /**
- * Test de RiveStream y Basement para dramas asiáticos
- * Ejecución: node providers/inspect_asian_sources.js 106617 tv 1 1
+ * Sondeo de servidores en RiveStream
+ * Ejecución: node providers/inspect_rive_servers.js 106617 tv 1 1
  */
 
-var tmdbId = process.argv[2] || "106617"; // Heroes (2020)
+var tmdbId = process.argv[2] || "106617";
 var mediaType = process.argv[3] || "tv";
 var season = process.argv[4] || "1";
 var episode = process.argv[5] || "1";
 
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+var headers = {
+    "User-Agent": USER_AGENT,
+    "Referer": "https://www.rivestream.app/",
+    "Origin": "https://www.rivestream.app"
+};
+
+// Lista de providers conocidos de RiveStream
+var providers = [
+    "server3", 
+    "citadel", 
+    "primevids", 
+    "apex", 
+    "wholesome", 
+    "auto", 
+    "zenith", 
+    "nova", 
+    "ee3"
+];
 
 console.log("=================================================================");
-console.log(">>> [1/2] AUDITANDO API DE RIVESTREAM (asiacloud / direct) <<<");
-console.log("=================================================================");
+console.log(">>> PROBANDO SERVIDORES DE RIVESTREAM PARA TMDB " + tmdbId + " <<<");
+console.log("=================================================================\n");
 
-var riveApiUrl = "https://scrapper.rivestream.app/api/provider?provider=asiacloud" +
-                 "&id=" + tmdbId + 
-                 "&season=" + season + 
-                 "&episode=" + episode + 
-                 "&type=" + mediaType;
-
-console.log("Consultando endpoint:", riveApiUrl);
-
-fetch(riveApiUrl, {
-    headers: {
-        "User-Agent": USER_AGENT,
-        "Referer": "https://www.rivestream.app/",
-        "Origin": "https://www.rivestream.app"
-    }
-})
-.then(function(res) {
-    console.log("-> Status HTTP Rive:", res.status, res.statusText);
-    return res.text();
-})
-.then(function(text) {
-    try {
-        var json = JSON.parse(text);
-        console.log("[+] Respuesta JSON de RiveStream:");
-        console.log(JSON.stringify(json, null, 2).substring(0, 500) + "...\n");
-    } catch (e) {
-        console.log("[-] Respuesta no JSON de Rive:", text.substring(0, 200));
+function testProvider(idx) {
+    if (idx >= providers.length) {
+        console.log("=== FIN DEL SONDEO DE RIVE ===");
+        return;
     }
 
-    console.log("=================================================================");
-    console.log(">>> [2/2] AUDITANDO BASEMENT / P-STREAM (be.basementx.lol) <<<");
-    console.log("=================================================================");
+    var prov = providers[idx];
+    var url = "https://scrapper.rivestream.app/api/provider?provider=" + prov +
+              "&id=" + tmdbId + 
+              "&season=" + season + 
+              "&episode=" + episode + 
+              "&type=" + mediaType;
 
-    var basementUrl = "https://be.basementx.lol/scrape?id=" + tmdbId + 
-                      "&type=" + mediaType + 
-                      "&season=" + season + 
-                      "&episode=" + episode;
-
-    console.log("Consultando endpoint:", basementUrl);
-
-    return fetch(basementUrl, {
-        headers: {
-            "User-Agent": USER_AGENT,
-            "Referer": "https://basementx.lol/"
-        }
+    fetch(url, { headers: headers })
+    .then(function(res) {
+        return res.text().then(function(text) {
+            try {
+                var json = JSON.parse(text);
+                var hasData = json && json.data && json.data !== null;
+                console.log("[" + res.status + "] Provider [" + prov.toUpperCase() + "]:", hasData ? "¡DATOS ENCONTRADOS!" : "null");
+                if (hasData) {
+                    console.log("     Muestra:", JSON.stringify(json.data, null, 2).substring(0, 300) + "...\n");
+                }
+            } catch(e) {
+                console.log("[" + res.status + "] Provider [" + prov.toUpperCase() + "]: Error parseando JSON");
+            }
+            testProvider(idx + 1);
+        });
     })
-    .then(function(bRes) {
-        console.log("-> Status HTTP Basement:", bRes.status, bRes.statusText);
-        return bRes.text();
-    })
-    .then(function(bText) {
-        try {
-            var bJson = JSON.parse(bText);
-            console.log("[+] Respuesta JSON de Basement:");
-            console.log(JSON.stringify(bJson, null, 2).substring(0, 500) + "...\n");
-        } catch (e) {
-            console.log("[-] Muestra Basement:", bText.substring(0, 200));
-        }
+    .catch(function(err) {
+        console.log("[-] Error en " + prov + ":", err.message);
+        testProvider(idx + 1);
     });
-})
-.catch(function(err) {
-    console.error("[-] ERROR:", err.message);
-});
+}
+
+testProvider(0);
