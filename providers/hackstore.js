@@ -1,23 +1,52 @@
 /**
  * Provider: Hackstore2 (Películas y Series)
- * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
+ * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / Android TV / FireTV Safe)
+ * Cumple estrictamente las 7 reglas de runtime: ES5, fetchWithTimeout preventivo, cero dependencias.
  */
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const BASE_URL = "https://hackstore2.com";
-const API_URL = `${BASE_URL}/api/rest`;
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var BASE_URL = "https://hackstore2.com";
+var API_URL = BASE_URL + "/api/rest";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
-const DEFAULT_HEADERS = {
+var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "application/json, text/plain, */*",
-    "Referer": `${BASE_URL}/`,
+    "Referer": BASE_URL + "/",
     "Origin": BASE_URL
 };
 
 // ==========================================
-// UTILIDADES Y NORMALIZACIÓN
+// CONTROL DE CONCURRENCIA Y TIMEOUTS (REGLA 4)
 // ==========================================
+
+function fetchWithTimeout(url, options, timeoutMs) {
+    var timeout = timeoutMs || 2600;
+    return new Promise(function(resolve, reject) {
+        var timer = setTimeout(function() {
+            reject(new Error("Timeout tras " + timeout + "ms: " + url));
+        }, timeout);
+
+        fetch(url, options || {})
+            .then(function(response) {
+                clearTimeout(timer);
+                resolve(response);
+            })
+            .catch(function(err) {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
+}
+
+// ==========================================
+// UTILIDADES Y NORMALIZACIÓN (REGLAS 5 Y 7)
+// ==========================================
+
+function padZero(num) {
+    var n = parseInt(num, 10) || 0;
+    return n < 10 ? "0" + n : String(n);
+}
 
 function normalizeText(text) {
     if (!text) return "";
@@ -96,7 +125,7 @@ function unpackDeanEdwards(p, a, c, k) {
 }
 
 // ==========================================
-// DETECCIÓN DINÁMICA DE RESOLUCIÓN REAL
+// DETECCIÓN DINÁMICA DE RESOLUCIÓN (REGLA 6)
 // ==========================================
 
 var QUALITY_MAPS = {
@@ -111,13 +140,13 @@ var QUALITY_ORDER = ["x", "o", "h", "n", "l"];
 function detectQualityFromUrl(url) {
     if (!url) return null;
     var u = url.toLowerCase();
-    
+
     var qMap = null;
     if (u.indexOf("goodstream") !== -1) qMap = QUALITY_MAPS.goodstream;
     else if (u.indexOf("vimeos") !== -1) qMap = QUALITY_MAPS.vimeos;
     else if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1) qMap = QUALITY_MAPS.vidhide;
     else if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("vibuxer") !== -1) qMap = QUALITY_MAPS.streamwish;
-    
+
     if (qMap) {
         var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
         if (urlsetMatch) {
@@ -144,10 +173,10 @@ function probeM3u8Quality(m3u8Url, headers) {
 
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
-    return fetch(m3u8Url, {
+    return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    })
+    }, 2600)
     .then(function(res) {
         if (!res.ok) return "720p";
         return res.text();
@@ -159,18 +188,22 @@ function probeM3u8Quality(m3u8Url, headers) {
             return "720p";
         }
 
+        var maxW = 0;
         var maxH = 0;
-        var resRegex = /RESOLUTION=\d+x(\d+)/gi;
+        var resRegex = /RESOLUTION=(\d+)x(\d+)/gi;
         var match;
         while ((match = resRegex.exec(text)) !== null) {
-            var h = parseInt(match[1], 10);
+            var w = parseInt(match[1], 10);
+            var h = parseInt(match[2], 10);
+            if (w > maxW) maxW = w;
             if (h > maxH) maxH = h;
         }
 
-        if (maxH >= 2160) return "4K";
-        if (maxH >= 1080) return "1080p";
-        if (maxH >= 720) return "720p";
-        if (maxH >= 480) return "480p";
+        // Evaluación combinada ancho x alto para soportar ultra-wide/panorámicas
+        if (maxW >= 3840 || maxH >= 2160) return "4K";
+        if (maxW >= 1920 || maxH >= 1080) return "1080p";
+        if (maxW >= 1280 || maxH >= 720) return "720p";
+        if (maxW >= 854 || maxH >= 480) return "480p";
         return "720p";
     })
     .catch(function() {
@@ -181,24 +214,24 @@ function probeM3u8Quality(m3u8Url, headers) {
 function getServerLabel(url) {
     if (!url) return "Online";
     var u = url.toLowerCase();
-    if (u.includes("vimeos")) return "Vimeos";
-    if (u.includes("goodstream")) return "GoodStream";
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("strwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return "StreamWish";
-    if (u.includes("vidhide") || u.includes("minochinos")) return "VidHide";
-    if (u.includes("filemoon")) return "Filemoon";
-    if (u.includes("videoapp")) return "Videoapp";
+    if (u.indexOf("vimeos") !== -1) return "Vimeos";
+    if (u.indexOf("goodstream") !== -1) return "GoodStream";
+    if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("strwish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("vibuxer") !== -1) return "StreamWish";
+    if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1) return "VidHide";
+    if (u.indexOf("filemoon") !== -1) return "Filemoon";
+    if (u.indexOf("videoapp") !== -1) return "Videoapp";
     return "Servidor";
 }
 
 // ==========================================
-// RESOLVERS DE STREAMING (PROMESAS PURAS)
+// RESOLVERS DE STREAMING (CADENAS PURAS)
 // ==========================================
 
 function resolveVimeos(url) {
-    return fetch(url, {
+    return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" },
         redirect: "follow"
-    })
+    }, 2600)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -229,10 +262,10 @@ function resolveVimeos(url) {
 }
 
 function resolveGoodStream(url) {
-    return fetch(url, {
+    return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" },
         redirect: "follow"
-    })
+    }, 2600)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -265,15 +298,15 @@ function resolveGoodStream(url) {
 
 function resolveStreamWish(url) {
     var targetUrl = url;
-    if (targetUrl.includes("hglink.to") || targetUrl.includes("hanerix.com")) {
+    if (targetUrl.indexOf("hglink.to") !== -1 || targetUrl.indexOf("hanerix.com") !== -1) {
         var idMatch = targetUrl.match(/\/(?:e|f|v)\/([a-zA-Z0-9]+)/);
         if (idMatch) targetUrl = "https://hlswish.com/e/" + idMatch[1];
     }
 
-    return fetch(targetUrl, {
+    return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" },
         redirect: "follow"
-    })
+    }, 2600)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -304,10 +337,10 @@ function resolveStreamWish(url) {
 }
 
 function resolveVidHide(url) {
-    return fetch(url, {
+    return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" },
         redirect: "follow"
-    })
+    }, 2600)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -334,10 +367,10 @@ function resolveVidHide(url) {
 }
 
 function resolveFilemoon(url) {
-    return fetch(url, {
+    return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": url },
         redirect: "follow"
-    })
+    }, 2600)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -364,16 +397,15 @@ function resolveFilemoon(url) {
 }
 
 function resolveVideoApp(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
+    return fetchWithTimeout(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
-    })
+    }, 2600)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
         if (iframeMatch) {
-            var innerUrl = iframeMatch[1];
-            return dispatchResolver(innerUrl);
+            return dispatchResolver(iframeMatch[1]);
         }
         return null;
     })
@@ -384,38 +416,38 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
 
-    if (u.includes("vimeos")) return resolveVimeos(url);
-    if (u.includes("goodstream")) return resolveGoodStream(url);
-    if (u.includes("hlswish") || u.includes("streamwish") || u.includes("strwish") || u.includes("hanerix") || u.includes("hglink") || u.includes("vibuxer")) return resolveStreamWish(url);
-    if (u.includes("vidhide") || u.includes("minochinos")) return resolveVidHide(url);
-    if (u.includes("filemoon")) return resolveFilemoon(url);
-    if (u.includes("videoapp")) return resolveVideoApp(url);
+    if (u.indexOf("vimeos") !== -1) return resolveVimeos(url);
+    if (u.indexOf("goodstream") !== -1) return resolveGoodStream(url);
+    if (u.indexOf("hlswish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("strwish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("vibuxer") !== -1) return resolveStreamWish(url);
+    if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1) return resolveVidHide(url);
+    if (u.indexOf("filemoon") !== -1) return resolveFilemoon(url);
+    if (u.indexOf("videoapp") !== -1) return resolveVideoApp(url);
 
     return Promise.resolve(null);
 }
 
 // ==========================================
-// API REST DE HACKSTORE2
+// CLIENTE API REST DE HACKSTORE2
 // ==========================================
 
 function getPostId(slugs, postType) {
     var slugList = Array.isArray(slugs) ? slugs : [slugs];
-    
+
     function tryNext(index) {
         if (index >= slugList.length) return Promise.resolve(null);
         var currentSlug = slugList[index];
-        var endpoint = `${API_URL}/single?post_name=${encodeURIComponent(currentSlug)}&post_type=${postType}`;
+        var endpoint = API_URL + "/single?post_name=" + encodeURIComponent(currentSlug) + "&post_type=" + postType;
 
-        return fetch(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" })
+        return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2600)
             .then(function(res) {
                 if (!res.ok) return null;
                 return res.json();
             })
             .then(function(json) {
                 if (!json || !json.data) return tryNext(index + 1);
-                if (postType === "movies" && json.data._id) return json.data._id;
-                if (postType === "episodes" && json.data.episode && json.data.episode._id) return json.data.episode._id;
-                if (json.data._id) return json.data._id;
+                var d = json.data;
+                if (postType === "episodes" && d.episode && d.episode._id) return d.episode._id;
+                if (d._id) return d._id;
                 return tryNext(index + 1);
             })
             .catch(function() {
@@ -426,30 +458,40 @@ function getPostId(slugs, postType) {
     return tryNext(0);
 }
 
-function searchHackstoreApi(queries, titles, year) {
+function searchHackstoreApi(queries, titles, year, postType) {
     var qList = Array.isArray(queries) ? queries : [queries];
-    
-    function tryNext(index) {
-        if (index >= qList.length) return Promise.resolve([]);
-        var q = qList[index];
-        var searchUrl = `${API_URL}/search?q=${encodeURIComponent(q)}`;
+    var pType = postType || "movies";
 
-        return fetch(searchUrl, { headers: DEFAULT_HEADERS })
+    function tryNext(index) {
+        if (index >= qList.length) return Promise.resolve(null);
+        var q = qList[index];
+        // Se trunca entre 3 y 15 chars según la validación del backend de Hackstore
+        var cleanQ = q.length > 15 ? q.substring(0, 15) : q;
+        if (cleanQ.length < 3) return tryNext(index + 1);
+
+        var searchUrl = API_URL + "/search?post_type=" + pType + "&query=" + encodeURIComponent(cleanQ);
+
+        return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2600)
             .then(function(res) {
-                if (!res.ok) return [];
+                if (!res.ok) return null;
                 return res.json();
             })
             .then(function(json) {
-                var items = (json && json.data && Array.isArray(json.data)) ? json.data : [];
-                var slugs = [];
-                for (var i = 0; i < items.length; i++) {
-                    var s = items[i].slug || items[i].post_name;
-                    // Filtrar con score >= 35
-                    if (s && scoreCandidate(s, titles, year) >= 35 && slugs.indexOf(s) === -1) {
-                        slugs.push(s);
+                var posts = (json && json.data && Array.isArray(json.data.posts)) ? json.data.posts : [];
+                var bestId = null;
+                var bestScore = 0;
+
+                for (var i = 0; i < posts.length; i++) {
+                    var p = posts[i];
+                    var s = p.slug || p.post_name || p.title;
+                    var sc = scoreCandidate(s, titles, year);
+                    if (sc >= 35 && sc > bestScore) {
+                        bestScore = sc;
+                        bestId = p._id;
                     }
                 }
-                if (slugs.length > 0) return slugs;
+
+                if (bestId) return bestId;
                 return tryNext(index + 1);
             })
             .catch(function() {
@@ -461,8 +503,8 @@ function searchHackstoreApi(queries, titles, year) {
 }
 
 function getPlayerEmbeds(postId) {
-    var endpoint = `${API_URL}/player?post_id=${postId}`;
-    return fetch(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" })
+    var endpoint = API_URL + "/player?post_id=" + postId;
+    return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2600)
         .then(function(res) {
             if (!res.ok) return [];
             return res.json();
@@ -478,14 +520,13 @@ function getPlayerEmbeds(postId) {
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
-    console.log(`[Hackstore] Buscando TMDB ID ${tmdbId} (${mediaType})`);
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
     var eNum = parseInt(episode, 10) || 1;
-    var epPadded = String(eNum).padStart(2, "0");
-    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
+    var epPadded = padZero(eNum);
+    var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
-    return fetch(tmdbUrl)
+    return fetchWithTimeout(tmdbUrl, {}, 2600)
         .then(function(res) {
             if (!res.ok) throw new Error("TMDB HTTP " + res.status);
             return res.json();
@@ -539,14 +580,15 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 var bSlug = baseSlugs[b];
                 if (isMovie) {
                     candidateSlugs.push(bSlug);
-                    if (year) candidateSlugs.push(`${bSlug}-${year}`);
+                    if (year) candidateSlugs.push(bSlug + "-" + year);
                 } else {
-                    candidateSlugs.push(`${bSlug}-temporada-${sNum}-episodio-${eNum}`);
-                    candidateSlugs.push(`${bSlug}-temporada-${sNum}-capitulo-${eNum}`);
-                    candidateSlugs.push(`${bSlug}-temporada-${sNum}-episodio-${epPadded}`);
-                    candidateSlugs.push(`${bSlug}-temporada-${sNum}-capitulo-${epPadded}`);
-                    candidateSlugs.push(`${bSlug}-${sNum}x${eNum}`);
-                    candidateSlugs.push(`${bSlug}-${sNum}x${epPadded}`);
+                    // Formato exacto verificado: {serie}-temporada-{s}-episodio-{e}
+                    candidateSlugs.push(bSlug + "-temporada-" + sNum + "-episodio-" + eNum);
+                    candidateSlugs.push(bSlug + "-temporada-" + sNum + "-episodio-" + epPadded);
+                    candidateSlugs.push(bSlug + "-temporada-" + sNum + "-capitulo-" + eNum);
+                    candidateSlugs.push(bSlug + "-temporada-" + sNum + "-capitulo-" + epPadded);
+                    candidateSlugs.push(bSlug + "-" + sNum + "x" + eNum);
+                    candidateSlugs.push(bSlug + "-" + sNum + "x" + epPadded);
                 }
             }
 
@@ -554,42 +596,19 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return getPostId(candidateSlugs, postType).then(function(postId) {
                 if (postId) return postId;
 
-                // Fallback: Consultar API de búsqueda con filtro de score >= 35
-                return searchHackstoreApi(searchQueries, uniqueTitles, year).then(function(foundSlugs) {
-                    if (!foundSlugs.length) return null;
-
-                    var fallbackSlugs = [];
-                    for (var f = 0; f < foundSlugs.length; f++) {
-                        var fSlug = foundSlugs[f];
-                        if (isMovie) {
-                            fallbackSlugs.push(fSlug);
-                            if (year) fallbackSlugs.push(`${fSlug}-${year}`);
-                        } else {
-                            fallbackSlugs.push(`${fSlug}-temporada-${sNum}-episodio-${eNum}`);
-                            fallbackSlugs.push(`${fSlug}-temporada-${sNum}-capitulo-${eNum}`);
-                            fallbackSlugs.push(`${fSlug}-temporada-${sNum}-episodio-${epPadded}`);
-                            fallbackSlugs.push(`${fSlug}-${sNum}x${eNum}`);
-                        }
-                    }
-
-                    return getPostId(fallbackSlugs, postType);
-                });
+                // Si es película y falló el slug directo, buscar por API con filtro score >= 35
+                if (isMovie) {
+                    return searchHackstoreApi(searchQueries, uniqueTitles, year, "movies");
+                }
+                return null;
             });
         })
         .then(function(postId) {
-            if (!postId) {
-                console.log("[Hackstore] No se encontró el contenido en Hackstore2");
-                return [];
-            }
-            console.log(`[Hackstore] Post ID encontrado: ${postId}`);
+            if (!postId) return [];
             return getPlayerEmbeds(postId);
         })
         .then(function(embeds) {
-            if (!embeds.length) {
-                console.log("[Hackstore] No se encontraron reproductores");
-                return [];
-            }
-            console.log(`[Hackstore] Embeds encontrados: ${embeds.length}`);
+            if (!embeds.length) return [];
 
             var promises = embeds.map(function(embed) {
                 var url = embed.url || embed.link || "";
@@ -602,7 +621,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         var qual = result.quality || "720p";
                         return {
                             name: "Hackstore",
-                            title: `${qual} · ${lang.toUpperCase()} · ${serverName}`,
+                            title: qual + " · " + lang.toUpperCase() + " · " + serverName,
                             quality: qual,
                             url: result.url,
                             headers: result.headers || {}
@@ -614,14 +633,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return Promise.all(promises);
         })
         .then(function(results) {
-            var validStreams = results.filter(function(st) { return st !== null; });
-            console.log(`[Hackstore] ✓ ${validStreams.length} streams válidos extraídos`);
-            return validStreams;
+            return results.filter(function(st) { return st !== null; });
         })
-        .catch(function(err) {
-            console.log(`[Hackstore] Error en flujo: ${err.message}`);
+        .catch(function() {
             return [];
         });
 }
 
-module.exports = { getStreams };
+module.exports = { getStreams: getStreams };
