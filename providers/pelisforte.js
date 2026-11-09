@@ -3,7 +3,7 @@
  * Dominio: https://www2.pelisforte.se
  * Reemplazo oficial de PelisPlus
  * Motor: 100% Cadenas de Promesas (Hermes / FireTV / QuickJS Safe)
- * Características: Doblajes originales de cine (OK.ru CDN 1080p/720p directo), StreamWish y VidHide
+ * Características: Doblajes originales de cine (OK.ru CDN 1080p/720p Directo), StreamWish y VidHide
  * Reglas Hermes: ES5 estricto, fetchWithTimeout preventivo con clearTimeout, cero dependencias.
  */
 
@@ -200,7 +200,6 @@ function resolveOkRu(htmlOrUrl) {
         };
 
         var streams = [];
-        // Priorizar las mejores calidades
         var preferred = ["full", "hd", "sd"];
         for (var p = 0; p < preferred.length; p++) {
             var targetName = preferred[p];
@@ -218,7 +217,6 @@ function resolveOkRu(htmlOrUrl) {
             }
         }
 
-        // Si no encontró las 3 primeras, añadir la que tenga
         if (streams.length === 0 && metadata.videos.length > 0) {
             var first = metadata.videos[0];
             streams.push({
@@ -341,9 +339,7 @@ function resolveGatewayOption(item) {
     }, 2400)
     .then(function(res) {
         var finalUrl = res.url || "";
-        var htmlPromise = res.text();
-
-        return htmlPromise.then(function(html) {
+        return res.text().then(function(html) {
             if (finalUrl.indexOf("ok.ru") !== -1 || html.indexOf("data-options=") !== -1) {
                 return resolveOkRu(html);
             }
@@ -435,7 +431,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                 if (!bestUrl) return null;
 
-                // Si es serie, resolver la URL del episodio
                 if (!isMovie) {
                     return fetchWithTimeout(bestUrl, { headers: DEFAULT_HEADERS }, 2400)
                         .then(function(sRes) { return sRes.ok ? sRes.text() : ""; })
@@ -455,16 +450,21 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 2400)
                 .then(function(res) { return res.ok ? res.text() : ""; })
                 .then(function(html) {
-                    // Extraer los iframes de mp4.nu
-                    var ifrRegex = /id=["']options-(\d+)["'][^>]*>[\s\S]*?<iframe[^>]+src=["']https?:\/\/mp4\.nu\/\?h=([^"']+)["']/gi;
+                    // Mapeo seguro de tokens mediante búsqueda directa por índice
                     var tokensMap = {};
-                    var m;
-
-                    while ((m = ifrRegex.exec(html)) !== null) {
-                        tokensMap[m[1]] = m[2];
+                    for (var optIdx = 0; optIdx < 10; optIdx++) {
+                        var targetId = 'id="options-' + optIdx + '"';
+                        var pos = html.indexOf(targetId);
+                        if (pos !== -1) {
+                            var snippet = html.substring(pos, pos + 500);
+                            var tokenMatch = snippet.match(/mp4\.nu\/\?h=([^"'\s]+)/);
+                            if (tokenMatch) {
+                                tokensMap[String(optIdx)] = tokenMatch[1];
+                            }
+                        }
                     }
 
-                    // Extraer idiomas y opciones
+                    // Extraer idiomas y opciones de todas las etiquetas <a> que enlazan a #options-X
                     var options = [];
                     var langBlocks = [
                         { id: "ln0", label: "LAT" },
@@ -476,32 +476,40 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         var lb = langBlocks[l];
                         var blockIdx = html.indexOf('id="' + lb.id + '"');
                         if (blockIdx === -1) continue;
-                        var blockHtml = html.substring(blockIdx, blockIdx + 1200);
+                        var blockHtml = html.substring(blockIdx, blockIdx + 1500);
 
-                        var optRegex = /href=["']#options-(\d+)["'][^>]*>[\s\S]*?<span class=["']server["']>([^<]+)<\/span>/gi;
-                        var optMatch;
-                        while ((optMatch = optRegex.exec(blockHtml)) !== null) {
-                            var optId = optMatch[1];
-                            var serverName = optMatch[2].replace(/\s+/g, " ").trim();
+                        var optRegex = /<a[^>]+href=["']#options-(\d+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+                        var mOpt;
+                        while ((mOpt = optRegex.exec(blockHtml)) !== null) {
+                            var optId = mOpt[1];
+                            var inner = mOpt[2];
+                            var sMatch = inner.match(/class=["'][^"']*server[^"']*["']>([^<]+)/i);
+                            var serverName = sMatch ? sMatch[1].replace(/\s+/g, " ").trim() : "Server";
+
+                            var cleanServer = serverName.indexOf("Ok") !== -1 || serverName.indexOf("OK") !== -1 ? "OK.ru" :
+                                              serverName.indexOf("Byse") !== -1 ? "Byse" : serverName.split("-")[0].trim();
+
                             if (tokensMap[optId]) {
                                 options.push({
                                     optId: optId,
                                     token: tokensMap[optId],
                                     lang: lb.label,
-                                    server: serverName
+                                    server: cleanServer
                                 });
                             }
                         }
                     }
 
-                    // Priorizar Latino primero
+                    // Priorizar LAT y priorizar OK.ru (doblaje original garantizado)
                     options.sort(function(a, b) {
                         if (a.lang === "LAT" && b.lang !== "LAT") return -1;
                         if (b.lang === "LAT" && a.lang !== "LAT") return 1;
+                        if (a.server === "OK.ru" && b.server !== "OK.ru") return -1;
+                        if (b.server === "OK.ru" && a.server !== "OK.ru") return 1;
                         return 0;
                     });
 
-                    // Limitar a las mejores 3 opciones para no saturar timeouts
+                    // Limitar a las mejores 3 opciones
                     var selected = options.slice(0, 3);
                     var promises = selected.map(function(item) {
                         return resolveGatewayOption(item);
