@@ -1,7 +1,7 @@
 /**
  * Provider: Hackstore2 (Películas y Series)
  * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / Android TV / FireTV Safe)
- * Cumple estrictamente las 7 reglas de runtime: ES5, fetchWithTimeout preventivo, cero dependencias.
+ * Optimización: Búsqueda concurrente en lotes y priorización de títulos originales para series.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -21,7 +21,7 @@ var DEFAULT_HEADERS = {
 // ==========================================
 
 function fetchWithTimeout(url, options, timeoutMs) {
-    var timeout = timeoutMs || 2600;
+    var timeout = timeoutMs || 2500;
     return new Promise(function(resolve, reject) {
         var timer = setTimeout(function() {
             reject(new Error("Timeout tras " + timeout + "ms: " + url));
@@ -176,7 +176,7 @@ function probeM3u8Quality(m3u8Url, headers) {
     return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    }, 2600)
+    }, 2400)
     .then(function(res) {
         if (!res.ok) return "720p";
         return res.text();
@@ -199,7 +199,6 @@ function probeM3u8Quality(m3u8Url, headers) {
             if (h > maxH) maxH = h;
         }
 
-        // Evaluación combinada ancho x alto para soportar ultra-wide/panorámicas
         if (maxW >= 3840 || maxH >= 2160) return "4K";
         if (maxW >= 1920 || maxH >= 1080) return "1080p";
         if (maxW >= 1280 || maxH >= 720) return "720p";
@@ -224,14 +223,14 @@ function getServerLabel(url) {
 }
 
 // ==========================================
-// RESOLVERS DE STREAMING (CADENAS PURAS)
+// RESOLVERS DE STREAMING (PROMESAS PURAS)
 // ==========================================
 
 function resolveVimeos(url) {
     return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" },
         redirect: "follow"
-    }, 2600)
+    }, 2400)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -265,7 +264,7 @@ function resolveGoodStream(url) {
     return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" },
         redirect: "follow"
-    }, 2600)
+    }, 2400)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -306,7 +305,7 @@ function resolveStreamWish(url) {
     return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" },
         redirect: "follow"
-    }, 2600)
+    }, 2400)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -340,7 +339,7 @@ function resolveVidHide(url) {
     return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://embed69.org/" },
         redirect: "follow"
-    }, 2600)
+    }, 2400)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -370,7 +369,7 @@ function resolveFilemoon(url) {
     return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": url },
         redirect: "follow"
-    }, 2600)
+    }, 2400)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -400,7 +399,7 @@ function resolveVideoApp(url) {
     return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
-    }, 2600)
+    }, 2400)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
@@ -427,35 +426,45 @@ function dispatchResolver(url) {
 }
 
 // ==========================================
-// CLIENTE API REST DE HACKSTORE2
+// CLIENTE API REST (CONCURRENTE EN LOTES)
 // ==========================================
 
 function getPostId(slugs, postType) {
     var slugList = Array.isArray(slugs) ? slugs : [slugs];
+    if (slugList.length === 0) return Promise.resolve(null);
 
-    function tryNext(index) {
-        if (index >= slugList.length) return Promise.resolve(null);
-        var currentSlug = slugList[index];
-        var endpoint = API_URL + "/single?post_name=" + encodeURIComponent(currentSlug) + "&post_type=" + postType;
+    // Búsqueda en lotes concurrentes de 3 para evitar acumulación de latencia
+    var batchSize = 3;
+    function tryBatch(startIndex) {
+        if (startIndex >= slugList.length) return Promise.resolve(null);
+        var currentBatch = slugList.slice(startIndex, startIndex + batchSize);
 
-        return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2600)
-            .then(function(res) {
-                if (!res.ok) return null;
-                return res.json();
-            })
-            .then(function(json) {
-                if (!json || !json.data) return tryNext(index + 1);
-                var d = json.data;
-                if (postType === "episodes" && d.episode && d.episode._id) return d.episode._id;
-                if (d._id) return d._id;
-                return tryNext(index + 1);
-            })
-            .catch(function() {
-                return tryNext(index + 1);
-            });
+        var promises = currentBatch.map(function(slug) {
+            var endpoint = API_URL + "/single?post_name=" + encodeURIComponent(slug) + "&post_type=" + postType;
+            return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2200)
+                .then(function(res) {
+                    if (!res.ok) return null;
+                    return res.json();
+                })
+                .then(function(json) {
+                    if (!json || !json.data) return null;
+                    var d = json.data;
+                    if (postType === "episodes" && d.episode && d.episode._id) return d.episode._id;
+                    if (d._id) return d._id;
+                    return null;
+                })
+                .catch(function() { return null; });
+        });
+
+        return Promise.all(promises).then(function(results) {
+            for (var i = 0; i < results.length; i++) {
+                if (results[i]) return results[i];
+            }
+            return tryBatch(startIndex + batchSize);
+        });
     }
 
-    return tryNext(0);
+    return tryBatch(0);
 }
 
 function searchHackstoreApi(queries, titles, year, postType) {
@@ -465,13 +474,12 @@ function searchHackstoreApi(queries, titles, year, postType) {
     function tryNext(index) {
         if (index >= qList.length) return Promise.resolve(null);
         var q = qList[index];
-        // Se trunca entre 3 y 15 chars según la validación del backend de Hackstore
         var cleanQ = q.length > 15 ? q.substring(0, 15) : q;
         if (cleanQ.length < 3) return tryNext(index + 1);
 
         var searchUrl = API_URL + "/search?post_type=" + pType + "&query=" + encodeURIComponent(cleanQ);
 
-        return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2600)
+        return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2200)
             .then(function(res) {
                 if (!res.ok) return null;
                 return res.json();
@@ -504,7 +512,7 @@ function searchHackstoreApi(queries, titles, year, postType) {
 
 function getPlayerEmbeds(postId) {
     var endpoint = API_URL + "/player?post_id=" + postId;
-    return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2600)
+    return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2200)
         .then(function(res) {
             if (!res.ok) return [];
             return res.json();
@@ -526,7 +534,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
     var epPadded = padZero(eNum);
     var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
-    return fetchWithTimeout(tmdbUrl, {}, 2600)
+    return fetchWithTimeout(tmdbUrl, {}, 2400)
         .then(function(res) {
             if (!res.ok) throw new Error("TMDB HTTP " + res.status);
             return res.json();
@@ -537,44 +545,54 @@ function getStreams(tmdbId, mediaType, season, episode) {
             var year = (isMovie ? meta.release_date : meta.first_air_date || "").slice(0, 4);
 
             var titles = [];
-            if (title) titles.push(title);
-            if (origTitle && origTitle !== title) titles.push(origTitle);
+            // En series, poner el título original (inglés) de primero porque Hackstore usa slugs originales
+            if (!isMovie && origTitle) {
+                titles.push(origTitle);
+                if (title && title !== origTitle) titles.push(title);
+            } else {
+                if (title) titles.push(title);
+                if (origTitle && origTitle !== title) titles.push(origTitle);
+            }
 
             var altArr = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
             for (var i = 0; i < altArr.length; i++) {
-                if (altArr[i].title) titles.push(altArr[i].title);
+                if (altArr[i].title && titles.indexOf(altArr[i].title) === -1) {
+                    titles.push(altArr[i].title);
+                }
             }
 
-            var uniqueTitles = titles.filter(function(item, pos, self) {
-                return item && self.indexOf(item) === pos;
-            });
-
             var searchQueries = [];
-            var baseSlugs = [];
+            var fullSlugs = [];
+            var shortSlugs = [];
 
-            for (var j = 0; j < uniqueTitles.length; j++) {
-                var rawT = uniqueTitles[j];
+            for (var j = 0; j < titles.length; j++) {
+                var rawT = titles[j];
                 if (!rawT) continue;
 
                 var clean = cleanTitle(rawT);
                 if (clean && searchQueries.indexOf(clean) === -1) searchQueries.push(clean);
 
                 var sNorm = normalizeText(rawT);
-                if (sNorm && baseSlugs.indexOf(sNorm) === -1) baseSlugs.push(sNorm);
+                if (sNorm && fullSlugs.indexOf(sNorm) === -1) fullSlugs.push(sNorm);
 
                 if (rawT.indexOf("&") !== -1) {
                     var withY = normalizeText(rawT.replace(/&/g, " y "));
-                    if (withY && baseSlugs.indexOf(withY) === -1) baseSlugs.push(withY);
+                    if (withY && fullSlugs.indexOf(withY) === -1) fullSlugs.push(withY);
 
                     var withAnd = normalizeText(rawT.replace(/&/g, " and "));
-                    if (withAnd && baseSlugs.indexOf(withAnd) === -1) baseSlugs.push(withAnd);
+                    if (withAnd && fullSlugs.indexOf(withAnd) === -1) fullSlugs.push(withAnd);
                 }
 
                 var shortNorm = normalizeText(rawT.split(/[:\-\(]/)[0]);
-                if (shortNorm && baseSlugs.indexOf(shortNorm) === -1) baseSlugs.push(shortNorm);
+                if (shortNorm && shortSlugs.indexOf(shortNorm) === -1 && fullSlugs.indexOf(shortNorm) === -1) {
+                    shortSlugs.push(shortNorm);
+                }
             }
 
-            // Construir candidatos directos según tipo
+            // Los slugs completos van primero; los recortados al final como último recurso
+            var baseSlugs = fullSlugs.concat(shortSlugs);
+
+            // Generar candidatos ordenados por probabilidad
             var candidateSlugs = [];
             for (var b = 0; b < baseSlugs.length; b++) {
                 var bSlug = baseSlugs[b];
@@ -582,11 +600,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     candidateSlugs.push(bSlug);
                     if (year) candidateSlugs.push(bSlug + "-" + year);
                 } else {
-                    // Formato exacto verificado: {serie}-temporada-{s}-episodio-{e}
                     candidateSlugs.push(bSlug + "-temporada-" + sNum + "-episodio-" + eNum);
                     candidateSlugs.push(bSlug + "-temporada-" + sNum + "-episodio-" + epPadded);
-                    candidateSlugs.push(bSlug + "-temporada-" + sNum + "-capitulo-" + eNum);
-                    candidateSlugs.push(bSlug + "-temporada-" + sNum + "-capitulo-" + epPadded);
                     candidateSlugs.push(bSlug + "-" + sNum + "x" + eNum);
                     candidateSlugs.push(bSlug + "-" + sNum + "x" + epPadded);
                 }
@@ -596,9 +611,8 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return getPostId(candidateSlugs, postType).then(function(postId) {
                 if (postId) return postId;
 
-                // Si es película y falló el slug directo, buscar por API con filtro score >= 35
                 if (isMovie) {
-                    return searchHackstoreApi(searchQueries, uniqueTitles, year, "movies");
+                    return searchHackstoreApi(searchQueries, titles, year, "movies");
                 }
                 return null;
             });
