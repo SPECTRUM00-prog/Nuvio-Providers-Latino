@@ -1,6 +1,8 @@
 /**
  * Provider: Cinecalidad Oficial (www.cinecalidad.am)
- * Motor: Scraper Nativo HTML (Buscador + Ficha /ver-pelicula/) + Resolver Vimeos
+ * Motor Híbrido:
+ *   1. Streaming Online Directo: Vimeos (HLS 1080p / 720p dinámico)
+ *   2. Streaming P2P / Torrents: Nuvio Engine / Stremio (Magnets Dual Latino 1080p / 720p)
  * Reglas Hermes: ES5 estricto, 100% Promesas, Zero-Dependencies, Fast Timeout (<= 2800ms)
  */
 
@@ -21,22 +23,34 @@ var DEFAULT_HEADERS = {
 
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Timeout"));
-            }, limit);
+    var timer = null;
+
+    var timeoutPromise = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            reject(new Error("Timeout"));
+        }, limit);
+    });
+
+    return Promise.race([fetch(url, options), timeoutPromise])
+        .then(function(res) {
+            if (timer) clearTimeout(timer);
+            return res;
         })
-    ]).catch(function() { return null; });
+        .catch(function() {
+            if (timer) clearTimeout(timer);
+            return null;
+        });
 }
 
 function cleanTitle(str) {
     if (!str) return "";
-    return str
+    var normalized = str;
+    try {
+        normalized = str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    } catch (e) {}
+
+    return normalized
         .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
         .replace(/[^a-z0-9\s]+/g, " ")
         .replace(/\s+/g, " ")
         .trim();
@@ -114,21 +128,24 @@ function unpackJS(packed) {
 
 function detectQualityFromUrl(url) {
     if (!url) return null;
-    var u = url.toLowerCase();
-    if (u.indexOf("vimeos") !== -1) {
-        var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
+    var clean = url.split("?")[0].toLowerCase();
+
+    if (clean.indexOf(".urlset") !== -1) {
+        var urlsetMatch = clean.match(/[_,]([a-z,]+)\.urlset/i);
         if (urlsetMatch) {
             var tags = urlsetMatch[1].split(",");
-            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1) return "1080p";
-            if (tags.indexOf("h") !== -1) return "720p";
-            if (tags.indexOf("n") !== -1) return "480p";
+            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("fhd") !== -1) return "1080p";
+            if (tags.indexOf("h") !== -1 || tags.indexOf("hd") !== -1) return "720p";
+            if (tags.indexOf("n") !== -1 || tags.indexOf("sd") !== -1) return "480p";
             if (tags.indexOf("l") !== -1) return "360p";
         }
     }
-    if (u.indexOf("4k") !== -1 || u.indexOf("2160") !== -1) return "4K";
-    if (u.indexOf("1080") !== -1) return "1080p";
-    if (u.indexOf("720") !== -1) return "720p";
-    if (u.indexOf("480") !== -1) return "480p";
+
+    if (/(?:[-_./]|^)(?:4k|2160p?)(?:[-_./]|$)/i.test(clean)) return "4K";
+    if (/(?:[-_./]|^)(?:1080p?|fhd)(?:[-_./]|$)/i.test(clean)) return "1080p";
+    if (/(?:[-_./]|^)(?:720p?)(?:[-_./]|$)/i.test(clean)) return "720p";
+    if (/(?:[-_./]|^)(?:480p?)(?:[-_./]|$)/i.test(clean)) return "480p";
+
     return null;
 }
 
@@ -173,7 +190,7 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
-// 3. RESOLVERS DE STREAMING
+// 3. RESOLVER DE VIMEOS (STREAMING ONLINE)
 // ==========================================
 
 function resolveVimeos(embedUrl) {
@@ -216,43 +233,33 @@ function resolveVimeos(embedUrl) {
     .catch(function() { return null; });
 }
 
-function resolveStreamWish(url) {
-    var idMatch = url.match(/\/(?:e|v|f)\/([a-zA-Z0-9]+)/);
-    var targetUrl = idMatch ? "https://hlswish.com/e/" + idMatch[1] : url;
+// ==========================================
+// 4. RESOLVER DE TORRENTS (P2P / MAGNETS)
+// ==========================================
 
-    return fetchWithTimeout(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
-        .then(function(html) {
-            var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-            if (direct) {
-                return probeM3u8Quality(direct[1], { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
-                    return { url: direct[1], quality: q, server: "StreamWish", headers: { "User-Agent": USER_AGENT, "Referer": targetUrl } };
-                });
-            }
-            var unpacked = unpackJS(html);
-            if (unpacked) {
-                var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-                if (m3u8) {
-                    return probeM3u8Quality(m3u8[0], { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
-                        return { url: m3u8[0], quality: q, server: "StreamWish", headers: { "User-Agent": USER_AGENT, "Referer": targetUrl } };
-                    });
-                }
-            }
-            return null;
-        })
-        .catch(function() { return null; });
-}
-
-function dispatchResolver(rawUrl) {
-    if (!rawUrl) return Promise.resolve(null);
-    var u = rawUrl.toLowerCase();
-    if (u.indexOf("vimeos.net") !== -1) return resolveVimeos(rawUrl);
-    if (u.indexOf("hlswish") !== -1 || u.indexOf("streamwish") !== -1) return resolveStreamWish(rawUrl);
-    return Promise.resolve(null);
+function resolveTorrentMagnet(tItem, refererUrl) {
+    return fetchWithTimeout(tItem.url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": refererUrl }
+    }, 2500)
+    .then(function(res) { return res ? res.text() : ""; })
+    .then(function(html) {
+        var magnetMatch = html.match(/magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^"'\s<>]*/i);
+        if (magnetMatch) {
+            return {
+                name: "CineCalidad",
+                title: tItem.quality + " · " + tItem.label + " · P2P",
+                quality: tItem.quality,
+                url: magnetMatch[0],
+                headers: {}
+            };
+        }
+        return null;
+    })
+    .catch(function() { return null; });
 }
 
 // ==========================================
-// 4. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// 5. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
 
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
@@ -295,7 +302,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                 .then(function(html) {
                     if (!html) return [];
 
-                    // Extraer enlaces a películas o series
                     var candidates = [];
                     var regex = /<a[^>]+href=["']([^"']*(?:ver-pelicula|ver-serie)\/[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
                     var m;
@@ -321,7 +327,6 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                         targetUrl = BASE_URL + (targetUrl.indexOf("/") === 0 ? "" : "/") + targetUrl;
                     }
 
-                    // Si es serie, probar la ruta canónica de episodio
                     if (isTv) {
                         var epPath = targetUrl.replace(/\/$/, "") + "-" + s + "x" + e + "/";
                         targetUrl = epPath;
@@ -332,39 +337,73 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                         .then(function(pageHtml) {
                             if (!pageHtml) return [];
 
-                            // Extraer lockers
-                            var lockers = [];
-                            var lRegex = /https?:\/\/[a-zA-Z0-9.-]*(?:vimeos|streamwish|hlswish)\.[a-z]{2,6}\/[^\s"'<>]+/gi;
+                            // 1. Extraer streaming online (Vimeos)
+                            var onlinePromises = [];
+                            var lRegex = /https?:\/\/[a-zA-Z0-9.-]*vimeos\.[a-z]{2,6}\/[^\s"'<>]+/gi;
                             var lm;
+                            var vimeosUrls = [];
+
                             while ((lm = lRegex.exec(pageHtml)) !== null) {
                                 var clk = lm[0].replace(/\\/g, "").replace(/&amp;/g, "&");
-                                if (lockers.indexOf(clk) === -1) lockers.push(clk);
+                                if (vimeosUrls.indexOf(clk) === -1) {
+                                    vimeosUrls.push(clk);
+                                    onlinePromises.push(
+                                        resolveVimeos(clk).then(function(stream) {
+                                            if (stream && stream.url) {
+                                                return {
+                                                    name: "CineCalidad",
+                                                    title: stream.quality + " · Latino · " + stream.server,
+                                                    quality: stream.quality,
+                                                    url: stream.url,
+                                                    headers: stream.headers || {
+                                                        "User-Agent": USER_AGENT,
+                                                        "Referer": BASE_URL + "/"
+                                                    }
+                                                };
+                                            }
+                                            return null;
+                                        })
+                                    );
+                                }
                             }
 
-                            if (lockers.length === 0) return [];
+                            // 2. Extraer Torrents Duales (uTorrent) para películas
+                            var torrentPromises = [];
+                            if (!isTv) {
+                                var tRegex = /<a[^>]+href=["']([^"']*\?download=[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+                                var tm;
+                                var candidateTorrents = [];
 
-                            var promises = lockers.map(function(sUrl) {
-                                return dispatchResolver(sUrl).then(function(stream) {
-                                    if (stream && stream.url) {
-                                        return {
-                                            name: "CineCalidad",
-                                            title: stream.quality + " · Latino · " + stream.server,
-                                            quality: stream.quality,
-                                            url: stream.url,
-                                            headers: stream.headers || {
-                                                "User-Agent": USER_AGENT,
-                                                "Referer": BASE_URL + "/"
-                                            }
-                                        };
+                                while ((tm = tRegex.exec(pageHtml)) !== null) {
+                                    var tHref = tm[1];
+                                    var tText = tm[2].replace(/<[^>]+>/g, "").trim();
+
+                                    if (tText.toLowerCase().indexOf("utorrent") !== -1 || tText.toLowerCase().indexOf("torrent") !== -1) {
+                                        var tQuality = "1080p";
+                                        if (tText.indexOf("4K") !== -1 || tText.indexOf("2160") !== -1) tQuality = "4K";
+                                        else if (tText.indexOf("1080") !== -1) tQuality = "1080p";
+                                        else if (tText.indexOf("720") !== -1) tQuality = "720p";
+                                        else if (tText.indexOf("DVD") !== -1 || tText.indexOf("480") !== -1) tQuality = "480p";
+
+                                        var label = tText.replace(/uTorrent/i, "").trim() || "Dual";
+                                        candidateTorrents.push({ url: tHref, label: label, quality: tQuality });
                                     }
-                                    return null;
-                                });
-                            });
+                                }
 
-                            return Promise.all(promises).then(function(results) {
+                                // Tomar los mejores 2 torrents para mantener tiempo < 2.8s
+                                var topTorrents = candidateTorrents.slice(0, 2);
+                                for (var ti = 0; ti < topTorrents.length; ti++) {
+                                    torrentPromises.push(resolveTorrentMagnet(topTorrents[ti], targetUrl));
+                                }
+                            }
+
+                            // Resolver streams online y torrents en paralelo
+                            return Promise.all(onlinePromises.concat(torrentPromises)).then(function(allResults) {
                                 var valid = [];
-                                for (var v = 0; v < results.length; v++) {
-                                    if (results[v]) valid.push(results[v]);
+                                for (var v = 0; v < allResults.length; v++) {
+                                    if (allResults[v] && allResults[v].url) {
+                                        valid.push(allResults[v]);
+                                    }
                                 }
                                 return valid;
                             });
