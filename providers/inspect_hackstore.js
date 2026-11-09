@@ -1,5 +1,5 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 3 - Reverse del Bundle y POST)
+ * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 4 - Validación de fastApi y query)
  * Ejecutar localmente con: node providers/inspect_hackstore.js
  */
 
@@ -51,105 +51,68 @@ function request(targetUrl, options) {
 
         req.on('timeout', function() {
             req.destroy();
-            var err = new Error('ETIMEDOUT tras ' + timeout + 'ms');
-            reject(err);
+            reject(new Error('ETIMEDOUT tras ' + timeout + 'ms'));
         });
 
         req.on('error', function(err) {
             reject(err);
         });
 
-        if (options.body) {
-            req.write(options.body);
-        }
         req.end();
     });
 }
 
-function runAuditPhase3() {
+function runAuditPhase4() {
     console.log('\n============================================================');
-    console.log('>>> 1. SIGUIENDO REDIRECCIÓN 302 DE /?s=matrix');
+    console.log('>>> 1. PROBANDO PARÁMETROS DESCUBIERTOS (query + post_type)');
     console.log('============================================================');
 
-    return request(BASE_URL + '/?s=matrix')
-        .then(function(res) {
-            console.log('[302 REDIRECT LOCATION]: ' + res.headers.location);
-            if (res.headers.location) {
-                var loc = res.headers.location.indexOf('http') === 0 ? res.headers.location : (BASE_URL + res.headers.location);
-                return request(loc).then(function(locRes) {
-                    console.log('[DESTINO STATUS]: ' + locRes.status + ' para ' + loc);
-                    console.log('[DESTINO PREVIEW]: ' + locRes.body.substring(0, 200).replace(/\s+/g, ' '));
-                });
-            }
-        })
+    var testUrls = [
+        BASE_URL + '/api/rest/search?post_type=movies&query=matrix',
+        BASE_URL + '/api/rest/search?post_type=all&query=matrix',
+        BASE_URL + '/api/rest/search?query=matrix&post_type=movies',
+        BASE_URL + '/api/fast/search?post_type=movies&query=matrix',
+        BASE_URL + '/api/search?post_type=movies&query=matrix'
+    ];
+
+    function trySearch(idx) {
+        if (idx >= testUrls.length) return Promise.resolve();
+        var u = testUrls[idx];
+        return request(u)
+            .then(function(res) {
+                console.log('[' + res.status + '] (' + res.elapsed + 'ms) ' + u);
+                console.log('    Body: ' + res.body.substring(0, 200).replace(/\s+/g, ' '));
+                return trySearch(idx + 1);
+            })
+            .catch(function(err) {
+                console.log('[ERROR] ' + u + ' -> ' + err.message);
+                return trySearch(idx + 1);
+            });
+    }
+
+    return trySearch(0)
         .then(function() {
             console.log('\n============================================================');
-            console.log('>>> 2. PROBANDO /api/rest/search CON POST Y CABECERAS AJAX');
-            console.log('============================================================');
-
-            var postTests = [
-                // GET con X-Requested-With
-                { method: 'GET', url: BASE_URL + '/api/rest/search?q=matrix', headers: { 'X-Requested-With': 'XMLHttpRequest' } },
-                // POST JSON
-                { method: 'POST', url: BASE_URL + '/api/rest/search', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ q: 'matrix' }) },
-                { method: 'POST', url: BASE_URL + '/api/rest/search', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'matrix' }) },
-                // POST Form URL Encoded
-                { method: 'POST', url: BASE_URL + '/api/rest/search', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'q=matrix' }
-            ];
-
-            function tryPost(idx) {
-                if (idx >= postTests.length) return Promise.resolve();
-                var t = postTests[idx];
-                return request(t.url, t)
-                    .then(function(r) {
-                        console.log('[' + t.method + '] Status: ' + r.status + ' | Body: ' + r.body.substring(0, 180));
-                        return tryPost(idx + 1);
-                    })
-                    .catch(function(err) {
-                        console.log('[' + t.method + ' ERROR]: ' + err.message);
-                        return tryPost(idx + 1);
-                    });
-            }
-
-            return tryPost(0);
-        })
-        .then(function() {
-            console.log('\n============================================================');
-            console.log('>>> 3. DESCARGANDO E INSPECCIONANDO BUNDLE FRONTEND JS');
+            console.log('>>> 2. INSPECCIONANDO CONSTRUCCIÓN DE fastApi EN EL JS');
             console.log('============================================================');
 
             return request(BUNDLE_URL).then(function(res) {
-                console.log('[BUNDLE STATUS]: ' + res.status + ' (' + res.body.length + ' bytes)');
-                
-                // Buscar ocurrencias de api/rest
-                var regexApi = /["']([^"']*\/api\/rest\/[^"']*)["']/g;
-                var apis = [];
-                var m;
-                while ((m = regexApi.exec(res.body)) !== null) {
-                    if (apis.indexOf(m[1]) === -1) apis.push(m[1]);
-                }
-                console.log('\n[ENDPOINTS /api/rest DETECTADOS EN EL BUNDLE]:');
-                apis.forEach(function(a) { console.log('  -> ' + a); });
-
-                // Buscar cómo se llama a search
-                var searchContextIdx = res.body.indexOf('/search');
-                if (searchContextIdx !== -1) {
-                    var snippet = res.body.substring(Math.max(0, searchContextIdx - 100), Math.min(res.body.length, searchContextIdx + 200));
-                    console.log('\n[CONTEXTO DE /search EN EL CÓDIGO JS]:');
-                    console.log(snippet.replace(/\s+/g, ' '));
+                var fastApiIdx = res.body.indexOf('fastApi');
+                while (fastApiIdx !== -1) {
+                    var snippet = res.body.substring(Math.max(0, fastApiIdx - 80), Math.min(res.body.length, fastApiIdx + 160));
+                    console.log('Fragmento fastApi: ' + snippet.replace(/\s+/g, ' '));
+                    fastApiIdx = res.body.indexOf('fastApi', fastApiIdx + 1);
                 }
 
-                // Buscar cabeceras personalizadas en peticiones axios/fetch
-                var headerMatches = res.body.match(/headers:\s*\{[^}]+\}/g);
-                if (headerMatches) {
-                    console.log('\n[CABECERAS ENCONTRADAS EN LLAMADAS HTTP]:');
-                    headerMatches.slice(0, 5).forEach(function(h) { console.log('  -> ' + h); });
+                // Buscar definiciones de baseURL / apiBase / axios.create
+                var apiBaseIdx = res.body.indexOf('/api/');
+                while (apiBaseIdx !== -1) {
+                    var snippetApi = res.body.substring(Math.max(0, apiBaseIdx - 50), Math.min(res.body.length, apiBaseIdx + 100));
+                    console.log('Fragmento /api/: ' + snippetApi.replace(/\s+/g, ' '));
+                    apiBaseIdx = res.body.indexOf('/api/', apiBaseIdx + 1);
                 }
             });
-        })
-        .catch(function(err) {
-            console.log('[ERROR]: ' + err.message);
         });
 }
 
-runAuditPhase3();
+runAuditPhase4();
