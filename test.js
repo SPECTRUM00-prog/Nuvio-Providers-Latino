@@ -1,8 +1,10 @@
 /**
  * Test Runner Avanzado & Validador de Streams para Nuvio Media Hub
+ * Compatible con HTTP Streams (HLS/MP4) y P2P Magnets (Nuvio Engine / Torrentio)
  * 
  * Uso:
  *   node test.js <tmdbId> <movie|tv> [season] [episode] [provider|all]
+ *   node test.js <tmdbId> movie [provider]
  */
 
 const fs = require('fs');
@@ -26,7 +28,7 @@ if (args.length === 0) {
 }
 
 const tmdbId = args[0];
-const mediaType = args[1] || 'movie';
+const mediaType = (args[1] || 'movie').toLowerCase();
 const isTv = mediaType === 'tv' || mediaType === 'series';
 
 let season = null;
@@ -38,12 +40,13 @@ if (isTv) {
     episode = args[3] ? parseInt(args[3], 10) : 1;
     providerInput = args[4] || 'cinecalidad';
 } else {
+    // Si es película, detectar si pasaron argumentos de relleno 1 1 o directamente el provider
     if (args[2] && isNaN(parseInt(args[2], 10)) && args[2] !== 'null') {
         providerInput = args[2];
     } else if (args[4]) {
         providerInput = args[4];
     } else {
-        providerInput = args[2] && args[2] !== 'null' ? args[2] : 'cinecalidad';
+        providerInput = args[2] && args[2] !== 'null' && isNaN(parseInt(args[2], 10)) ? args[2] : 'cinecalidad';
     }
 }
 
@@ -58,6 +61,21 @@ if (providerInput.toLowerCase() === 'all') {
 }
 
 async function probeStreamUrl(stream) {
+    // 1. VALIDACIÓN ESPECIAL PARA ENLACES MAGNET (P2P / TORRENT)
+    if (stream.url && stream.url.startsWith('magnet:')) {
+        const hashMatch = stream.url.match(/urn:btih:([a-zA-Z0-9]+)/i);
+        const trMatches = stream.url.match(/tr=/gi) || [];
+        const hash = hashMatch ? hashMatch[1].toLowerCase() : 'N/A';
+        const trackers = trMatches.length;
+
+        return {
+            isValid: true,
+            isP2P: true,
+            details: `P2P BitTorrent · Hash: ${hash.slice(0, 10)}... · ${trackers} Trackers activos`
+        };
+    }
+
+    // 2. VALIDACIÓN PARA ENLACES HTTP/HTTPS (HLS / MP4)
     const startTime = Date.now();
     const headers = stream.headers || { "User-Agent": "Mozilla/5.0" };
 
@@ -65,12 +83,16 @@ async function probeStreamUrl(stream) {
         const controller = new AbortController();
         const timeout = setTimeout(() => controller.abort(), 6000);
 
+        // Evitar cabecera Range en manifiestos .m3u8 para evitar errores 400/416
+        const isM3u8 = stream.url.toLowerCase().includes('.m3u8');
+        const reqHeaders = { ...headers };
+        if (!isM3u8) {
+            reqHeaders["Range"] = "bytes=0-1024";
+        }
+
         const res = await fetch(stream.url, {
             method: 'GET',
-            headers: {
-                ...headers,
-                "Range": "bytes=0-1024"
-            },
+            headers: reqHeaders,
             signal: controller.signal,
             redirect: 'follow'
         });
@@ -90,10 +112,11 @@ async function probeStreamUrl(stream) {
             isValid = false;
         }
 
-        return { isValid, details };
+        return { isValid, isP2P: false, details };
     } catch (e) {
         return {
             isValid: false,
+            isP2P: false,
             details: `Error: ${e.name === 'AbortError' ? 'Timeout (6s)' : e.message}`
         };
     }
