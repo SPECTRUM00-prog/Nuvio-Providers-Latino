@@ -1,5 +1,5 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 8 - Identificación de Tab Series)
+ * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 9 - Validación de Episodio y Player)
  * Ejecutar localmente con: node providers/inspect_hackstore.js
  */
 
@@ -10,25 +10,8 @@ var BASE_URL = 'https://hackstore2.com';
 var API_URL = BASE_URL + '/api/rest';
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-function getFile(url) {
-    return new Promise(function(resolve, reject) {
-        var parsed = urlModule.parse(url);
-        https.get({
-            hostname: parsed.hostname,
-            path: parsed.path,
-            headers: { 'User-Agent': USER_AGENT }
-        }, function(res) {
-            var chunks = [];
-            res.on('data', function(c) { chunks.push(c); });
-            res.on('end', function() {
-                resolve(Buffer.concat(chunks).toString('utf8'));
-            });
-        }).on('error', reject);
-    });
-}
-
 function requestJson(url) {
-    return new Promise(function(resolve) {
+    return new Promise(function(resolve, reject) {
         var parsed = urlModule.parse(url);
         https.get({
             hostname: parsed.hostname,
@@ -36,78 +19,63 @@ function requestJson(url) {
             headers: {
                 'User-Agent': USER_AGENT,
                 'Referer': BASE_URL + '/',
-                'Accept': 'application/json'
+                'Origin': BASE_URL,
+                'Accept': 'application/json, text/plain, */*'
             }
         }, function(res) {
             var chunks = [];
             res.on('data', function(c) { chunks.push(c); });
             res.on('end', function() {
                 try {
-                    resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+                    resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
                 } catch(e) {
-                    resolve(null);
+                    resolve({ status: res.statusCode, raw: Buffer.concat(chunks).toString('utf8') });
                 }
             });
-        }).on('error', function() { resolve(null); });
+        }).on('error', reject);
     });
 }
 
-function runPhase8() {
-    var mainBundleUrl = 'https://hackstore2.com/wp-content/themes/hackstore/assets/build/assets/index-8f03e130.js';
+function runPhase9() {
+    console.log('\n============================================================');
+    console.log('>>> 1. PROBANDO /api/rest/single PARA DEXTER TEMPORADA 1 EPISODIO 1');
+    console.log('============================================================');
 
-    getFile(mainBundleUrl).then(function(code) {
-        console.log('\n============================================================');
-        console.log('>>> 1. BUSCANDO SETTERS DEL TAB EN EL BUSCADOR');
-        console.log('============================================================');
+    var epSlug = 'dexter-resurrection-temporada-1-episodio-1';
+    var singleUrl = API_URL + '/single?post_name=' + epSlug + '&post_type=episodes';
 
-        // Buscar dónde cambia de "movies"
-        var idx = code.indexOf('useState("movies")');
-        if (idx !== -1) {
-            var snippet = code.substring(idx, Math.min(code.length, idx + 2500));
-            // Buscar llamadas a la función que actualiza el estado (ej. i("..."))
-            var matches = snippet.match(/onClick:[\s\S]{1,40}?\("([a-zA-Z0-9_-]+)"\)/g);
-            console.log('Botones / Click Handlers encontrados cerca del estado:');
-            console.log(matches);
-            
-            var allTypes = snippet.match(/"(movies|series|serie|tv|anime|episodes)"/g);
-            console.log('Strings de tipos presentes en el modal de búsqueda:');
-            console.log(allTypes);
-        }
+    requestJson(singleUrl)
+        .then(function(res) {
+            console.log('Status Single Episodio:', res.status);
+            console.log('Respuesta Single:', JSON.stringify(res.data, null, 2));
 
-        console.log('\n============================================================');
-        console.log('>>> 2. PROBANDO BÚSQUEDA DE SERIES CON TÍTULOS COMUNES');
-        console.log('============================================================');
-        
-        // Probemos títulos conocidos con 'series'
-        var testSeries = ['boys', 'dragon', 'halo', 'vikingos', 'walking'];
-        
-        function tryNextSerie(sIdx) {
-            if (sIdx >= testSeries.length) return Promise.resolve();
-            var q = testSeries[sIdx];
-            var u = API_URL + '/search?post_type=series&query=' + q;
-            return requestJson(u).then(function(res) {
-                var posts = (res && res.data && res.data.posts) || [];
-                console.log('Búsqueda: series | query=' + q + ' -> Encontrados: ' + posts.length);
-                if (posts.length > 0) {
-                    console.log('  -> ' + posts[0].title + ' (ID: ' + posts[0]._id + ')');
-                    // Probar obtener episodios de esta serie
-                    var epUrl = API_URL + '/episodes?post_id=' + posts[0]._id;
-                    return requestJson(epUrl).then(function(epRes) {
-                        var eps = (epRes && epRes.data) || [];
-                        console.log('  -> [EPISODIOS DISPONIBLES]: ' + (Array.isArray(eps) ? eps.length : 'No array'));
-                        if (Array.isArray(eps) && eps.length > 0) {
-                            console.log('  -> Muestra Ep #1: S' + eps[0].season_number + 'E' + eps[0].episode_number + ' (ID: ' + eps[0]._id + ')');
-                        }
-                    });
-                }
-                return tryNextSerie(sIdx + 1);
-            });
-        }
+            // Extraer el ID del episodio
+            var epId = null;
+            if (res.data && res.data.data) {
+                var d = res.data.data;
+                epId = (d.episode && d.episode._id) || d._id;
+            }
 
-        return tryNextSerie(0);
-    }).catch(function(err) {
-        console.log('Error:', err.message);
-    });
+            console.log('\n[ID EXTRAÍDO DEL EPISODIO]:', epId);
+
+            if (!epId) {
+                throw new Error('No se encontró el ID en la respuesta de single');
+            }
+
+            console.log('\n============================================================');
+            console.log('>>> 2. PROBANDO /api/rest/player?post_id=' + epId);
+            console.log('============================================================');
+
+            return requestJson(API_URL + '/player?post_id=' + epId);
+        })
+        .then(function(playerRes) {
+            console.log('Status Player:', playerRes.status);
+            console.log('Data Player:', JSON.stringify(playerRes.data, null, 2));
+            console.log('\n✓ FLUJO DE SERIES Y EPISODIOS CONFIRMADO EXITOSAMENTE');
+        })
+        .catch(function(err) {
+            console.log('Error:', err.message);
+        });
 }
 
-runPhase8();
+runPhase9();
