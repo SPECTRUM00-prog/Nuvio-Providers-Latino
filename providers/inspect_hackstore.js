@@ -1,5 +1,5 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 5 - Estructura de Post y Players)
+ * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 6 - Descubrimiento de Series)
  * Ejecutar localmente con: node providers/inspect_hackstore.js
  */
 
@@ -23,15 +23,16 @@ function request(targetUrl) {
                 'Referer': BASE_URL + '/',
                 'Origin': BASE_URL
             },
-            timeout: 7000
+            timeout: 6000
         }, function(res) {
             var chunks = [];
             res.on('data', function(c) { chunks.push(c); });
             res.on('end', function() {
+                var body = Buffer.concat(chunks).toString('utf8');
                 try {
-                    resolve({ status: res.statusCode, data: JSON.parse(Buffer.concat(chunks).toString('utf8')) });
+                    resolve({ status: res.statusCode, data: JSON.parse(body) });
                 } catch(e) {
-                    resolve({ status: res.statusCode, raw: Buffer.concat(chunks).toString('utf8') });
+                    resolve({ status: res.statusCode, raw: body });
                 }
             });
         });
@@ -40,62 +41,55 @@ function request(targetUrl) {
     });
 }
 
-function runPhase5() {
+function runPhase6() {
     console.log('\n============================================================');
-    console.log('>>> 1. INSPECCIONANDO DETALLES DE PELÍCULA Y SU PLAYER');
+    console.log('>>> PROBANDO VARIACIONES DE post_type PARA SERIES');
     console.log('============================================================');
 
-    request(API_URL + '/search?post_type=movies&query=matrix')
-        .then(function(res) {
+    var postTypes = ['series', 'serie', 'tv', 'tvshows', 'episodes', 'episode'];
+    var query = 'thrones'; // Game of Thrones
+
+    function tryType(idx) {
+        if (idx >= postTypes.length) return Promise.resolve();
+        var type = postTypes[idx];
+        var u = API_URL + '/search?post_type=' + type + '&query=' + query;
+
+        return request(u).then(function(res) {
             var posts = (res.data && res.data.data && res.data.data.posts) || [];
-            console.log('Películas encontradas:', posts.length);
-            if (!posts.length) return;
-
-            var p = posts[0];
-            console.log('Campos del Post #1:');
-            console.log('  - _id:', p._id);
-            console.log('  - title:', p.title);
-            console.log('  - slug / post_name:', p.slug || p.post_name);
-
-            console.log('\n>>> 2. PROBANDO /api/rest/player?post_id=' + p._id);
-            return request(API_URL + '/player?post_id=' + p._id)
-                .then(function(playerRes) {
-                    console.log('Status Player:', playerRes.status);
-                    console.log('Data Player:', JSON.stringify(playerRes.data, null, 2).substring(0, 500));
-                });
-        })
-        .then(function() {
-            console.log('\n============================================================');
-            console.log('>>> 3. PROBANDO BÚSQUEDA DE SERIES Y EPISODIOS');
-            console.log('============================================================');
-
-            return request(API_URL + '/search?post_type=series&query=loki')
-                .then(function(res) {
-                    var series = (res.data && res.data.data && res.data.data.posts) || [];
-                    console.log('Series encontradas:', series.length);
-                    if (!series.length) return;
-
-                    var s = series[0];
-                    console.log('Serie #1:');
-                    console.log('  - _id:', s._id);
-                    console.log('  - title:', s.title);
-                    console.log('  - slug / post_name:', s.slug || s.post_name);
-
-                    // Consultar el single de la serie para ver cómo estructura episodios
-                    var singleUrl = API_URL + '/single?post_name=' + encodeURIComponent(s.slug || s.post_name) + '&post_type=series';
-                    return request(singleUrl).then(function(sRes) {
-                        console.log('Single Serie Status:', sRes.status);
-                        if (sRes.data && sRes.data.data) {
-                            var d = sRes.data.data;
-                            var seasons = d.seasons || d.episodes || [];
-                            console.log('¿Tiene temporadas/episodios en el single?:', Array.isArray(seasons) ? seasons.length : typeof seasons);
-                        }
-                    });
-                });
-        })
-        .catch(function(err) {
-            console.log('Error:', err.message);
+            console.log('[' + type + '] Status: ' + res.status + ' | Posts encontrados: ' + posts.length);
+            if (posts.length > 0) {
+                console.log('  -> Muestra: ' + posts[0].title + ' (ID: ' + posts[0]._id + ' | slug: ' + (posts[0].slug || posts[0].post_name) + ')');
+            }
+            return tryType(idx + 1);
+        }).catch(function(err) {
+            console.log('[' + type + ' ERROR]: ' + err.message);
+            return tryType(idx + 1);
         });
+    }
+
+    return tryType(0).then(function() {
+        console.log('\n============================================================');
+        console.log('>>> INSPECCIONANDO BUNDLE Episodes-2cb1c73a.js');
+        console.log('============================================================');
+        var epBundleUrl = 'https://hackstore2.com/wp-content/themes/hackstore/assets/build/assets/Episodes-2cb1c73a.js';
+        return request(epBundleUrl).then(function(res) {
+            if (res.raw) {
+                console.log('[EPISODES BUNDLE STATUS]: ' + res.status + ' (' + res.raw.length + ' bytes)');
+                
+                // Buscar llamadas de API en el bundle de episodios
+                var matchApi = res.raw.match(/apiPath:\s*["']([^"']+)["']/g);
+                if (matchApi) {
+                    console.log('apiPaths detectados en Episodes:', matchApi);
+                }
+
+                // Buscar post_type en el bundle de episodios
+                var matchType = res.raw.match(/post_type:\s*["']?([a-zA-Z0-9_-]+)["']?/g);
+                if (matchType) {
+                    console.log('post_types detectados en Episodes:', matchType);
+                }
+            }
+        });
+    });
 }
 
-runPhase5();
+runPhase6();
