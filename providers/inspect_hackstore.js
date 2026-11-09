@@ -1,5 +1,5 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: Hackstore
+ * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 2 - Búsqueda y Frontend)
  * Ejecutar localmente con: node providers/inspect_hackstore.js
  */
 
@@ -8,7 +8,6 @@ var http = require('http');
 var urlModule = require('url');
 
 var BASE_URL = 'https://hackstore2.com';
-var API_URL = BASE_URL + '/api/rest';
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function request(targetUrl, options) {
@@ -22,7 +21,7 @@ function request(targetUrl, options) {
 
         var reqHeaders = Object.assign({
             'User-Agent': USER_AGENT,
-            'Accept': 'application/json, text/plain, */*',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8',
             'Referer': BASE_URL + '/',
             'Origin': BASE_URL
         }, options.headers || {});
@@ -67,95 +66,81 @@ function request(targetUrl, options) {
     });
 }
 
-function printDivider(label) {
+function runDeepAudit() {
     console.log('\n============================================================');
-    console.log('>>> ' + label);
+    console.log('>>> 1. INSPECCIONANDO HTML DE LA HOME EN BUSCA DE SCRIPTS Y SLUGS');
     console.log('============================================================');
-}
-
-function runAudit() {
-    printDivider('1. AUDITORÍA DE CONECTIVIDAD BASE: ' + BASE_URL);
 
     return request(BASE_URL)
         .then(function(res) {
-            console.log('[BASE STATUS]: ' + res.status + ' (' + res.elapsed + ' ms)');
-            console.log('[SERVER]: ' + (res.headers['server'] || 'N/A'));
-            if (res.headers['cf-ray']) console.log('[CLOUDFLARE RAY]: ' + res.headers['cf-ray']);
-
-            printDivider('2. AUDITORÍA ENDPOINT: /api/rest/search?q=matrix');
-            var searchUrl = API_URL + '/search?q=matrix';
-            return request(searchUrl);
-        })
-        .then(function(res) {
-            console.log('[SEARCH STATUS]: ' + res.status + ' (' + res.elapsed + ' ms)');
-            if (res.status !== 200) {
-                console.log('[SEARCH RESPONSE BODY PREVIEW]: ' + res.body.substring(0, 300));
-                throw new Error('API Search falló con status HTTP ' + res.status);
+            console.log('[HOME STATUS]: ' + res.status);
+            
+            // Extraer enlaces a películas/series visibles en la home
+            var linkRegex = /href=["'](https?:\/\/hackstore2\.com\/(?:peliculas|series|pelicula|serie)\/[^"']+)["']/gi;
+            var links = [];
+            var match;
+            while ((match = linkRegex.exec(res.body)) !== null) {
+                if (links.indexOf(match[1]) === -1) links.push(match[1]);
+            }
+            
+            console.log('[ENLACES DE CONTENIDO DETECTADOS EN HOME]: ' + links.length);
+            for (var i = 0; i < Math.min(5, links.length); i++) {
+                console.log('  -> ' + links[i]);
             }
 
-            var json;
-            try {
-                json = JSON.parse(res.body);
-            } catch (e) {
-                throw new Error('La respuesta de /search no es un JSON válido');
+            // Extraer rutas de bundles JS de Next.js / Nuxt / React / Vue
+            var scriptRegex = /src=["']([^"']+\.js[^"']*)["']/gi;
+            var scripts = [];
+            while ((match = scriptRegex.exec(res.body)) !== null) {
+                if (scripts.indexOf(match[1]) === -1) scripts.push(match[1]);
+            }
+            console.log('\n[SCRIPTS JS DETECTADOS]: ' + scripts.length);
+            for (var j = 0; j < Math.min(6, scripts.length); j++) {
+                console.log('  -> ' + scripts[j]);
             }
 
-            var items = (json && json.data && Array.isArray(json.data)) ? json.data : [];
-            console.log('[SEARCH ÉXITO]: ' + items.length + ' resultados encontrados');
+            console.log('\n============================================================');
+            console.log('>>> 2. PROBANDO VARIACIONES DEL ENDPOINT DE BÚSQUEDA');
+            console.log('============================================================');
 
-            if (items.length === 0) {
-                console.log('[ALERTA]: 0 resultados en la búsqueda.');
-                return null;
+            var testVariants = [
+                BASE_URL + '/api/rest/search?q=matrix',
+                BASE_URL + '/api/rest/search?query=matrix',
+                BASE_URL + '/api/rest/search?keyword=matrix',
+                BASE_URL + '/api/rest/search?s=matrix',
+                BASE_URL + '/api/rest/movies?search=matrix',
+                BASE_URL + '/api/rest/movies?page=1&limit=5',
+                BASE_URL + '/?s=matrix'
+            ];
+
+            function tryVariant(index) {
+                if (index >= testVariants.length) {
+                    console.log('\n============================================================');
+                    console.log('>>> FIN DEL DIAGNÓSTICO DE VARIANTES');
+                    console.log('============================================================');
+                    return Promise.resolve();
+                }
+
+                var target = testVariants[index];
+                return request(target)
+                    .then(function(r) {
+                        var isJson = (r.headers['content-type'] || '').indexOf('application/json') !== -1;
+                        var preview = r.body.substring(0, 150).replace(/\s+/g, ' ');
+                        console.log('[' + r.status + '] ' + target + ' | JSON: ' + isJson + ' | Body: ' + preview);
+                        return tryVariant(index + 1);
+                    })
+                    .catch(function(err) {
+                        console.log('[ERROR] ' + target + ' -> ' + err.message);
+                        return tryVariant(index + 1);
+                    });
             }
 
-            var firstItem = items[0];
-            var slug = firstItem.slug || firstItem.post_name;
-            console.log('  - Muestra #1: ' + (firstItem.title || firstItem.name || 'Sin título'));
-            console.log('  - Slug: ' + slug);
-            console.log('  - Tipo / ID: ' + (firstItem.type || 'N/A') + ' | ' + (firstItem._id || 'N/A'));
-
-            printDivider('3. AUDITORÍA ENDPOINT: /api/rest/single?post_name=' + slug + '&post_type=movies');
-            var singleUrl = API_URL + '/single?post_name=' + encodeURIComponent(slug) + '&post_type=movies';
-            return request(singleUrl);
-        })
-        .then(function(res) {
-            if (!res) return null;
-
-            console.log('[SINGLE STATUS]: ' + res.status + ' (' + res.elapsed + ' ms)');
-            var json = JSON.parse(res.body);
-            var postId = (json && json.data && json.data._id) ? json.data._id : null;
-            console.log('[POST ID EXTRAÍDO]: ' + postId);
-
-            if (!postId) {
-                throw new Error('No se pudo extraer _id del endpoint single');
-            }
-
-            printDivider('4. AUDITORÍA ENDPOINT: /api/rest/player?post_id=' + postId);
-            var playerUrl = API_URL + '/player?post_id=' + postId;
-            return request(playerUrl);
-        })
-        .then(function(res) {
-            if (!res) return null;
-
-            console.log('[PLAYER STATUS]: ' + res.status + ' (' + res.elapsed + ' ms)');
-            var json = JSON.parse(res.body);
-            var players = (json && json.data && Array.isArray(json.data)) ? json.data : [];
-            console.log('[PLAYERS ENCONTRADOS]: ' + players.length);
-
-            players.forEach(function(p, i) {
-                console.log('  [' + i + '] Server: ' + (p.server || 'N/A') + ' | Lang: ' + (p.lang || 'N/A') + ' | URL: ' + (p.url || p.link));
-            });
-
-            printDivider('✓ AUDITORÍA COMPLETADA CON ÉXITO');
+            return tryVariant(0);
         })
         .catch(function(err) {
-            printDivider('❌ ERROR DE AUDITORÍA');
-            console.log('Mensaje: ' + err.message);
-            if (err.code) console.log('Código de error: ' + err.code);
-            if (err.cause) {
-                console.log('Causa (err.cause):', err.cause);
-            }
+            console.log('[ERROR FATAL]: ' + err.message);
+            if (err.cause) console.log(err.cause);
         });
 }
 
-runAudit();
+runDeepAudit();
