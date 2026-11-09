@@ -1,10 +1,10 @@
 /**
- * Auditoría conjunta: PelisPlus (tioplus.app) + StreamWish (JKAnime & SoloLatino)
+ * Extractor de todos los servidores de JKAnime para el capítulo de tu captura
  * Ejecución: node providers/inspect_audit.js
  */
 
+var EPISODE_URL = "https://jkanime.net/koko-wa-ore-ni-makasete-saki-ni-ike-to-itte-kara-10-nen-ga-tattara-densetsu-ni-natteita/10/";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-var headers = { "User-Agent": USER_AGENT };
 
 function decodeBase64Safe(input) {
     if (!input) return "";
@@ -26,145 +26,107 @@ function decodeBase64Safe(input) {
     return output;
 }
 
-function unpackDeanEdwards(p, a, c, k) {
-    var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    function decodeBase(val, radix) {
-        var res = 0;
-        for (var i = 0; i < val.length; i++) {
-            var idx = dict.indexOf(val[i]);
-            if (idx === -1) return NaN;
-            res = res * radix + idx;
-        }
-        return res;
+console.log("=================================================================");
+console.log(">>> EXTRAYENDO TODOS LOS SERVIDORES DE JKANIME (EPISODIO 10) <<<");
+console.log("=================================================================\n");
+
+fetch(EPISODE_URL, {
+    headers: {
+        "User-Agent": USER_AGENT,
+        "Referer": "https://jkanime.net/"
     }
-    return p.replace(/\b([0-9a-zA-Z]+)\b/g, function(token) {
-        var index = decodeBase(token, a);
-        if (isNaN(index) || index >= k.length) return token;
-        return (k[index] && k[index] !== "") ? k[index] : token;
-    });
-}
-
-console.log("=================================================================");
-console.log(">>> [1/3] PROBANDO ESTADO DE PELISPLUS (tioplus.app) <<<");
-console.log("=================================================================");
-
-console.time("Tiempo de respuesta PelisPlus");
-fetch("https://tioplus.app/", { headers: headers })
-.then(function(res) {
-    console.timeEnd("Tiempo de respuesta PelisPlus");
-    console.log("-> Status HTTP:", res.status, res.statusText);
-    console.log("-> URL final:", res.url);
-    return res.text();
 })
+.then(function(res) { return res.text(); })
 .then(function(html) {
-    console.log("-> Bytes recibidos de tioplus.app:", html.length);
-    if (html.length < 500) console.log("-> Muestra:", html);
-})
-.catch(function(err) {
-    console.timeEnd("Tiempo de respuesta PelisPlus");
-    console.log("[-] ERROR CRÍTICO EN PELISPLUS:", err.message);
-    if (err.cause) console.log("[-] Causa:", err.cause);
-})
-.then(function() {
-    console.log("\n=================================================================");
-    console.log(">>> [2/3] AUDITANDO STREAMWISH EN JKANIME (Episodio de tu captura) <<<");
-    console.log("=================================================================");
+    // 1. Extraer el array de servidores en javascript
+    var serversMatch = html.match(/var\s+servers\s*=\s*(\[[^\]]+\]);/i);
+    var allServers = [];
 
-    var jkanimeUrl = "https://jkanime.net/koko-wa-ore-ni-makasete-saki-ni-ike-to-itte-kara-10-nen-ga-tattara-densetsu-ni-natteita/10/";
-    console.log("Descargando:", jkanimeUrl);
-
-    return fetch(jkanimeUrl, { headers: { "User-Agent": USER_AGENT, "Referer": "https://jkanime.net/" } })
-    .then(function(r) { return r.text(); })
-    .then(function(jkHtml) {
-        // Extraer servidores de var servers = [...]
-        var sMatch = jkHtml.match(/var\s+servers\s*=\s*(\[[^\]]+\]);/i);
-        var wishUrl = null;
-
-        if (sMatch) {
-            try {
-                var sArr = JSON.parse(sMatch[1]);
-                for (var i = 0; i < sArr.length; i++) {
-                    var dec = decodeBase64Safe(sArr[i].remote);
-                    if (dec.indexOf("streamwish") !== -1 || dec.indexOf("wish") !== -1 || dec.indexOf("hglink") !== -1 || dec.indexOf("hlswish") !== -1) {
-                        wishUrl = dec;
-                        console.log("[+] StreamWish encontrado en JKAnime:", wishUrl);
-                        break;
-                    }
-                }
-            } catch(e) {}
-        }
-
-        if (wishUrl) {
-            return testStreamWishLocker(wishUrl);
-        } else {
-            console.log("[-] No se encontró StreamWish en este capítulo de JKAnime.");
-        }
-    });
-})
-.then(function() {
-    console.log("\n=================================================================");
-    console.log(">>> [3/3] AUDITANDO STREAMWISH EN SOLOLATINO (La isla olvidada) <<<");
-    console.log("=================================================================");
-
-    var slUrl = "https://sololatino.net/pelicula/la-isla-olvidada";
-    console.log("Descargando:", slUrl);
-
-    return fetch(slUrl, { headers: { "User-Agent": USER_AGENT, "Referer": "https://sololatino.net/" } })
-    .then(function(r) { return r.text(); })
-    .then(function(slHtml) {
-        // Extraer el enlace de StreamWish
-        var wishMatch = slHtml.match(/https?:\/\/[a-zA-Z0-9.-]*(?:streamwish|hglink|hlswish|flaswish)[^\s"'<>]+/i);
-        if (wishMatch) {
-            console.log("[+] StreamWish detectado en SoloLatino:", wishMatch[0]);
-            return testStreamWishLocker(wishMatch[0]);
-        } else {
-            console.log("[-] Buscando tokens de embed69...");
-            var imdbMatch = slHtml.match(/tt\d+/);
-            if (imdbMatch) {
-                console.log("[+] IMDb detectado:", imdbMatch[0]);
+    if (serversMatch) {
+        try {
+            var sArr = JSON.parse(serversMatch[1]);
+            for (var i = 0; i < sArr.length; i++) {
+                var item = sArr[i];
+                var decodedRemote = decodeBase64Safe(item.remote);
+                allServers.push({
+                    serverName: item.server || "Desconocido",
+                    title: item.title || item.server,
+                    encoded: item.remote,
+                    decodedUrl: decodedRemote
+                });
             }
+        } catch (e) {
+            console.log("[-] Error parseando var servers:", e.message);
         }
+    }
+
+    console.log("[+] Servidores encontrados en var servers (" + allServers.length + "):");
+    for (var j = 0; j < allServers.length; j++) {
+        var s = allServers[j];
+        console.log("   [" + (j + 1) + "] " + s.serverName + " -> " + s.decodedUrl);
+    }
+
+    // 2. Extraer otros iframes o reproductores en jkplayer
+    var jkPlayers = [];
+    var jkRegex = /https?:\/\/jkanime\.net\/jkplayer\/[^\s"'<>]+/gi;
+    var jm;
+    while ((jm = jkRegex.exec(html)) !== null) {
+        if (jkPlayers.indexOf(jm[0]) === -1) jkPlayers.push(jm[0]);
+    }
+    console.log("\n[+] Enlaces jkplayer encontrados (" + jkPlayers.length + "):");
+    for (var k = 0; k < jkPlayers.length; k++) {
+        console.log("   - " + jkPlayers[k]);
+    }
+
+    // 3. Probar si StreamWish o Filemoon devuelven video
+    var testTargets = allServers.filter(function(x) {
+        var u = x.decodedUrl.toLowerCase();
+        return u.indexOf("streamwish") !== -1 || u.indexOf("wish") !== -1 || 
+               u.indexOf("filemoon") !== -1 || u.indexOf("mixdrop") !== -1 ||
+               u.indexOf("vidhide") !== -1;
     });
-})
-.catch(function(err) {
-    console.error("[-] ERROR GENERAL:", err.message);
-});
 
-function testStreamWishLocker(rawUrl) {
-    console.log("-> Conectando a StreamWish:", rawUrl);
-    return fetch(rawUrl, {
-        headers: {
-            "User-Agent": USER_AGENT,
-            "Referer": rawUrl
-        },
-        redirect: "follow"
-    })
-    .then(function(res) {
-        console.log("   HTTP Status:", res.status);
-        console.log("   URL final:", res.url);
-        return res.text();
-    })
-    .then(function(html) {
-        console.log("   Tamaño HTML:", html.length, "bytes");
+    console.log("\n=================================================================");
+    console.log(">>> PROBANDO RESOLVERS PARA LOS SERVIDORES ENCONTRADOS <<<");
+    console.log("=================================================================");
 
-        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
+    function probeNext(idx) {
+        if (idx >= testTargets.length) {
+            console.log("=== FIN DE PRUEBAS ===");
+            return;
+        }
+
+        var target = testTargets[idx];
+        console.log("\n-> Probando [" + target.serverName + "]: " + target.decodedUrl);
+
+        fetch(target.decodedUrl, {
+            headers: { "User-Agent": USER_AGENT, "Referer": EPISODE_URL },
+            redirect: "follow"
+        })
+        .then(function(r) {
+            console.log("   Status:", r.status);
+            console.log("   URL Final:", r.url);
+            return r.text();
+        })
+        .then(function(txt) {
+            var m3u8 = txt.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
             if (m3u8) {
-                console.log("   [+] ¡M3U8 EXTRAÍDO DE STREAMWISH CON ÉXITO!:\n   " + m3u8[0]);
-                return;
+                console.log("   [+] ¡M3U8 DIRECTO ENCONTRADO!:", m3u8[0]);
+            } else if (txt.indexOf("eval(function(p,a,c,k,e,") !== -1) {
+                console.log("   [+] Código Packed Dean Edwards detectado (Listo para desempaquetar).");
+            } else {
+                console.log("   [-] Muestra:", txt.substring(0, 150).replace(/\r?\n\s*/g, " "));
             }
-        }
-        var direct = html.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-        if (direct) {
-            console.log("   [+] M3U8 Directo encontrado:", direct[0]);
-        } else {
-            console.log("   [-] No se encontró M3U8 en este locker.");
-        }
-    })
-    .catch(function(e) {
-        console.log("   [-] Fallo al consultar StreamWish:", e.message);
-        if (e.cause) console.log("   [-] Causa:", e.cause);
-    });
-}
+            probeNext(idx + 1);
+        })
+        .catch(function(err) {
+            console.log("   [-] Error:", err.message);
+            probeNext(idx + 1);
+        });
+    }
+
+    probeNext(0);
+})
+.catch(function(err) {
+    console.error("[-] ERROR:", err.message);
+});
