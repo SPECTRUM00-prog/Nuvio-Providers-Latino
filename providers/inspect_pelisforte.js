@@ -1,5 +1,5 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: PelisForte (Fase 5 - Extracción de Streams en BYSE y OK.ru)
+ * Script de Inspección y Diagnóstico Profundo: PelisForte (Fase 6 - Extracción Final de Streams)
  * Ejecutar localmente con: node providers/inspect_pelisforte.js
  */
 
@@ -7,7 +7,7 @@ var https = require('https');
 var urlModule = require('url');
 
 var BYSE_URL = 'https://byseraguci.com/e/tiumae2gw611/P4N0RM-18LA.mp4';
-var OK_URL = 'https://ok.ru/videoembed/9411855649280'; // Sin barra final para evitar 301
+var OK_URL = 'https://ok.ru/videoembed/9411855649280';
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 function request(targetUrl, headers) {
@@ -27,7 +27,6 @@ function request(targetUrl, headers) {
             headers: reqHeaders,
             timeout: 8000
         }, function(res) {
-            // Manejar 301 / 302
             if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
                 var redirectUrl = res.headers.location.indexOf('http') === 0 ? 
                                   res.headers.location : 
@@ -52,73 +51,57 @@ function request(targetUrl, headers) {
     });
 }
 
-function runAuditPhase5() {
+function runAuditPhase6() {
     console.log('\n============================================================');
-    console.log('>>> 1. RESOLVIENDO STREAM DE OK.RU (DOBLAJE ORIGINAL)');
+    console.log('>>> 1. EXTRACCIÓN CONFIRMADA DE OK.RU (DOBLAJE ORIGINAL)');
     console.log('============================================================');
 
     return request(OK_URL)
         .then(function(res) {
-            console.log('[OK.RU STATUS]: ' + res.status + ' (' + res.elapsed + ' ms)');
-
-            // Buscar data-options
             var match = res.body.match(/data-options=["']([^"']+)["']/);
             if (match) {
-                try {
-                    var decoded = match[1].replace(/&quot;/g, '"');
-                    var data = JSON.parse(decoded);
-                    var metadata = data.flashvars && data.flashvars.metadata ? JSON.parse(data.flashvars.metadata) : null;
+                var decoded = match[1].replace(/&quot;/g, '"');
+                var data = JSON.parse(decoded);
+                // Si ya es objeto, usarlo directamente; si es string, parsearlo
+                var rawMeta = data.flashvars && data.flashvars.metadata;
+                var metadata = typeof rawMeta === 'string' ? JSON.parse(rawMeta) : rawMeta;
 
-                    if (metadata) {
-                        console.log('✓ Metadata de OK.ru extraída con éxito:');
-                        if (metadata.hlsMasterPlaylistUrl) {
-                            console.log('  -> [HLS MASTER PLAYLIST]: ' + metadata.hlsMasterPlaylistUrl);
-                        }
-                        if (metadata.videos && Array.isArray(metadata.videos)) {
-                            console.log('  -> [VIDEOS MP4 DIRECTOS ENCONTRADOS]: ' + metadata.videos.length);
-                            metadata.videos.forEach(function(v) {
-                                console.log('     * Calidad: ' + v.name + ' | URL: ' + v.url.substring(0, 90) + '...');
-                            });
-                        }
+                if (metadata) {
+                    if (metadata.hlsMasterPlaylistUrl) {
+                        console.log('>>> [HLS MASTER PLAYLIST DIRECTO]:\n' + metadata.hlsMasterPlaylistUrl);
                     }
-                } catch (e) {
-                    console.log('[OK.RU PARSE ERROR]:', e.message);
+                    if (metadata.videos && Array.isArray(metadata.videos)) {
+                        console.log('\n>>> [STREAMS MP4 DIRECTOS POR CALIDAD]: ' + metadata.videos.length);
+                        metadata.videos.forEach(function(v) {
+                            console.log('  - [' + v.name + '] -> ' + v.url);
+                        });
+                    }
                 }
-            } else {
-                console.log('[OK.RU ALERTA]: No se encontró atributo data-options en el HTML');
-                console.log('Preview OK.ru:\n' + res.body.substring(0, 300));
             }
 
             console.log('\n============================================================');
-            console.log('>>> 2. RESOLVIENDO STREAM DE BYSE');
+            console.log('>>> 2. INSPECCIONANDO EL SCRIPT COMPLETO DE BYSE');
             console.log('============================================================');
 
             return request(BYSE_URL);
         })
         .then(function(resByse) {
-            console.log('[BYSE STATUS]: ' + resByse.status + ' (' + resByse.elapsed + ' ms)');
+            var scripts = resByse.body.match(/<script\b[^>]*>([\s\S]*?)<\/script>/gi) || [];
+            scripts.forEach(function(s, idx) {
+                console.log('\n--- Script #' + (idx + 1) + ' de Byse ---');
+                console.log(s.replace(/<script\b[^>]*>|<\/script>/gi, '').trim());
+            });
 
-            // 1. Buscar enlaces m3u8 o mp4
-            var streams = resByse.body.match(/https?:\/\/[^"'\s<>]+\.(?:m3u8|mp4)[^"'\s<>]*/gi) || [];
-            console.log('[STREAMS DIRECTOS EN BYSE]: ' + streams.length);
-            streams.forEach(function(s) { console.log('  -> ' + s); });
-
-            // 2. Buscar packed JS
-            var hasPacked = resByse.body.indexOf('eval(function(p,a,c,k,e,') !== -1;
-            console.log('[¿Contiene Packed JS (Dean Edwards)?]: ' + hasPacked);
-
-            // 3. Buscar fuentes en etiquetas <source> o setup de video
-            var sources = resByse.body.match(/(?:file|sources?|src)\s*:\s*["']([^"']+)["']/gi) || [];
-            console.log('[FUENTES DETECTADAS EN CÓDIGO]: ' + sources.length);
-            sources.forEach(function(src) { console.log('  -> ' + src); });
-
-            if (streams.length === 0 && !hasPacked && sources.length === 0) {
-                console.log('\n[PREVIEW HTML BYSE]:\n' + resByse.body.substring(0, 600).replace(/\s+/g, ' '));
+            // Buscar bundles externos .js en byse
+            var srcScripts = resByse.body.match(/src=["']([^"']+\.js[^"']*)["']/gi) || [];
+            if (srcScripts.length > 0) {
+                console.log('\n[SCRIPTS EXTERNOS DE BYSE]:');
+                srcScripts.forEach(function(src) { console.log('  -> ' + src); });
             }
         })
         .catch(function(err) {
-            console.log('Error general:', err.message);
+            console.log('Error:', err.message);
         });
 }
 
-runAuditPhase5();
+runAuditPhase6();
