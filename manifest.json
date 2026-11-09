@@ -1,6 +1,6 @@
 {
   "name": "Nuvio-Spectrum-Latino",
-  "version": "2.6.0",
+  "version": "2.7.0",
   "scrapers": [
     {
       "id": "cinecalidad",
@@ -58,13 +58,13 @@
       "contentLanguage": ["es"]
     },
     {
-      "id": "pelisplus",
-      "name": "PelisPlus",
-      "description": "Películas y Series en Español Latino desde PelisPlus / TioPlus (VidHide, Turbovid, StreamWish).",
-      "version": "1.1.0",
+      "id": "pelisforte",
+      "name": "PelisForte",
+      "description": "Películas y Series en Latino, Castellano y Sub con Doblajes Originales (OK.ru CDN 1080p Directo, Byse, StreamWish, VidHide).",
+      "version": "1.0.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv"],
-      "filename": "providers/pelisplus.js",
+      "filename": "providers/pelisforte.js",
       "enabled": true,
       "contentLanguage": ["es"]
     },
