@@ -1,11 +1,10 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: PelisForte (Fase 13 - Chunks y DOM de Byse Embed)
+ * Script de Inspección y Diagnóstico Profundo: PelisForte (Fase 14 - Chunk VideoPagesBundle de Byse)
  * Ejecutar localmente con: node providers/inspect_pelisforte.js
  */
 
 var https = require('https');
-var BYSE_EMBED_URL = 'https://byseraguci.com/e/tiumae2gw611/P4N0RM-18LA.mp4';
-var BYSE_MAIN_BUNDLE = 'https://byseraguci.com/assets/index-DocunfmE.js';
+var CHUNK_URL = 'https://byseraguci.com/assets/videoPagesBundle-Bgi0QmPo.js';
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 function request(url) {
@@ -13,7 +12,7 @@ function request(url) {
         https.get(url, {
             headers: {
                 'User-Agent': USER_AGENT,
-                'Referer': 'https://mp4.nu/'
+                'Referer': 'https://byseraguci.com/'
             }
         }, function(res) {
             var chunks = [];
@@ -25,35 +24,45 @@ function request(url) {
     });
 }
 
-function runAuditPhase13() {
+function runAuditPhase14() {
     console.log('\n============================================================');
-    console.log('>>> 1. VOLCANDO EL HTML COMPLETO DE BYSE EMBED (/e/...)');
+    console.log('>>> INSPECCIONANDO videoPagesBundle-Bgi0QmPo.js');
     console.log('============================================================');
 
-    return request(BYSE_EMBED_URL).then(function(html) {
-        console.log('[HTML COMPLETO]:');
-        console.log(html);
+    request(CHUNK_URL).then(function(code) {
+        console.log('[TAMAÑO DEL CHUNK]: ' + code.length + ' bytes');
 
-        console.log('\n============================================================');
-        console.log('>>> 2. BUSCANDO CHUNKS DINÁMICOS (.js) EN EL BUNDLE PRINCIPAL');
-        console.log('============================================================');
+        // 1. Buscar todas las ocurrencias de operation: en este chunk
+        var opMatches = code.match(/operation:\s*["']([a-zA-Z0-9_\/-]+)["']/g) || [];
+        console.log('\n[OPERACIONES ENCONTRADAS EN VIDEO BUNDLE]:', opMatches);
 
-        return request(BYSE_MAIN_BUNDLE).then(function(code) {
-            // Buscar importaciones de chunks tipo /assets/*.js
-            var chunkMatches = code.match(/["'](?:\/assets\/|\.\/)[a-zA-Z0-9_-]+\.js["']/g) || [];
-            console.log('[CHUNKS ENCONTRADOS]:', chunkMatches);
+        // 2. Buscar rutas /api/
+        var apiMatches = code.match(/["']\/api\/[a-zA-Z0-9_\/-]+["']/g) || [];
+        console.log('\n[RUTAS /api/ EN VIDEO BUNDLE]:', apiMatches);
 
-            // Buscar palabras clave de reproductor de video
-            var playerMatches = code.match(/["'](?:video|player|hls|m3u8|blob)[a-zA-Z0-9_\/-]*["']/gi) || [];
-            var uniquePlayers = [];
-            playerMatches.forEach(function(p) {
-                if (uniquePlayers.indexOf(p) === -1 && p.length < 30) uniquePlayers.push(p);
-            });
-            console.log('\n[TÉRMINOS DE REPRODUCTOR EN JS]:', uniquePlayers.slice(0, 15));
-        });
+        // 3. Buscar ocurrencias de VideoEmbedPage
+        var embedIdx = code.indexOf('VideoEmbedPage');
+        if (embedIdx !== -1) {
+            console.log('\n[CONTEXTO DE VideoEmbedPage]:');
+            console.log(code.substring(Math.max(0, embedIdx - 60), Math.min(code.length, embedIdx + 300)).replace(/\s+/g, ' '));
+        }
+
+        // 4. Buscar palabras clave de streaming (m3u8, hls, master, sources)
+        var streamMatches = code.match(/["']([^"']*\.(?:m3u8|mp4)[^"']*)["']/gi) || [];
+        console.log('\n[PATRONES DE STREAM EN VIDEO BUNDLE]:', streamMatches);
+
+        // 5. Buscar llamadas a fetch en este chunk
+        var fetchIdx = code.indexOf('fetch(');
+        var fCount = 0;
+        while (fetchIdx !== -1 && fCount < 3) {
+            console.log('\n[FETCH #' + (fCount + 1) + ' EN VIDEO BUNDLE]:');
+            console.log(code.substring(Math.max(0, fetchIdx - 40), Math.min(code.length, fetchIdx + 200)).replace(/\s+/g, ' '));
+            fetchIdx = code.indexOf('fetch(', fetchIdx + 1);
+            fCount++;
+        }
     }).catch(function(err) {
         console.log('Error:', err.message);
     });
 }
 
-runAuditPhase13();
+runAuditPhase14();
