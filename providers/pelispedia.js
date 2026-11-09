@@ -1,15 +1,16 @@
 /**
- * Provider: PelisPedia (Películas, Series y Anime en Latino, Castellano y Sub)
+ * Provider: PelisPedia (Películas y Series en Latino, Castellano y Sub)
  * Dominio: https://pelispedia.mov
- * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Android TV / Desktop)
- * Criptografía: SHA-256 + AES-256-CBC nativo sobre TypedArrays (Zero-Allocation PoW)
+ * Motor: 100% Cadenas de Promesas (Hermes / FireTV / QuickJS Safe)
+ * Criptografía: SHA-256 + AES-256-CBC puro sobre TypedArrays (Zero-Allocation PoW)
+ * Reglas Hermes: ES5 estricto, fetchWithTimeout preventivo con clearTimeout, detección multi-bitrate.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://pelispedia.mov";
 var EMBED_BASE = "https://embed69.org";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
-var NETWORK_TIMEOUT = 3200;
+var NETWORK_TIMEOUT = 2600;
 
 var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -24,14 +25,26 @@ var DEFAULT_HEADERS = {
 
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Timeout"));
-            }, limit);
-        })
-    ]);
+    return new Promise(function(resolve, reject) {
+        var timer = setTimeout(function() {
+            reject(new Error("Timeout tras " + limit + "ms: " + url));
+        }, limit);
+
+        fetch(url, options || {})
+            .then(function(res) {
+                clearTimeout(timer);
+                resolve(res);
+            })
+            .catch(function(err) {
+                clearTimeout(timer);
+                reject(err);
+            });
+    });
+}
+
+function padZero(num) {
+    var n = parseInt(num, 10) || 0;
+    return n < 10 ? "0" + n : String(n);
 }
 
 function decodeB64ToBytes(b64) {
@@ -375,20 +388,24 @@ function unpackJS(packed) {
         var match = packed.match(regex);
         if (!match) return null;
         var p = match[1].slice(1, -1);
-        var a = match[2];
-        var k = match[4];
-        var words = k.split("|");
-        var radix = parseInt(a, 10);
-        var unbase = function(val, base) {
-            var chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-            if (base <= 36) return parseInt(val, base);
+        var a = parseInt(match[2], 10);
+        var k = match[4].split("|");
+
+        var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+        function decodeBase(val, radix) {
             var res = 0;
-            for (var i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
+            for (var i = 0; i < val.length; i++) {
+                var idx = dict.indexOf(val[i]);
+                if (idx === -1) return NaN;
+                res = res * radix + idx;
+            }
             return res;
-        };
-        return p.replace(/\b[0-9a-zA-Z]+\b/g, function(token) {
-            var idx = unbase(token, radix);
-            return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
+        }
+
+        return p.replace(/\b([0-9a-zA-Z]+)\b/g, function(token) {
+            var index = decodeBase(token, a);
+            if (isNaN(index) || index >= k.length) return token;
+            return (k[index] && k[index] !== "") ? k[index] : token;
         });
     } catch (e) {
         return null;
@@ -396,10 +413,50 @@ function unpackJS(packed) {
 }
 
 // ==========================================
-// 5. DETECCIÓN DINÁMICA DE CALIDAD REAL
+// 5. DETECCIÓN DINÁMICA DE CALIDAD (REGLA 6)
 // ==========================================
 
+var QUALITY_MAPS = {
+    vidhide:    { x: "1080p", o: "1080p", h: "1080p", n: "720p", l: "480p" },
+    streamwish: { x: "1080p", o: "1080p", h: "1080p", n: "720p", l: "480p" }
+};
+var QUALITY_ORDER = ["x", "o", "h", "n", "l"];
+
+function detectQualityFromUrl(url) {
+    if (!url) return null;
+    var u = url.toLowerCase();
+    var qMap = null;
+
+    if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("morencius") !== -1) {
+        qMap = QUALITY_MAPS.vidhide;
+    } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("vibuxer") !== -1) {
+        qMap = QUALITY_MAPS.streamwish;
+    }
+
+    if (qMap) {
+        var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
+        if (urlsetMatch) {
+            var tags = urlsetMatch[1].split(",");
+            for (var i = 0; i < QUALITY_ORDER.length; i++) {
+                var tag = QUALITY_ORDER[i];
+                if (tags.indexOf(tag) !== -1 && qMap[tag]) {
+                    return qMap[tag];
+                }
+            }
+        }
+    }
+
+    if (/4k|2160p?/i.test(u)) return "4K";
+    if (/1080p?/i.test(u)) return "1080p";
+    if (/720p?/i.test(u)) return "720p";
+    if (/480p?/i.test(u)) return "480p";
+    return null;
+}
+
 function probeM3u8Quality(m3u8Url, headers) {
+    var fastQ = detectQualityFromUrl(m3u8Url);
+    if (fastQ) return Promise.resolve(fastQ);
+
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
     return fetchWithTimeout(m3u8Url, {
@@ -416,17 +473,21 @@ function probeM3u8Quality(m3u8Url, headers) {
             if (/720/i.test(m3u8Url)) return "720p";
             return "720p";
         }
+        var maxW = 0;
         var maxH = 0;
-        var resRegex = /RESOLUTION=\d+x(\d+)/gi;
+        var resRegex = /RESOLUTION=(\d+)x(\d+)/gi;
         var match;
         while ((match = resRegex.exec(text)) !== null) {
-            var h = parseInt(match[1], 10);
+            var w = parseInt(match[1], 10);
+            var h = parseInt(match[2], 10);
+            if (w > maxW) maxW = w;
             if (h > maxH) maxH = h;
         }
-        if (maxH >= 2160) return "4K";
-        if (maxH >= 1080) return "1080p";
-        if (maxH >= 720) return "720p";
-        if (maxH >= 480) return "480p";
+
+        if (maxW >= 3840 || maxH >= 2160) return "4K";
+        if (maxW >= 1920 || maxH >= 1080) return "1080p";
+        if (maxW >= 1280 || maxH >= 720) return "720p";
+        if (maxW >= 854 || maxH >= 480) return "480p";
         return "720p";
     })
     .catch(function() {
@@ -442,7 +503,7 @@ function resolveVidHide(url) {
     return fetchWithTimeout(url, {
         headers: { "User-Agent": USER_AGENT, "Referer": EMBED_BASE + "/" },
         redirect: "follow"
-    }, NETWORK_TIMEOUT)
+    }, 2400)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -469,14 +530,20 @@ function resolveVidHide(url) {
 }
 
 function resolveStreamWish(url) {
-    var cleanUrl = url.split("?")[0].replace(/\/$/, "");
-    var id = cleanUrl.split("/").pop();
-    var targetUrl = "https://hlswish.com/e/" + id;
+    var targetUrl = url;
+    if (targetUrl.indexOf("hglink.to") !== -1 || targetUrl.indexOf("hanerix.com") !== -1) {
+        var idMatch = targetUrl.match(/\/(?:e|f|v)\/([a-zA-Z0-9]+)/);
+        if (idMatch) targetUrl = "https://hlswish.com/e/" + idMatch[1];
+    } else if (targetUrl.indexOf("hlswish.com") === -1) {
+        var cleanUrl = targetUrl.split("?")[0].replace(/\/$/, "");
+        var id = cleanUrl.split("/").pop();
+        if (id) targetUrl = "https://hlswish.com/e/" + id;
+    }
 
     return fetchWithTimeout(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
+        headers: { "User-Agent": USER_AGENT, "Referer": EMBED_BASE + "/" },
         redirect: "follow"
-    }, NETWORK_TIMEOUT)
+    }, 2400)
     .then(function(res) { return res.text(); })
     .then(function(html) {
         var streamUrl = null;
@@ -540,7 +607,7 @@ function dispatchDirectResolver(item) {
 function fetchAndDecryptEmbed69(targetUrl) {
     return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": EMBED_BASE + "/" }
-    }, NETWORK_TIMEOUT)
+    }, 2400)
     .then(function(res) {
         if (!res.ok) return [];
         return res.text();
@@ -595,7 +662,7 @@ function fetchAndDecryptEmbed69(targetUrl) {
 function searchPelisPedia(query) {
     var searchUrl = BASE_URL + "/search?s=" + encodeURIComponent(query).replace(/%20/g, "+");
 
-    return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
+    return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2400)
         .then(function(res) { return res && res.ok ? res.text() : ""; })
         .then(function(html) {
             var results = [];
@@ -641,17 +708,18 @@ function extractPlayerIdsFromHtml(html) {
 }
 
 // ==========================================
-// 9. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// 9. FUNCIÓN PRINCIPAL EXPORTADA (getStreams)
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
+    var epPadded = padZero(eNum);
 
     var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles,external_ids";
 
-    return fetchWithTimeout(tmdbUrl, null, 2500)
+    return fetchWithTimeout(tmdbUrl, null, 2400)
         .then(function(res) {
             if (!res.ok) throw new Error("TMDB HTTP " + res.status);
             return res.json();
@@ -696,7 +764,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
 
                 var playerIdsToTry = [];
-                var epPadded = ("0" + eNum).slice(-2);
 
                 if (valid.length > 0) {
                     valid.sort(function(a, b) { return b.score - a.score; });
@@ -708,7 +775,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         pageUrl = cleanBase + "/temporada/" + sNum + "/capitulo/" + eNum;
                     }
 
-                    return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
+                    return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 2400)
                         .then(function(res) {
                             if (!res.ok) return [];
                             return res.text().then(function(html) {
@@ -717,7 +784,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         })
                         .then(function(ids) {
                             playerIdsToTry = ids;
-                            // Fallback al IMDb ID si la página no tenía iframes
                             if (playerIdsToTry.length === 0 && imdbId) {
                                 var directId = isMovie ? imdbId : (imdbId + "-" + sNum + "x" + epPadded);
                                 playerIdsToTry.push(directId);
@@ -725,7 +791,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             return playerIdsToTry;
                         });
                 } else if (imdbId) {
-                    // Fallback directo por ID de IMDb si el buscador no encontró resultados
                     var fallbackId = isMovie ? imdbId : (imdbId + "-" + sNum + "x" + epPadded);
                     playerIdsToTry.push(fallbackId);
                     return Promise.resolve(playerIdsToTry);
@@ -769,6 +834,4 @@ function getStreams(tmdbId, mediaType, season, episode) {
         });
 }
 
-if (typeof module !== "undefined") {
-    module.exports = { getStreams: getStreams };
-}
+module.exports = { getStreams: getStreams };
