@@ -1,95 +1,72 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 6 - Descubrimiento de Series)
+ * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 7 - Contexto de /episodes y Tabs)
  * Ejecutar localmente con: node providers/inspect_hackstore.js
  */
 
 var https = require('https');
 var urlModule = require('url');
 
-var BASE_URL = 'https://hackstore2.com';
-var API_URL = BASE_URL + '/api/rest';
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
-function request(targetUrl) {
+function getFile(url) {
     return new Promise(function(resolve, reject) {
-        var parsed = urlModule.parse(targetUrl);
-        var req = https.request({
+        var parsed = urlModule.parse(url);
+        https.get({
             hostname: parsed.hostname,
             path: parsed.path,
-            method: 'GET',
-            headers: {
-                'User-Agent': USER_AGENT,
-                'Accept': 'application/json, text/plain, */*',
-                'Referer': BASE_URL + '/',
-                'Origin': BASE_URL
-            },
-            timeout: 6000
+            headers: { 'User-Agent': USER_AGENT }
         }, function(res) {
             var chunks = [];
             res.on('data', function(c) { chunks.push(c); });
             res.on('end', function() {
-                var body = Buffer.concat(chunks).toString('utf8');
-                try {
-                    resolve({ status: res.statusCode, data: JSON.parse(body) });
-                } catch(e) {
-                    resolve({ status: res.statusCode, raw: body });
-                }
+                resolve(Buffer.concat(chunks).toString('utf8'));
             });
-        });
-        req.on('error', reject);
-        req.end();
+        }).on('error', reject);
     });
 }
 
-function runPhase6() {
+function runPhase7() {
     console.log('\n============================================================');
-    console.log('>>> PROBANDO VARIACIONES DE post_type PARA SERIES');
+    console.log('>>> 1. INSPECCIONANDO CONTEXTO DE /episodes EN Episodes-2cb1c73a.js');
     console.log('============================================================');
 
-    var postTypes = ['series', 'serie', 'tv', 'tvshows', 'episodes', 'episode'];
-    var query = 'thrones'; // Game of Thrones
+    var epBundleUrl = 'https://hackstore2.com/wp-content/themes/hackstore/assets/build/assets/Episodes-2cb1c73a.js';
+    var mainBundleUrl = 'https://hackstore2.com/wp-content/themes/hackstore/assets/build/assets/index-8f03e130.js';
 
-    function tryType(idx) {
-        if (idx >= postTypes.length) return Promise.resolve();
-        var type = postTypes[idx];
-        var u = API_URL + '/search?post_type=' + type + '&query=' + query;
+    getFile(epBundleUrl).then(function(code) {
+        var idx = code.indexOf('/episodes');
+        while (idx !== -1) {
+            var snippet = code.substring(Math.max(0, idx - 120), Math.min(code.length, idx + 200));
+            console.log('Fragmento /episodes:');
+            console.log('  ' + snippet.replace(/\s+/g, ' ') + '\n');
+            idx = code.indexOf('/episodes', idx + 1);
+        }
 
-        return request(u).then(function(res) {
-            var posts = (res.data && res.data.data && res.data.data.posts) || [];
-            console.log('[' + type + '] Status: ' + res.status + ' | Posts encontrados: ' + posts.length);
-            if (posts.length > 0) {
-                console.log('  -> Muestra: ' + posts[0].title + ' (ID: ' + posts[0]._id + ' | slug: ' + (posts[0].slug || posts[0].post_name) + ')');
-            }
-            return tryType(idx + 1);
-        }).catch(function(err) {
-            console.log('[' + type + ' ERROR]: ' + err.message);
-            return tryType(idx + 1);
-        });
-    }
-
-    return tryType(0).then(function() {
-        console.log('\n============================================================');
-        console.log('>>> INSPECCIONANDO BUNDLE Episodes-2cb1c73a.js');
         console.log('============================================================');
-        var epBundleUrl = 'https://hackstore2.com/wp-content/themes/hackstore/assets/build/assets/Episodes-2cb1c73a.js';
-        return request(epBundleUrl).then(function(res) {
-            if (res.raw) {
-                console.log('[EPISODES BUNDLE STATUS]: ' + res.status + ' (' + res.raw.length + ' bytes)');
-                
-                // Buscar llamadas de API en el bundle de episodios
-                var matchApi = res.raw.match(/apiPath:\s*["']([^"']+)["']/g);
-                if (matchApi) {
-                    console.log('apiPaths detectados en Episodes:', matchApi);
-                }
+        console.log('>>> 2. INSPECCIONANDO TABS DE BÚSQUEDA EN index-8f03e130.js');
+        console.log('============================================================');
 
-                // Buscar post_type en el bundle de episodios
-                var matchType = res.raw.match(/post_type:\s*["']?([a-zA-Z0-9_-]+)["']?/g);
-                if (matchType) {
-                    console.log('post_types detectados en Episodes:', matchType);
-                }
+        return getFile(mainBundleUrl).then(function(mainCode) {
+            var movieIdx = mainCode.indexOf('useState("movies")');
+            if (movieIdx !== -1) {
+                var snippetMain = mainCode.substring(movieIdx, Math.min(mainCode.length, movieIdx + 350));
+                console.log('Fragmento Tabs en Buscador:');
+                console.log('  ' + snippetMain.replace(/\s+/g, ' ') + '\n');
+            }
+
+            // Buscar ocurrencias de series en el bundle principal
+            var seriesTerms = mainCode.match(/["']([a-zA-Z0-9_-]*(?:serie|episode|temporada|season)[a-zA-Z0-9_-]*)["']/gi);
+            if (seriesTerms) {
+                var uniqueTerms = [];
+                seriesTerms.forEach(function(t) {
+                    if (uniqueTerms.indexOf(t) === -1 && t.length < 25) uniqueTerms.push(t);
+                });
+                console.log('Términos relacionados con series detectados en el bundle:', uniqueTerms.slice(0, 15));
             }
         });
+    }).catch(function(err) {
+        console.log('Error:', err.message);
     });
 }
 
-runPhase6();
+runPhase7();
