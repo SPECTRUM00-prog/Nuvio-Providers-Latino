@@ -1,5 +1,5 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 2 - Búsqueda y Frontend)
+ * Script de Inspección y Diagnóstico Profundo: Hackstore (Fase 3 - Reverse del Bundle y POST)
  * Ejecutar localmente con: node providers/inspect_hackstore.js
  */
 
@@ -8,11 +8,12 @@ var http = require('http');
 var urlModule = require('url');
 
 var BASE_URL = 'https://hackstore2.com';
+var BUNDLE_URL = 'https://hackstore2.com/wp-content/themes/hackstore/assets/build/assets/index-8f03e130.js';
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
 
 function request(targetUrl, options) {
     options = options || {};
-    var timeout = options.timeout || 6000;
+    var timeout = options.timeout || 8000;
     var startTime = Date.now();
 
     return new Promise(function(resolve, reject) {
@@ -21,7 +22,7 @@ function request(targetUrl, options) {
 
         var reqHeaders = Object.assign({
             'User-Agent': USER_AGENT,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,application/json,*/*;q=0.8',
+            'Accept': 'application/json, text/plain, */*',
             'Referer': BASE_URL + '/',
             'Origin': BASE_URL
         }, options.headers || {});
@@ -51,7 +52,6 @@ function request(targetUrl, options) {
         req.on('timeout', function() {
             req.destroy();
             var err = new Error('ETIMEDOUT tras ' + timeout + 'ms');
-            err.code = 'ETIMEDOUT';
             reject(err);
         });
 
@@ -66,81 +66,90 @@ function request(targetUrl, options) {
     });
 }
 
-function runDeepAudit() {
+function runAuditPhase3() {
     console.log('\n============================================================');
-    console.log('>>> 1. INSPECCIONANDO HTML DE LA HOME EN BUSCA DE SCRIPTS Y SLUGS');
+    console.log('>>> 1. SIGUIENDO REDIRECCIÓN 302 DE /?s=matrix');
     console.log('============================================================');
 
-    return request(BASE_URL)
+    return request(BASE_URL + '/?s=matrix')
         .then(function(res) {
-            console.log('[HOME STATUS]: ' + res.status);
-            
-            // Extraer enlaces a películas/series visibles en la home
-            var linkRegex = /href=["'](https?:\/\/hackstore2\.com\/(?:peliculas|series|pelicula|serie)\/[^"']+)["']/gi;
-            var links = [];
-            var match;
-            while ((match = linkRegex.exec(res.body)) !== null) {
-                if (links.indexOf(match[1]) === -1) links.push(match[1]);
+            console.log('[302 REDIRECT LOCATION]: ' + res.headers.location);
+            if (res.headers.location) {
+                var loc = res.headers.location.indexOf('http') === 0 ? res.headers.location : (BASE_URL + res.headers.location);
+                return request(loc).then(function(locRes) {
+                    console.log('[DESTINO STATUS]: ' + locRes.status + ' para ' + loc);
+                    console.log('[DESTINO PREVIEW]: ' + locRes.body.substring(0, 200).replace(/\s+/g, ' '));
+                });
             }
-            
-            console.log('[ENLACES DE CONTENIDO DETECTADOS EN HOME]: ' + links.length);
-            for (var i = 0; i < Math.min(5, links.length); i++) {
-                console.log('  -> ' + links[i]);
-            }
-
-            // Extraer rutas de bundles JS de Next.js / Nuxt / React / Vue
-            var scriptRegex = /src=["']([^"']+\.js[^"']*)["']/gi;
-            var scripts = [];
-            while ((match = scriptRegex.exec(res.body)) !== null) {
-                if (scripts.indexOf(match[1]) === -1) scripts.push(match[1]);
-            }
-            console.log('\n[SCRIPTS JS DETECTADOS]: ' + scripts.length);
-            for (var j = 0; j < Math.min(6, scripts.length); j++) {
-                console.log('  -> ' + scripts[j]);
-            }
-
+        })
+        .then(function() {
             console.log('\n============================================================');
-            console.log('>>> 2. PROBANDO VARIACIONES DEL ENDPOINT DE BÚSQUEDA');
+            console.log('>>> 2. PROBANDO /api/rest/search CON POST Y CABECERAS AJAX');
             console.log('============================================================');
 
-            var testVariants = [
-                BASE_URL + '/api/rest/search?q=matrix',
-                BASE_URL + '/api/rest/search?query=matrix',
-                BASE_URL + '/api/rest/search?keyword=matrix',
-                BASE_URL + '/api/rest/search?s=matrix',
-                BASE_URL + '/api/rest/movies?search=matrix',
-                BASE_URL + '/api/rest/movies?page=1&limit=5',
-                BASE_URL + '/?s=matrix'
+            var postTests = [
+                // GET con X-Requested-With
+                { method: 'GET', url: BASE_URL + '/api/rest/search?q=matrix', headers: { 'X-Requested-With': 'XMLHttpRequest' } },
+                // POST JSON
+                { method: 'POST', url: BASE_URL + '/api/rest/search', headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'XMLHttpRequest' }, body: JSON.stringify({ q: 'matrix' }) },
+                { method: 'POST', url: BASE_URL + '/api/rest/search', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'matrix' }) },
+                // POST Form URL Encoded
+                { method: 'POST', url: BASE_URL + '/api/rest/search', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: 'q=matrix' }
             ];
 
-            function tryVariant(index) {
-                if (index >= testVariants.length) {
-                    console.log('\n============================================================');
-                    console.log('>>> FIN DEL DIAGNÓSTICO DE VARIANTES');
-                    console.log('============================================================');
-                    return Promise.resolve();
-                }
-
-                var target = testVariants[index];
-                return request(target)
+            function tryPost(idx) {
+                if (idx >= postTests.length) return Promise.resolve();
+                var t = postTests[idx];
+                return request(t.url, t)
                     .then(function(r) {
-                        var isJson = (r.headers['content-type'] || '').indexOf('application/json') !== -1;
-                        var preview = r.body.substring(0, 150).replace(/\s+/g, ' ');
-                        console.log('[' + r.status + '] ' + target + ' | JSON: ' + isJson + ' | Body: ' + preview);
-                        return tryVariant(index + 1);
+                        console.log('[' + t.method + '] Status: ' + r.status + ' | Body: ' + r.body.substring(0, 180));
+                        return tryPost(idx + 1);
                     })
                     .catch(function(err) {
-                        console.log('[ERROR] ' + target + ' -> ' + err.message);
-                        return tryVariant(index + 1);
+                        console.log('[' + t.method + ' ERROR]: ' + err.message);
+                        return tryPost(idx + 1);
                     });
             }
 
-            return tryVariant(0);
+            return tryPost(0);
+        })
+        .then(function() {
+            console.log('\n============================================================');
+            console.log('>>> 3. DESCARGANDO E INSPECCIONANDO BUNDLE FRONTEND JS');
+            console.log('============================================================');
+
+            return request(BUNDLE_URL).then(function(res) {
+                console.log('[BUNDLE STATUS]: ' + res.status + ' (' + res.body.length + ' bytes)');
+                
+                // Buscar ocurrencias de api/rest
+                var regexApi = /["']([^"']*\/api\/rest\/[^"']*)["']/g;
+                var apis = [];
+                var m;
+                while ((m = regexApi.exec(res.body)) !== null) {
+                    if (apis.indexOf(m[1]) === -1) apis.push(m[1]);
+                }
+                console.log('\n[ENDPOINTS /api/rest DETECTADOS EN EL BUNDLE]:');
+                apis.forEach(function(a) { console.log('  -> ' + a); });
+
+                // Buscar cómo se llama a search
+                var searchContextIdx = res.body.indexOf('/search');
+                if (searchContextIdx !== -1) {
+                    var snippet = res.body.substring(Math.max(0, searchContextIdx - 100), Math.min(res.body.length, searchContextIdx + 200));
+                    console.log('\n[CONTEXTO DE /search EN EL CÓDIGO JS]:');
+                    console.log(snippet.replace(/\s+/g, ' '));
+                }
+
+                // Buscar cabeceras personalizadas en peticiones axios/fetch
+                var headerMatches = res.body.match(/headers:\s*\{[^}]+\}/g);
+                if (headerMatches) {
+                    console.log('\n[CABECERAS ENCONTRADAS EN LLAMADAS HTTP]:');
+                    headerMatches.slice(0, 5).forEach(function(h) { console.log('  -> ' + h); });
+                }
+            });
         })
         .catch(function(err) {
-            console.log('[ERROR FATAL]: ' + err.message);
-            if (err.cause) console.log(err.cause);
+            console.log('[ERROR]: ' + err.message);
         });
 }
 
-runDeepAudit();
+runAuditPhase3();
