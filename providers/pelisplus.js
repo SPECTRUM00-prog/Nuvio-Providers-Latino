@@ -1,21 +1,44 @@
 /**
  * Provider: PelisPlus / TioPlus (Películas y Series)
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / FireTV / Desktop)
+ * Reglas Hermes: ES5 estricto, Zero-Dependencies, Fast Timeout (<= 2800ms)
  */
 
-const TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
-const BASE_URL = "https://tioplus.app";
-const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var BASE_URL = "https://tioplus.app";
+var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 2800;
 
-const DEFAULT_HEADERS = {
+var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Referer": `${BASE_URL}/`
+    "Referer": BASE_URL + "/"
 };
 
 // ==========================================
-// CRIPTOGRAFÍA PURA (HERMES ZERO-DEPENDENCIES)
+// 1. HELPERS DE RED & STRINGS (HERMES SAFE)
 // ==========================================
+
+function fetchWithTimeout(url, options, timeoutMs) {
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    var timer = null;
+
+    var timeoutPromise = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            reject(new Error("Timeout"));
+        }, limit);
+    });
+
+    return Promise.race([fetch(url, options), timeoutPromise])
+        .then(function(res) {
+            if (timer) clearTimeout(timer);
+            return res;
+        })
+        .catch(function() {
+            if (timer) clearTimeout(timer);
+            return null;
+        });
+}
 
 function pureBtoa(str) {
     if (typeof btoa === "function") {
@@ -35,10 +58,13 @@ function pureBtoa(str) {
 
 function cleanTitle(str) {
     if (!str) return "";
-    return str
+    var normalized = str;
+    try {
+        normalized = str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+    } catch (e) {}
+
+    return normalized
         .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
         .replace(/[^a-z0-9\s]+/g, " ")
         .replace(/\s+/g, " ")
         .trim();
@@ -53,7 +79,7 @@ function scoreCandidate(slug, titles, year) {
         var t = cleanTitle(titles[i]);
         if (!t) continue;
 
-        if (cleanS === t) {
+        if (cleanS === t || cleanS.indexOf(t) === 0) {
             score = Math.max(score, 100);
             continue;
         }
@@ -66,13 +92,13 @@ function scoreCandidate(slug, titles, year) {
             }
         }
 
-        if (words.length > 0) {
+        if (words.length > 0 && matches > 0) {
             var ratio = (matches / words.length) * 75;
             score = Math.max(score, ratio);
         }
     }
 
-    if (year && cleanS.indexOf(String(year)) !== -1) {
+    if (score > 0 && year && cleanS.indexOf(String(year)) !== -1) {
         score += 20;
     }
 
@@ -97,42 +123,82 @@ function unpackDeanEdwards(p, a, c, k) {
     });
 }
 
+function unpackFromHtml(html) {
+    if (!html) return "";
+    var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
+    if (!packMatch) {
+        packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\(\s*['"]([\s\S]+?)['"]\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*['"]([\s\S]+?)['"]\.split\('\|'\)/);
+    }
+    if (!packMatch) return "";
+
+    return unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
+}
+
 // ==========================================
-// DETECCIÓN DINÁMICA DE RESOLUCIÓN REAL
+// 2. DETECCIÓN DINÁMICA DE RESOLUCIÓN REAL
 // ==========================================
 
+function detectQualityFromUrl(url) {
+    if (!url) return null;
+    var clean = url.split("?")[0].toLowerCase();
+
+    if (clean.indexOf(".urlset") !== -1) {
+        var urlsetMatch = clean.match(/[_,]([a-z,]+)\.urlset/i);
+        if (urlsetMatch) {
+            var tags = urlsetMatch[1].split(",");
+            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("fhd") !== -1) return "1080p";
+            if (tags.indexOf("h") !== -1 || tags.indexOf("hd") !== -1) return "720p";
+            if (tags.indexOf("n") !== -1 || tags.indexOf("sd") !== -1) return "480p";
+            if (tags.indexOf("l") !== -1) return "360p";
+        }
+    }
+
+    if (/(?:[-_./]|^)(?:4k|2160p?)(?:[-_./]|$)/i.test(clean)) return "4K";
+    if (/(?:[-_./]|^)(?:1080p?|fhd)(?:[-_./]|$)/i.test(clean)) return "1080p";
+    if (/(?:[-_./]|^)(?:720p?)(?:[-_./]|$)/i.test(clean)) return "720p";
+    if (/(?:[-_./]|^)(?:480p?)(?:[-_./]|$)/i.test(clean)) return "480p";
+
+    return null;
+}
+
 function probeM3u8Quality(m3u8Url, headers) {
-    if (!m3u8Url || !m3u8Url.includes(".m3u8")) {
+    var fastQ = detectQualityFromUrl(m3u8Url);
+    if (fastQ) return Promise.resolve(fastQ);
+
+    if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) {
         return Promise.resolve("720p");
     }
 
-    return fetch(m3u8Url, {
+    return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    })
+    }, 2500)
     .then(function(res) {
-        if (!res.ok) return "720p";
+        if (!res || !res.ok) return "720p";
         return res.text();
     })
     .then(function(text) {
-        if (!text || !text.includes("#EXT-X-STREAM-INF")) {
-            if (/1080p?/i.test(m3u8Url)) return "1080p";
-            if (/720p?/i.test(m3u8Url)) return "720p";
-            if (/480p?/i.test(m3u8Url)) return "480p";
+        if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
+            if (m3u8Url.indexOf("1080") !== -1) return "1080p";
+            if (m3u8Url.indexOf("720") !== -1) return "720p";
+            if (m3u8Url.indexOf("480") !== -1) return "480p";
             return "720p";
         }
 
-        var maxH = 0;
-        var resRegex = /RESOLUTION=\d+x(\d+)/gi;
+        var maxW = 0, maxH = 0;
+        var resRegex = /RESOLUTION=(\d+)x(\d+)/gi;
         var match;
         while ((match = resRegex.exec(text)) !== null) {
-            var h = parseInt(match[1], 10);
+            var w = parseInt(match[1], 10);
+            var h = parseInt(match[2], 10);
+            if (w > maxW) maxW = w;
             if (h > maxH) maxH = h;
         }
 
-        if (maxH >= 1080) return "1080p";
-        if (maxH >= 720) return "720p";
-        if (maxH >= 480) return "480p";
+        if (maxW >= 3840 || maxH >= 2160) return "4K";
+        if (maxW >= 1920 || maxH >= 1080) return "1080p";
+        if (maxW >= 1280 || maxH >= 720) return "720p";
+        if (maxW >= 854 || maxH >= 480) return "480p";
         return "720p";
     })
     .catch(function() {
@@ -143,62 +209,63 @@ function probeM3u8Quality(m3u8Url, headers) {
 function getServerLabel(url) {
     if (!url) return "Online";
     var u = url.toLowerCase();
-    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) return "VidHide";
-    if (u.includes("turbovid") || u.includes("emturbovid") || u.includes("turboviplay") || u.includes("turbovidhls")) return "Turbovid";
-    if (u.includes("goodstream")) return "GoodStream";
-    if (u.includes("vimeos")) return "Vimeos";
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish")) return "StreamWish";
+    if (u.indexOf("vidhide") !== -1 || u.indexOf("callistanise") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("morencius") !== -1) return "VidHide";
+    if (u.indexOf("turbovid") !== -1 || u.indexOf("emturbovid") !== -1 || u.indexOf("turboviplay") !== -1 || u.indexOf("turbovidhls") !== -1) return "Turbovid";
+    if (u.indexOf("goodstream") !== -1) return "GoodStream";
+    if (u.indexOf("vimeos") !== -1) return "Vimeos";
+    if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("flaswish") !== -1 || u.indexOf("hglink") !== -1) return "StreamWish";
     return "Online";
 }
 
 // ==========================================
-// RESOLVERS DE STREAMING
+// 3. RESOLVERS DE STREAMING ROBUSTOS
 // ==========================================
 
 function resolveVidHide(url) {
     var targetUrl = url;
-    if (targetUrl.includes("callistanise.com/") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/")) {
+    if (targetUrl.indexOf("callistanise.com/") !== -1 && targetUrl.indexOf("/v/") === -1 && targetUrl.indexOf("/e/") === -1) {
         targetUrl = targetUrl.replace("callistanise.com/", "callistanise.com/v/");
-    } else if (targetUrl.includes("vidhideplus.com/") && !targetUrl.includes("/v/") && !targetUrl.includes("/e/")) {
+    } else if (targetUrl.indexOf("vidhideplus.com/") !== -1 && targetUrl.indexOf("/v/") === -1 && targetUrl.indexOf("/e/") === -1) {
         targetUrl = targetUrl.replace("vidhideplus.com/", "vidhideplus.com/v/");
     }
 
     var hostMatch = targetUrl.match(/^(https?:\/\/[^/]+)/i);
     var hostOrigin = hostMatch ? hostMatch[1] : "https://callistanise.com";
 
-    return fetch(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
+    return fetchWithTimeout(targetUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
-    })
+    }, 2800)
     .then(function(res) {
+        if (!res) return "";
         var finalHostMatch = (res.url || "").match(/^(https?:\/\/[^/]+)/i);
         if (finalHostMatch) hostOrigin = finalHostMatch[1];
         return res.text();
     })
     .then(function(html) {
+        if (!html) return null;
         var streamUrl = null;
 
-        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
-            if (m3u8Match) streamUrl = m3u8Match[1];
+        var unpacked = unpackFromHtml(html);
+        if (unpacked) {
+            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) || unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
+            if (m3u8Match) streamUrl = m3u8Match[1] || m3u8Match[0];
         }
 
         if (!streamUrl) {
-            var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
-            if (directMatch) streamUrl = directMatch[0];
+            var directMatch = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)["']/i);
+            if (directMatch) streamUrl = directMatch[1];
         }
 
         if (streamUrl) {
-            if (streamUrl.startsWith("/")) streamUrl = hostOrigin + streamUrl;
+            if (streamUrl.indexOf("/") === 0) streamUrl = hostOrigin + streamUrl;
             var streamHeaders = { "User-Agent": USER_AGENT, "Referer": targetUrl };
 
             return probeM3u8Quality(streamUrl, streamHeaders).then(function(quality) {
                 return {
                     url: streamUrl,
                     serverName: "VidHide",
-                    quality: quality,
+                    quality: quality || "720p",
                     headers: streamHeaders
                 };
             });
@@ -209,24 +276,24 @@ function resolveVidHide(url) {
 }
 
 function resolveTurbovid(url) {
-    return fetch(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": `${BASE_URL}/` },
+    return fetchWithTimeout(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
-    })
-    .then(function(res) { return res.text(); })
+    }, 2800)
+    .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
+        if (!html) return null;
         var streamUrl = null;
 
-        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i);
-            if (m3u8Match) streamUrl = m3u8Match[1];
+        var unpacked = unpackFromHtml(html);
+        if (unpacked) {
+            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) || unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
+            if (m3u8Match) streamUrl = m3u8Match[1] || m3u8Match[0];
         }
 
         if (!streamUrl) {
-            var directMatch = html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
-            if (directMatch) streamUrl = directMatch[0];
+            var directMatch = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*)["']/i);
+            if (directMatch) streamUrl = directMatch[1];
         }
 
         if (streamUrl) {
@@ -235,7 +302,7 @@ function resolveTurbovid(url) {
                 return {
                     url: streamUrl,
                     serverName: "Turbovid",
-                    quality: quality,
+                    quality: quality || "720p",
                     headers: streamHeaders
                 };
             });
@@ -246,21 +313,27 @@ function resolveTurbovid(url) {
 }
 
 function resolveStreamWish(url) {
-    var id = url.replace(/\/$/, "").split("/").pop();
-    var targetUrl = "https://hlswish.com/e/" + id;
+    var targetUrl = url;
+    if (targetUrl.indexOf("/f/") !== -1 || targetUrl.indexOf("/v/") !== -1) {
+        targetUrl = targetUrl.replace("/f/", "/e/").replace("/v/", "/e/");
+    }
 
-    return fetch(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
-    })
-    .then(function(res) { return res.text(); })
+    return fetchWithTimeout(targetUrl, {
+        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
+        redirect: "follow"
+    }, 2800)
+    .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
+        if (!html) return null;
+
         var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
         if (direct) {
             return probeM3u8Quality(direct[1], { "User-Agent": USER_AGENT, "Referer": targetUrl }).then(function(q) {
                 return { url: direct[1], serverName: "StreamWish", quality: q, headers: { "User-Agent": USER_AGENT, "Referer": targetUrl } };
             });
         }
-        var unpacked = unpackDeanEdwards(html);
+
+        var unpacked = unpackFromHtml(html);
         if (unpacked) {
             var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
             if (m3u8) {
@@ -278,13 +351,13 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
 
-    if (u.includes("vidhide") || u.includes("callistanise") || u.includes("minochinos")) {
+    if (u.indexOf("vidhide") !== -1 || u.indexOf("callistanise") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("morencius") !== -1) {
         return resolveVidHide(url);
     }
-    if (u.includes("turbovid") || u.includes("emturbovid") || u.includes("turbovidhls") || u.includes("turboviplay")) {
+    if (u.indexOf("turbovid") !== -1 || u.indexOf("emturbovid") !== -1 || u.indexOf("turbovidhls") !== -1 || u.indexOf("turboviplay") !== -1) {
         return resolveTurbovid(url);
     }
-    if (u.includes("streamwish") || u.includes("hlswish") || u.includes("flaswish")) {
+    if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("flaswish") !== -1 || u.indexOf("hglink") !== -1) {
         return resolveStreamWish(url);
     }
 
@@ -292,19 +365,22 @@ function dispatchResolver(url) {
 }
 
 function resolvePlayerEndpoint(playerUrl) {
-    return fetch(playerUrl, { headers: DEFAULT_HEADERS, redirect: "follow" })
+    return fetchWithTimeout(playerUrl, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2800)
         .then(function(res) {
+            if (!res) return null;
             var targetUrl = res.url || "";
 
-            if (targetUrl && !targetUrl.includes("tioplus.app/player/")) {
+            if (targetUrl && targetUrl.indexOf("tioplus.app/player/") === -1) {
                 return dispatchResolver(targetUrl);
             }
 
             return res.text().then(function(html) {
+                if (!html) return null;
+
                 var ifrMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
                 if (ifrMatch) {
                     var innerUrl = ifrMatch[1];
-                    if (innerUrl.startsWith("/")) innerUrl = BASE_URL + innerUrl;
+                    if (innerUrl.indexOf("/") === 0) innerUrl = BASE_URL + innerUrl;
                     return dispatchResolver(innerUrl);
                 }
 
@@ -323,25 +399,26 @@ function resolvePlayerEndpoint(playerUrl) {
 }
 
 // ==========================================
-// BÚSQUEDA Y EXTRACCIÓN
+// 4. BÚSQUEDA Y EXTRACCIÓN
 // ==========================================
 
 function searchPelisplusSingle(query, isMovie) {
-    var searchUrl = `${BASE_URL}/api/search/${encodeURIComponent(query)}`;
+    var searchUrl = BASE_URL + "/api/search/" + encodeURIComponent(query);
 
-    return fetch(searchUrl, {
+    return fetchWithTimeout(searchUrl, {
         headers: {
             "User-Agent": USER_AGENT,
             "Accept": "*/*",
             "X-Requested-With": "XMLHttpRequest",
-            "Referer": `${BASE_URL}/search`
+            "Referer": BASE_URL + "/search"
         }
-    })
+    }, 2800)
     .then(function(res) {
-        if (!res.ok) return [];
+        if (!res || !res.ok) return [];
         return res.text();
     })
     .then(function(html) {
+        if (!html) return [];
         var pattern = isMovie ? /href=["']((?:https?:\/\/[^"']*)?\/pelicula\/[^"']+)["']/gi
                               : /href=["']((?:https?:\/\/[^"']*)?\/serie\/[^"']+)["']/gi;
         var matches = [];
@@ -371,13 +448,13 @@ function searchMultiQuery(queries, isMovie) {
 }
 
 function extractStreamsFromUrl(pageUrl) {
-    console.log(`[PelisPlus] Consultando página: ${pageUrl}`);
-    return fetch(pageUrl, { headers: DEFAULT_HEADERS })
+    return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 2800)
         .then(function(res) {
-            if (!res.ok) throw new Error("HTTP " + res.status);
+            if (!res || !res.ok) return [];
             return res.text();
         })
         .then(function(html) {
+            if (!html) return [];
             var tokens = [];
 
             var dataServerRegex = /data-server=["']([^"']+)["']/gi;
@@ -392,18 +469,17 @@ function extractStreamsFromUrl(pageUrl) {
                 tokens.push(dtMatch[1]);
             }
 
-            var uniqueTokens = tokens.filter(function(item, pos, self) {
-                return item && self.indexOf(item) === pos;
-            });
-
-            if (uniqueTokens.length === 0) {
-                return [];
+            var uniqueTokens = [];
+            for (var t = 0; t < tokens.length; t++) {
+                if (tokens[t] && uniqueTokens.indexOf(tokens[t]) === -1) {
+                    uniqueTokens.push(tokens[t]);
+                }
             }
 
-            console.log(`[PelisPlus] Opciones de servidor encontradas: ${uniqueTokens.length}`);
+            if (uniqueTokens.length === 0) return [];
 
             var promises = uniqueTokens.map(function(tok) {
-                var playerUrl = `${BASE_URL}/player/${pureBtoa(tok)}`;
+                var playerUrl = BASE_URL + "/player/" + pureBtoa(tok);
                 return resolvePlayerEndpoint(playerUrl)
                     .then(function(res) {
                         if (!res || !res.url) return null;
@@ -411,7 +487,7 @@ function extractStreamsFromUrl(pageUrl) {
                         var q = res.quality || "720p";
                         return {
                             name: "PelisPlus",
-                            title: `${q} · LAT · ${sName}`,
+                            title: q + " · Latino · " + sName,
                             quality: q,
                             url: res.url,
                             headers: res.headers || {}
@@ -420,10 +496,13 @@ function extractStreamsFromUrl(pageUrl) {
                     .catch(function() { return null; });
             });
 
-            return Promise.all(promises);
-        })
-        .then(function(results) {
-            return results.filter(function(st) { return st !== null; });
+            return Promise.all(promises).then(function(results) {
+                var valid = [];
+                for (var v = 0; v < results.length; v++) {
+                    if (results[v]) valid.push(results[v]);
+                }
+                return valid;
+            });
         })
         .catch(function() {
             return [];
@@ -431,25 +510,26 @@ function extractStreamsFromUrl(pageUrl) {
 }
 
 // ==========================================
-// FUNCIÓN PRINCIPAL EXPORTADA
+// 5. FUNCIÓN PRINCIPAL EXPORTADA
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
-    console.log(`[PelisPlus] Buscando TMDB ID ${tmdbId} (${mediaType})`);
+    if (!tmdbId) return Promise.resolve([]);
+
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
     var eNum = parseInt(episode, 10) || 1;
-    var tmdbUrl = `https://api.themoviedb.org/3/${isMovie ? "movie" : "tv"}/${tmdbId}?api_key=${TMDB_API_KEY}&language=es-MX&append_to_response=alternative_titles`;
+    var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
-    return fetch(tmdbUrl)
+    return fetchWithTimeout(tmdbUrl, null, 2500)
         .then(function(res) {
-            if (!res.ok) throw new Error("TMDB HTTP " + res.status);
+            if (!res || !res.ok) throw new Error("TMDB HTTP Error");
             return res.json();
         })
         .then(function(meta) {
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
-            var year = (meta.release_date || meta.first_air_date || "").substring(0, 4);
+            var year = ((isMovie ? meta.release_date : meta.first_air_date) || "").substring(0, 4);
 
             var titles = [];
             if (title) titles.push(title);
@@ -457,17 +537,14 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             var altArr = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
             for (var i = 0; i < altArr.length; i++) {
-                if (altArr[i].title) titles.push(altArr[i].title);
+                if (altArr[i].title && titles.indexOf(altArr[i].title) === -1) {
+                    titles.push(altArr[i].title);
+                }
             }
 
-            var uniqueTitles = titles.filter(function(item, pos, self) {
-                return item && self.indexOf(item) === pos;
-            });
-
             var searchQueries = [];
-
-            for (var j = 0; j < uniqueTitles.length; j++) {
-                var rawT = uniqueTitles[j];
+            for (var j = 0; j < titles.length; j++) {
+                var rawT = titles[j];
                 if (!rawT) continue;
 
                 if (searchQueries.indexOf(rawT) === -1) searchQueries.push(rawT);
@@ -487,21 +564,29 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return searchMultiQuery(searchQueries, isMovie).then(function(slugs) {
                 if (!slugs || slugs.length === 0) return [];
 
-                slugs.sort(function(a, b) {
-                    return scoreCandidate(b, uniqueTitles, year) - scoreCandidate(a, uniqueTitles, year);
-                });
+                var scored = [];
+                for (var s = 0; s < slugs.length; s++) {
+                    var sc = scoreCandidate(slugs[s], titles, year);
+                    if (sc >= 35) {
+                        scored.push({ slug: slugs[s], score: sc });
+                    }
+                }
+
+                if (scored.length === 0) return [];
+
+                scored.sort(function(a, b) { return b.score - a.score; });
 
                 function tryNextSlug(index) {
-                    if (index >= slugs.length) return Promise.resolve([]);
-                    var slug = slugs[index];
+                    if (index >= scored.length) return Promise.resolve([]);
+                    var slug = scored[index].slug;
 
                     var pageUrlsToTry = [];
                     if (isMovie) {
-                        pageUrlsToTry.push(`${BASE_URL}/pelicula/${slug}`);
+                        pageUrlsToTry.push(BASE_URL + "/pelicula/" + slug);
                     } else {
-                        pageUrlsToTry.push(`${BASE_URL}/serie/${slug}/season/${sNum}/episode/${eNum}`);
-                        pageUrlsToTry.push(`${BASE_URL}/episodio/${slug}-${sNum}x${eNum}`);
-                        pageUrlsToTry.push(`${BASE_URL}/ver/${slug}-temporada-${sNum}-capitulo-${eNum}`);
+                        pageUrlsToTry.push(BASE_URL + "/serie/" + slug + "/season/" + sNum + "/episode/" + eNum);
+                        pageUrlsToTry.push(BASE_URL + "/episodio/" + slug + "-" + sNum + "x" + eNum);
+                        pageUrlsToTry.push(BASE_URL + "/ver/" + slug + "-temporada-" + sNum + "-capitulo-" + eNum);
                     }
 
                     function tryPageUrls(pIdx) {
@@ -520,14 +605,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 return tryNextSlug(0);
             });
         })
-        .then(function(streams) {
-            console.log(`[PelisPlus] ✓ ${streams.length} streams extraídos`);
-            return streams;
-        })
-        .catch(function(err) {
-            console.log(`[PelisPlus] Error general: ${err.message}`);
+        .catch(function() {
             return [];
         });
 }
 
-module.exports = { getStreams };
+if (typeof module !== "undefined") {
+    module.exports = { getStreams: getStreams };
+}
