@@ -1,5 +1,5 @@
 /**
- * Diagnóstico de Mapeo de Idiomas en PelisForte
+ * Diagnóstico exacto del bloque ln0 (Latino)
  * Ejecutar: node providers/inspect_pelisforte.js
  */
 
@@ -13,49 +13,24 @@ https.get(PAGE_URL, { headers: { 'User-Agent': USER_AGENT } }, function(res) {
     res.on('end', function() {
         var html = Buffer.concat(chunks).toString('utf8');
 
+        var posLn0 = html.indexOf('id="ln0"');
         console.log('\n============================================================');
-        console.log('>>> 1. MAPEO DE PESTAÑAS (ln0, ln1, ln2)');
+        console.log('>>> BLOQUE COMPLETO DE id="ln0" (LATINO)');
         console.log('============================================================');
-
-        var langBlocks = [
-            { id: 'ln0', label: 'LAT' },
-            { id: 'ln1', label: 'CAST' },
-            { id: 'ln2', label: 'SUB' }
-        ];
-
-        var parsedOptions = [];
-
-        langBlocks.forEach(function(lb) {
-            var blockIdx = html.indexOf('id="' + lb.id + '"');
-            if (blockIdx === -1) return;
-            var blockHtml = html.substring(blockIdx, blockIdx + 1200);
-
-            var optRegex = /href=["']#options-(\d+)["'][^>]*>[\s\S]*?<span class=["']server["']>([^<]+)<\/span>/gi;
-            var m;
-            while ((m = optRegex.exec(blockHtml)) !== null) {
-                parsedOptions.push({
-                    optId: m[1],
-                    server: m[2].replace(/\s+/g, ' ').trim(),
-                    lang: lb.label
-                });
-            }
-        });
-
-        console.log('Opciones encontradas en las pestañas:', parsedOptions);
+        if (posLn0 !== -1) {
+            console.log(html.substring(posLn0, posLn0 + 800));
+        } else {
+            console.log('No se encontró id="ln0"');
+        }
 
         console.log('\n============================================================');
-        console.log('>>> 2. CONTENEDORES DE IFRAMES (#options-0, #options-1, etc.)');
+        console.log('>>> BUSCANDO CUALQUIER REFERENCIA A #options-1 EN TODO EL HTML');
         console.log('============================================================');
-
-        // Buscar cada div id="options-X"
-        for (var i = 0; i < 6; i++) {
-            var targetId = 'id="options-' + i + '"';
-            var pos = html.indexOf(targetId);
-            if (pos !== -1) {
-                var divSnippet = html.substring(pos, pos + 400);
-                var tokenMatch = divSnippet.match(/mp4\.nu\/\?h=([^"'\s]+)/);
-                console.log('[options-' + i + '] Token: ' + (tokenMatch ? tokenMatch[1].substring(0, 35) + '...' : 'NO DETECTADO'));
-            }
+        var posOpt1 = html.indexOf('#options-1');
+        if (posOpt1 !== -1) {
+            console.log(html.substring(posOpt1 - 40, posOpt1 + 160));
+        } else {
+            console.log('No existe "#options-1" en el HTML');
         }
     });
 });
