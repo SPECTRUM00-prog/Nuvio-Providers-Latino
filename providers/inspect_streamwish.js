@@ -1,5 +1,5 @@
 /**
- * Laboratorio de ingeniería inversa para StreamWish (JKAnime & SoloLatino)
+ * Emulador avanzado de main.js para StreamWish
  * Ejecución: node providers/inspect_streamwish.js
  */
 
@@ -24,93 +24,9 @@ var targets = [
     }
 ];
 
-function unpackDeanEdwards(p, a, c, k) {
-    var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
-    function decodeBase(val, radix) {
-        var res = 0;
-        for (var i = 0; i < val.length; i++) {
-            var idx = dict.indexOf(val[i]);
-            if (idx === -1) return NaN;
-            res = res * radix + idx;
-        }
-        return res;
-    }
-    return p.replace(/\b([0-9a-zA-Z]+)\b/g, function(token) {
-        var index = decodeBase(token, a);
-        if (isNaN(index) || index >= k.length) return token;
-        return (k[index] && k[index] !== "") ? k[index] : token;
-    });
-}
-
-function checkHtmlForM3u8(html) {
-    if (!html) return null;
-    var direct = html.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-    if (direct) return direct[0];
-
-    var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\(\s*['"]([\s\S]+?)['"]\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i);
-    if (packMatch) {
-        var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-        var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-        if (m3u8) return m3u8[0];
-    }
-    return null;
-}
-
-// ==========================================
-// PRUEBA 1: VARIANTES DE RUTA (/e/, /f/, /d/)
-// ==========================================
-
-function testAlternativeRoutes(target) {
-    console.log("\n=================================================================");
-    console.log(">>> [FASE 1] PROBANDO RUTAS ALTERNAS EN " + target.name + " <<<");
+function emulate(target) {
     console.log("=================================================================");
-
-    var paths = [
-        target.base + "/e/" + target.id,
-        target.base + "/f/" + target.id,
-        target.base + "/d/" + target.id
-    ];
-
-    function tryPath(idx) {
-        if (idx >= paths.length) return Promise.resolve();
-        var pUrl = paths[idx];
-
-        return fetch(pUrl, {
-            headers: {
-                "User-Agent": USER_AGENT,
-                "Referer": target.referer
-            },
-            redirect: "follow"
-        })
-        .then(function(res) {
-            return res.text().then(function(html) {
-                console.log("-> Ruta [" + pUrl + "] -> Status:", res.status, "| Tamaño:", html.length, "bytes");
-
-                var m3u8 = checkHtmlForM3u8(html);
-                if (m3u8) {
-                    console.log("   [+] ¡STREAM ENCONTRADO EN RUTA ALTERNA!:", m3u8);
-                } else if (html.indexOf("main.js") !== -1) {
-                    console.log("   [i] Devuelve el cascarón con main.js");
-                }
-                return tryPath(idx + 1);
-            });
-        })
-        .catch(function(err) {
-            console.log("   [-] Error en " + pUrl + ":", err.message);
-            return tryPath(idx + 1);
-        });
-    }
-
-    return tryPath(0);
-}
-
-// ==========================================
-// PRUEBA 2: EMULACIÓN DEL LOADER MAIN.JS
-// ==========================================
-
-function testEmulateMainJs(target) {
-    console.log("\n=================================================================");
-    console.log(">>> [FASE 2] EJECUTANDO MAIN.JS EN ENTORNO EMULADO (" + target.name + ") <<<");
+    console.log(">>> EJECUTANDO MAIN.JS CON ENTORNO COMPLETO (" + target.name + ") <<<");
     console.log("=================================================================");
 
     var mainUrl = target.base + "/main.js?v=1.1.9";
@@ -121,12 +37,25 @@ function testEmulateMainJs(target) {
     })
     .then(function(res) { return res.text(); })
     .then(function(jsCode) {
-        console.log("[+] main.js descargado (" + jsCode.length + " bytes). Inicializando sandbox...");
+        console.log("[+] main.js descargado (" + jsCode.length + " bytes). Inicializando emulación...");
 
         var interceptedRequests = [];
         var interceptedInjections = [];
 
-        // Mock básico del DOM y APIs de navegador para atrapar las acciones de main.js
+        function MockXHR() {
+            this.headers = {};
+            this.open = function(method, url) {
+                this.method = method;
+                this.url = url;
+            };
+            this.setRequestHeader = function(k, v) {
+                this.headers[k] = v;
+            };
+            this.send = function(body) {
+                interceptedRequests.push({ type: "xhr", method: this.method, url: this.url, body: body, headers: this.headers });
+            };
+        }
+
         var sandbox = {
             window: {},
             document: {
@@ -153,7 +82,7 @@ function testEmulateMainJs(target) {
                         tagName: tag,
                         style: {},
                         setAttribute: function(k, v) {
-                            if (k === "src") interceptedRequests.push({ type: "script-src", url: v });
+                            if (k === "src") interceptedRequests.push({ type: "script-tag-src", url: v });
                         },
                         appendChild: function() {}
                     };
@@ -164,6 +93,7 @@ function testEmulateMainJs(target) {
             },
             location: {
                 href: embedPageUrl,
+                origin: target.base,
                 pathname: "/e/" + target.id,
                 hostname: target.base.replace("https://", ""),
                 search: "",
@@ -177,6 +107,13 @@ function testEmulateMainJs(target) {
                 languages: ["es-ES", "es", "en"]
             },
             screen: { width: 1920, height: 1080 },
+            URL: global.URL,
+            URLSearchParams: global.URLSearchParams,
+            atob: function(b64) { return Buffer.from(b64, 'base64').toString('binary'); },
+            btoa: function(str) { return Buffer.from(str, 'binary').toString('base64'); },
+            TextEncoder: global.TextEncoder,
+            TextDecoder: global.TextDecoder,
+            XMLHttpRequest: MockXHR,
             setTimeout: function(fn) {
                 try { fn(); } catch(e) {}
             },
@@ -201,31 +138,32 @@ function testEmulateMainJs(target) {
 
         try {
             var context = vm.createContext(sandbox);
-            // Ejecutar el script ofuscado dentro del sandbox de Node
-            vm.runInContext(jsCode, context, { timeout: 3000 });
-            console.log("[+] main.js ejecutado dentro del sandbox sin crashear.");
+            vm.runInContext(jsCode, context, { timeout: 3500 });
+            console.log("[+] main.js ejecutado con éxito.");
         } catch (e) {
-            console.log("[-] Error en ejecución del script:", e.message);
+            console.log("[-] Error durante ejecución de main.js:", e.message);
         }
 
-        console.log("\n[+] Acciones interceptadas por el sandbox:");
-        console.log("    Peticiones capturadas:", JSON.stringify(interceptedRequests, null, 2));
+        console.log("\n[+] Acciones interceptadas (" + interceptedRequests.length + "):");
+        if (interceptedRequests.length > 0) {
+            console.log(JSON.stringify(interceptedRequests, null, 2));
+        } else {
+            console.log("    (No se dispararon peticiones directas de red)");
+        }
+
         if (interceptedInjections.length > 0) {
-            console.log("    Inyecciones HTML capturadas:", interceptedInjections);
+            console.log("\n[+] Inyecciones en DOM:", interceptedInjections);
         }
     })
     .catch(function(err) {
-        console.log("[-] Error en sandbox:", err.message);
+        console.log("[-] Error general:", err.message);
     });
 }
 
-// Ejecutar pruebas en secuencia para ambos portales
-testAlternativeRoutes(targets[0])
-.then(function() { return testEmulateMainJs(targets[0]); })
-.then(function() { return testAlternativeRoutes(targets[1]); })
-.then(function() { return testEmulateMainJs(targets[1]); })
+emulate(targets[0])
+.then(function() { return emulate(targets[1]); })
 .then(function() {
     console.log("\n=================================================================");
-    console.log(">>> FIN DEL EXPERIMENTO STREAMWISH <<<");
+    console.log(">>> FIN DE LA EMULACIÓN DE STREAMWISH <<<");
     console.log("=================================================================");
 });
