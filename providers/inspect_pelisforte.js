@@ -1,5 +1,5 @@
 /**
- * Script de Inspección y Diagnóstico Profundo: PelisForte (Fase 7 - Reverse Byse API y Series)
+ * Script de Inspección y Diagnóstico Profundo: PelisForte (Fase 8 - Formato de Tarjetas y Byse Direct)
  * Ejecutar localmente con: node providers/inspect_pelisforte.js
  */
 
@@ -7,7 +7,7 @@ var https = require('https');
 var urlModule = require('url');
 
 var BASE_URL = 'https://www2.pelisforte.se';
-var BYSE_BUNDLE_URL = 'https://byseraguci.com/assets/index-DocunfmE.js';
+var BYSE_DIRECT_URL = 'https://byseraguci.com/d/tiumae2gw611/P4N0RM-18LA.mp4';
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
 function request(targetUrl, headers) {
@@ -15,7 +15,7 @@ function request(targetUrl, headers) {
         var parsed = urlModule.parse(targetUrl);
         var reqHeaders = Object.assign({
             'User-Agent': USER_AGENT,
-            'Accept': '*/*',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Referer': BASE_URL + '/'
         }, headers || {});
 
@@ -27,11 +27,19 @@ function request(targetUrl, headers) {
             headers: reqHeaders,
             timeout: 8000
         }, function(res) {
+            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+                var redirectUrl = res.headers.location.indexOf('http') === 0 ? 
+                                  res.headers.location : 
+                                  (parsed.protocol + '//' + parsed.host + res.headers.location);
+                return resolve(request(redirectUrl, headers));
+            }
+
             var chunks = [];
             res.on('data', function(c) { chunks.push(c); });
             res.on('end', function() {
                 resolve({
                     status: res.statusCode,
+                    headers: res.headers,
                     body: Buffer.concat(chunks).toString('utf8'),
                     elapsed: Date.now() - startTime
                 });
@@ -42,80 +50,52 @@ function request(targetUrl, headers) {
     });
 }
 
-function runAuditPhase7() {
+function runAuditPhase8() {
     console.log('\n============================================================');
-    console.log('>>> 1. INSPECCIONANDO RESULTADOS DE BÚSQUEDA (?s=paranorman)');
+    console.log('>>> 1. VOLCANDO EL HTML EXACTO DE LA TARJETA EN BÚSQUEDA');
     console.log('============================================================');
 
     return request(BASE_URL + '/?s=paranorman')
         .then(function(res) {
-            console.log('[STATUS BÚSQUEDA]: ' + res.status + ' (' + res.elapsed + ' ms)');
-            
-            // Buscar tarjetas de películas y series
-            var linkRegex = /<a[^>]+href=["'](https?:\/\/[^"']*\/(?:pelicula|serie)\/[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-            var matches = [];
-            var m;
-            while ((m = linkRegex.exec(res.body)) !== null) {
-                var url = m[1];
-                var inner = m[2].replace(/\s+/g, ' ');
-                var titleMatch = inner.match(/class=["'][^"']*title[^"']*["'][^>]*>([^<]+)/i) ||
-                                 inner.match(/alt=["']([^"']+)["']/i);
-                var title = titleMatch ? titleMatch[1].trim() : 'Sin título';
-                
-                if (matches.filter(function(x) { return x.url === url; }).length === 0) {
-                    matches.push({ url: url, title: title });
-                }
+            // Extraer el bloque completo donde aparece paranorman
+            var idx = res.body.indexOf('paranorman-2012');
+            if (idx !== -1) {
+                var cardSnippet = res.body.substring(Math.max(0, idx - 150), Math.min(res.body.length, idx + 450));
+                console.log('[SNIPPET HTML DE LA TARJETA]:\n' + cardSnippet.replace(/\t/g, ' ') + '\n');
             }
 
-            console.log('[TARJETAS ENCONTRADAS]: ' + matches.length);
-            matches.slice(0, 5).forEach(function(item) {
-                console.log('  -> ' + item.title + ' | URL: ' + item.url);
+            console.log('============================================================');
+            console.log('>>> 2. INSPECCIONANDO MENÚ PRINCIPAL (SERIES / CATEGORÍAS)');
+            console.log('============================================================');
+
+            var menuMatches = res.body.match(/<a[^>]+href=["'](https?:\/\/[^"']*(?:serie|genero|tv|top)[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi) || [];
+            console.log('Enlaces de menú detectados: ' + menuMatches.length);
+            menuMatches.slice(0, 8).forEach(function(m) {
+                console.log('  -> ' + m.replace(/\s+/g, ' '));
             });
 
             console.log('\n============================================================');
-            console.log('>>> 2. PROBANDO BÚSQUEDA DE SERIES (?s=dexter)');
+            console.log('>>> 3. PROBANDO RUTA DIRECTA DE BYSE (/d/ en vez de /e/)');
             console.log('============================================================');
 
-            return request(BASE_URL + '/?s=dexter');
-        })
-        .then(function(sRes) {
-            console.log('[STATUS BÚSQUEDA SERIES]: ' + sRes.status);
-            var seriesLinks = sRes.body.match(/https?:\/\/[^"']*\/(?:serie|series)\/[^"']+/gi) || [];
-            var uniqueSeries = [];
-            seriesLinks.forEach(function(u) {
-                if (uniqueSeries.indexOf(u) === -1) uniqueSeries.push(u);
-            });
-
-            console.log('[SERIES DETECTADAS]: ' + uniqueSeries.length);
-            uniqueSeries.slice(0, 3).forEach(function(u) {
-                console.log('  -> Serie: ' + u);
-            });
-
-            console.log('\n============================================================');
-            console.log('>>> 3. INSPECCIONANDO BUNDLE JS DE BYSE (Búsqueda de API)');
-            console.log('============================================================');
-
-            return request(BYSE_BUNDLE_URL, { 'Referer': 'https://byseraguci.com/' });
+            return request(BYSE_DIRECT_URL, { 'Referer': 'https://byseraguci.com/' });
         })
         .then(function(byseRes) {
-            console.log('[BYSE BUNDLE STATUS]: ' + byseRes.status + ' (' + byseRes.body.length + ' bytes)');
-            var code = byseRes.body;
-
-            // Buscar llamadas fetch / axios / rutas de api
-            var apiMatches = code.match(/["']\/api\/[^"']+["']/g) || [];
-            console.log('[ENDPOINTS /api/ EN BYSE]:', apiMatches);
-
-            var postOrGet = code.match(/(?:fetch|axios(?:\.get|\.post)?)\s*\(\s*["']([^"']+)["']/g) || [];
-            console.log('[LLAMADAS HTTP EN BYSE]:', postOrGet.slice(0, 6));
-
-            // Buscar construcción de URLs m3u8 o mp4
-            var streamPatterns = code.match(/["']([^"']*\.(?:m3u8|mp4)[^"']*)["']/g) || [];
-            console.log('[PATRONES DE STREAM EN BYSE]:', streamPatterns.slice(0, 5));
-
-            var fileCodeIndex = code.indexOf('/e/');
-            if (fileCodeIndex !== -1) {
-                console.log('\n[CONTEXTO /e/ EN BYSE]:');
-                console.log(code.substring(Math.max(0, fileCodeIndex - 60), Math.min(code.length, fileCodeIndex + 200)).replace(/\s+/g, ' '));
+            console.log('[STATUS BYSE /d/]: ' + byseRes.status + ' (' + byseRes.elapsed + ' ms)');
+            console.log('[CONTENT-TYPE]: ' + (byseRes.headers['content-type'] || 'N/A'));
+            if (byseRes.headers.location) {
+                console.log('[REDIRECCIÓN DIRECTA]: ' + byseRes.headers.location);
+            }
+            // Si es video directo o html
+            if ((byseRes.headers['content-type'] || '').indexOf('video') !== -1 || (byseRes.headers['content-type'] || '').indexOf('octet-stream') !== -1) {
+                console.log('>>> ¡BYSE /d/ ES UN STREAM DE VIDEO DIRECTO!');
+            } else {
+                var m3u8 = byseRes.body.match(/https?:\/\/[^"'\s<>]+\.(?:m3u8|mp4)[^"'\s<>]*/gi);
+                if (m3u8) {
+                    console.log('>>> Streams encontrados en /d/:\n', m3u8);
+                } else {
+                    console.log('Preview /d/:\n' + byseRes.body.substring(0, 250).replace(/\s+/g, ' '));
+                }
             }
         })
         .catch(function(err) {
@@ -123,4 +103,4 @@ function runAuditPhase7() {
         });
 }
 
-runAuditPhase7();
+runAuditPhase8();
