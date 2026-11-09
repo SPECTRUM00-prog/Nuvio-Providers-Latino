@@ -450,9 +450,9 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 2400)
                 .then(function(res) { return res.ok ? res.text() : ""; })
                 .then(function(html) {
-                    // Mapeo seguro de tokens mediante búsqueda directa por índice
+                    // Mapeo directo y seguro de tokens por índice
                     var tokensMap = {};
-                    for (var optIdx = 0; optIdx < 10; optIdx++) {
+                    for (var optIdx = 0; optIdx < 12; optIdx++) {
                         var targetId = 'id="options-' + optIdx + '"';
                         var pos = html.indexOf(targetId);
                         if (pos !== -1) {
@@ -464,43 +464,46 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         }
                     }
 
-                    // Extraer idiomas y opciones de todas las etiquetas <a> que enlazan a #options-X
+                    // Delimitación dinámica entre bloques de idioma (inmune a espacios vacíos)
                     var options = [];
-                    var langBlocks = [
-                        { id: "ln0", label: "LAT" },
-                        { id: "ln1", label: "CAST" },
-                        { id: "ln2", label: "SUB" }
+                    var langDefs = [
+                        { id: "ln0", nextId: "ln1", label: "LAT" },
+                        { id: "ln1", nextId: "ln2", label: "CAST" },
+                        { id: "ln2", nextId: null, label: "SUB" }
                     ];
 
-                    for (var l = 0; l < langBlocks.length; l++) {
-                        var lb = langBlocks[l];
-                        var blockIdx = html.indexOf('id="' + lb.id + '"');
-                        if (blockIdx === -1) continue;
-                        var blockHtml = html.substring(blockIdx, blockIdx + 1500);
+                    for (var l = 0; l < langDefs.length; l++) {
+                        var ld = langDefs[l];
+                        var startPos = html.indexOf('id="' + ld.id + '"');
+                        if (startPos === -1) continue;
 
-                        var optRegex = /<a[^>]+href=["']#options-(\d+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+                        var endPos = -1;
+                        if (ld.nextId) {
+                            endPos = html.indexOf('id="' + ld.nextId + '"');
+                        }
+                        if (endPos === -1 || endPos <= startPos) {
+                            endPos = startPos + 5000;
+                        }
+
+                        var blockHtml = html.substring(startPos, endPos);
+                        var optRegex = /href=["']#options-(\d+)["']/gi;
                         var mOpt;
+
                         while ((mOpt = optRegex.exec(blockHtml)) !== null) {
                             var optId = mOpt[1];
-                            var inner = mOpt[2];
-                            var sMatch = inner.match(/class=["'][^"']*server[^"']*["']>([^<]+)/i);
-                            var serverName = sMatch ? sMatch[1].replace(/\s+/g, " ").trim() : "Server";
-
-                            var cleanServer = serverName.indexOf("Ok") !== -1 || serverName.indexOf("OK") !== -1 ? "OK.ru" :
-                                              serverName.indexOf("Byse") !== -1 ? "Byse" : serverName.split("-")[0].trim();
-
                             if (tokensMap[optId]) {
                                 options.push({
                                     optId: optId,
                                     token: tokensMap[optId],
-                                    lang: lb.label,
-                                    server: cleanServer
+                                    lang: ld.label,
+                                    // Los índices impares en PelisForte son los reproductores de OK.ru
+                                    server: (parseInt(optId, 10) % 2 === 1) ? "OK.ru" : "Byse"
                                 });
                             }
                         }
                     }
 
-                    // Priorizar LAT y priorizar OK.ru (doblaje original garantizado)
+                    // Priorizar LAT y priorizar OK.ru (doblaje original directo)
                     options.sort(function(a, b) {
                         if (a.lang === "LAT" && b.lang !== "LAT") return -1;
                         if (b.lang === "LAT" && a.lang !== "LAT") return 1;
