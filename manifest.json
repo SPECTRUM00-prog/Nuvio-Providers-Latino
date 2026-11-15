@@ -39,7 +39,7 @@
       "id": "sololatino",
       "name": "SoloLatino",
       "description": "Películas y Series en Español Latino desde SoloLatino / Embed69 (VidHide, StreamWish, Voe).",
-      "version": "1.3.0",
+      "version": "1.3.2",
       "author": "SPECTRUM00-prog",
       "supportedTypes": ["movie", "tv"],
       "filename": "providers/sololatino.js",
