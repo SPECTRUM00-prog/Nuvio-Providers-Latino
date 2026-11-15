@@ -358,6 +358,23 @@ function fetchAniListMapping(searchName) {
     .catch(function() { return []; });
 }
 
+function buildAltTitlesForAniItem(item) {
+    var list = [];
+    if (!item) return list;
+    if (item.title) {
+        if (item.title.english) list.push(item.title.english);
+        if (item.title.romaji) list.push(item.title.romaji);
+    }
+    if (item.synonyms && Array.isArray(item.synonyms)) {
+        for (var i = 0; i < item.synonyms.length; i++) {
+            if (item.synonyms[i] && !hasAsianChars(item.synonyms[i])) {
+                list.push(item.synonyms[i]);
+            }
+        }
+    }
+    return list;
+}
+
 function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
     if (!aniListMedia || aniListMedia.length === 0) return null;
 
@@ -376,7 +393,8 @@ function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
         return {
             slug: cleanTitle(baseEntry.title.romaji),
             targetEp: sNum > 1 ? absoluteEp : eNum,
-            isContinuous: true
+            isContinuous: true,
+            altMatchTitles: buildAltTitlesForAniItem(baseEntry)
         };
     }
 
@@ -399,13 +417,15 @@ function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
                 return {
                     slug: cleanTitle(part2.title.romaji),
                     targetEp: eNum - p1Limit,
-                    isContinuous: false
+                    isContinuous: false,
+                    altMatchTitles: buildAltTitlesForAniItem(part2)
                 };
             } else {
                 return {
                     slug: cleanTitle(part1.title.romaji),
                     targetEp: eNum,
-                    isContinuous: false
+                    isContinuous: false,
+                    altMatchTitles: buildAltTitlesForAniItem(part1)
                 };
             }
         }
@@ -415,7 +435,8 @@ function resolveUniversalTarget(aniListMedia, sNum, eNum, absoluteEp) {
     return {
         slug: cleanTitle(selected.title.romaji),
         targetEp: eNum,
-        isContinuous: false
+        isContinuous: false,
+        altMatchTitles: buildAltTitlesForAniItem(selected)
     };
 }
 
@@ -780,11 +801,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
             }
             if (!cleanSearchTitle) cleanSearchTitle = title || origTitle || "";
 
+            // Usar 2 palabras clave para coincidir con buscadores en Romaji (ej. "mushoku tensei")
             var cleanT = cleanTitle(cleanSearchTitle).replace(/-/g, " ");
             var allWords = cleanT.split(/\s+/).filter(function(w) { return w.length > 0; });
             var longWords = allWords.filter(function(w) { return w.length > 2; });
             var chosenWords = longWords.length >= 2 ? longWords : allWords;
-            var searchKeyword = chosenWords.slice(0, 3).join(" ");
+            var searchKeyword = chosenWords.slice(0, 2).join(" ");
 
             var seasonsList = meta.seasons || [];
             var s1Count = 60;
@@ -826,13 +848,17 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     candidateSlugs.push({
                         slug: aniTarget.slug,
                         targetEp: aniTarget.targetEp,
-                        isContinuous: aniTarget.isContinuous
+                        isContinuous: aniTarget.isContinuous,
+                        altMatchTitles: aniTarget.altMatchTitles,
+                        fromSource: true
                     });
                     if (year) {
                         candidateSlugs.push({
                             slug: aniTarget.slug + "-" + year,
                             targetEp: aniTarget.targetEp,
-                            isContinuous: aniTarget.isContinuous
+                            isContinuous: aniTarget.isContinuous,
+                            altMatchTitles: aniTarget.altMatchTitles,
+                            fromSource: true
                         });
                     }
                 }
@@ -843,7 +869,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     for (var ex = 0; ex < candidateSlugs.length; ex++) {
                         if (candidateSlugs[ex].slug === nSlug) { exists = true; break; }
                     }
-                    if (!exists) candidateSlugs.push({ slug: nSlug, targetEp: null, isContinuous: false });
+                    if (!exists) candidateSlugs.push({ slug: nSlug, targetEp: null, isContinuous: false, fromSource: true });
                 }
 
                 for (var t = 0; t < titles.length; t++) {
@@ -853,7 +879,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         for (var e1 = 0; e1 < candidateSlugs.length; e1++) {
                             if (candidateSlugs[e1].slug === sBase) { ex1 = true; break; }
                         }
-                        if (!ex1) candidateSlugs.push({ slug: sBase, targetEp: null, isContinuous: false });
+                        if (!ex1) candidateSlugs.push({ slug: sBase, targetEp: null, isContinuous: false, fromSource: false });
 
                         if (year) {
                             var sYear = sBase + "-" + year;
@@ -861,7 +887,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             for (var e2 = 0; e2 < candidateSlugs.length; e2++) {
                                 if (candidateSlugs[e2].slug === sYear) { ex2 = true; break; }
                             }
-                            if (!ex2) candidateSlugs.push({ slug: sYear, targetEp: null, isContinuous: false });
+                            if (!ex2) candidateSlugs.push({ slug: sYear, targetEp: null, isContinuous: false, fromSource: false });
                         }
                     }
                 }
@@ -870,7 +896,16 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 for (var k = 0; k < candidateSlugs.length; k++) {
                     var cand = candidateSlugs[k];
                     var sc = scoreCandidate(cand.slug, titles, year);
+                    if (cand.altMatchTitles) {
+                        for (var am = 0; am < cand.altMatchTitles.length; am++) {
+                            sc = Math.max(sc, scoreCandidate(cand.altMatchTitles[am], titles, year));
+                        }
+                    }
+
                     if (sc >= 35) {
+                        // Priorizar slugs reales de AniList/JKAnime sobre conjeturas de TMDB
+                        if (cand.fromSource) sc += 25;
+
                         var slugRank = getSeasonRank(cand.slug);
                         if (slugRank === effectiveSeason) {
                             sc += 30;
@@ -925,8 +960,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         uniquePageUrls.push(pageUrlsToTry[u]);
                     }
                 }
-                // Acotar a los 6 mejores candidatos para proteger el límite de latencia en TV
-                uniquePageUrls = uniquePageUrls.slice(0, 6);
+                uniquePageUrls = uniquePageUrls.slice(0, 9);
 
                 function tryBatch(urls, batchSize) {
                     if (urls.length === 0) return Promise.resolve([]);
