@@ -1,91 +1,57 @@
 /**
- * Probar POST /api/player-url y formato de episodios en SoloLatino
+ * Inspección de player.pelisserieshoy.com/e/517175 y comportamiento de fetch en /api/player-url
  * Ejecutar: node providers/inspect_all_providers.js
  */
 
-var https = require('https');
 var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-function req(url, method, body, headers) {
-    return new Promise(function(resolve, reject) {
-        var p = new URL(url);
-        var opts = {
-            hostname: p.hostname,
-            path: p.pathname + p.search,
-            method: method || 'GET',
-            headers: Object.assign({
-                'User-Agent': UA,
-                'Referer': 'https://sololatino.net/pelicula/matrix',
-                'Origin': 'https://sololatino.net'
-            }, headers || {})
-        };
-        var r = https.request(opts, function(res) {
-            var c = [];
-            res.on('data', function(d) { c.push(d); });
-            res.on('end', function() {
-                resolve({
-                    status: res.statusCode,
-                    setCookie: res.headers['set-cookie'] || [],
-                    body: Buffer.concat(c).toString('utf8')
-                });
-            });
-        });
-        r.on('error', reject);
-        if (body) r.write(body);
-        r.end();
-    });
-}
-
 (async function() {
-    // 1. Obtener ficha, csrf-token, cookies y tokens de servidores
-    var page = await req('https://sololatino.net/pelicula/matrix');
-    var cookies = page.setCookie.map(function(c) { return c.split(';')[0]; }).join('; ');
-    var csrfMatch = page.body.match(/name="csrf-token"\s+content="([^"]+)"/i);
-    var csrf = csrfMatch ? csrfMatch[1] : '';
+    console.log('>>> 1. INSPECCIONANDO https://player.pelisserieshoy.com/e/517175');
+    var pRes = await fetch('https://player.pelisserieshoy.com/e/517175', {
+        headers: { 'User-Agent': UA, 'Referer': 'https://sololatino.net/pelicula/matrix' },
+        redirect: 'follow'
+    });
+    var pHtml = await pRes.text();
+    console.log('Status:', pRes.status, '| Final:', pRes.url, '| Bytes:', pHtml.length);
 
-    var btns = [];
-    var btnRegex = /data-lang-group="([^"]+)"[\s\S]*?<\/div>\s*<\/div>/gi;
-    var tokRegex = /data-player-token="([^"]+)"[^>]*>([\s\S]*?)<\/button>/gi;
-    var m;
-    while ((m = tokRegex.exec(page.body)) !== null) {
-        btns.push({
-            token: m[1],
-            label: m[2].replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim()
-        });
+    var m3u8 = pHtml.match(/https?:\/\/[^"'\s<>\\]+\.(?:m3u8|mp4)[^"'\s<>\\]*/gi) || [];
+    console.log('Streams directos (.m3u8/.mp4):', m3u8.slice(0, 5));
+
+    var iframes = pHtml.match(/<iframe[^>]+src=["']([^"']+)["']/gi) || [];
+    console.log('Iframes dentro:', iframes);
+
+    var hasPack = pHtml.indexOf('eval(function(p,a,c,k') !== -1;
+    console.log('Tiene Dean Edwards packer:', hasPack);
+
+    if (m3u8.length === 0 && iframes.length === 0) {
+        console.log('Preview HTML:\n' + pHtml.slice(0, 1200));
     }
 
-    console.log('CSRF:', csrf, '| Cookies:', cookies ? 'OK (' + page.setCookie.length + ')' : 'Sin cookies');
-    console.log('Botones detectados:', btns.length);
+    console.log('\n>>> 2. PROBANDO /api/player-url CON fetch() NATIVO');
+    var pageRes = await fetch('https://sololatino.net/pelicula/matrix', {
+        headers: { 'User-Agent': UA, 'Referer': 'https://sololatino.net/' }
+    });
+    var pageHtml = await pageRes.text();
+    var csrf = (pageHtml.match(/name="csrf-token"\s+content="([^"]+)"/i) || [])[1] || '';
+    var tok = (pageHtml.match(/data-player-token="([^"]+)"/i) || [])[1] || '';
 
-    // 2. Probar POST /api/player-url con cada botón
-    for (var i = 0; i < btns.length; i++) {
-        var b = btns[i];
-        var apiRes = await req(
-            'https://sololatino.net/api/player-url',
-            'POST',
-            JSON.stringify({ t: b.token }),
-            {
-                'Content-Type': 'application/json',
-                'Accept': 'application/json',
-                'X-CSRF-TOKEN': csrf,
-                'X-Requested-With': 'XMLHttpRequest',
-                'Cookie': cookies
-            }
-        );
-        console.log('\n[' + b.label + '] Status:', apiRes.status);
-        console.log('  Respuesta:', apiRes.body.slice(0, 300));
-    }
+    // Extraer cookies compatibles con fetch (getSetCookie si existe, o header set-cookie)
+    var rawCookies = typeof pageRes.headers.getSetCookie === 'function'
+        ? pageRes.headers.getSetCookie()
+        : (pageRes.headers.get('set-cookie') ? [pageRes.headers.get('set-cookie')] : []);
+    var cookieStr = rawCookies.map(function(c) { return c.split(';')[0]; }).join('; ');
 
-    // 3. Ver estructura de series y episodios
-    console.log('\n>>> PROBANDO BÚSQUEDA DE SERIE (/buscar?q=game%20of%20thrones)');
-    var sRes = await req('https://sololatino.net/buscar?q=game%20of%20thrones');
-    var serieLinks = sRes.body.match(/https?:\/\/sololatino\.net\/serie\/[^"'\s<>]+/gi) || [];
-    console.log('Series encontradas:', serieLinks.slice(0, 3));
-    if (serieLinks.length > 0) {
-        var epPage = await req(serieLinks[0]);
-        var epLinks = epPage.body.match(/https?:\/\/sololatino\.net\/[^"'\s<>]*(?:episodio|temporada|1x1)[^"'\s<>]*/gi) || [];
-        var uniqEp = [];
-        epLinks.forEach(function(e) { if (uniqEp.indexOf(e) === -1) uniqEp.push(e); });
-        console.log('Enlaces de episodio en serie:', uniqEp.slice(0, 6));
-    }
+    var apiNoCookie = await fetch('https://sololatino.net/api/player-url', {
+        method: 'POST',
+        headers: { 'User-Agent': UA, 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest', 'Referer': 'https://sololatino.net/pelicula/matrix' },
+        body: JSON.stringify({ t: tok })
+    });
+    console.log('POST SIN Cookie header:', apiNoCookie.status, await apiNoCookie.text());
+
+    var apiWithCookie = await fetch('https://sololatino.net/api/player-url', {
+        method: 'POST',
+        headers: { 'User-Agent': UA, 'Content-Type': 'application/json', 'X-CSRF-TOKEN': csrf, 'X-Requested-With': 'XMLHttpRequest', 'Cookie': cookieStr, 'Referer': 'https://sololatino.net/pelicula/matrix' },
+        body: JSON.stringify({ t: tok })
+    });
+    console.log('POST CON Cookie header:', apiWithCookie.status, await apiWithCookie.text());
 })();
