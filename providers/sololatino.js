@@ -1,8 +1,8 @@
 /**
  * Provider: SoloLatino (Películas y Series en Latino, Castellano y Sub)
  * Dominio: https://sololatino.net (Backend Laravel + player.pelisserieshoy.com)
- * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / NuvioTV 1.1.0 Safe)
- * Reglas NuvioTV: Cero AbortController, fetchWithTimeout limpio con clearTimeout.
+ * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / NuvioTV Firestick Safe)
+ * Reglas NuvioTV: Cero AbortController, reenvío de cookies de sesión, resolución rápida.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -19,7 +19,7 @@ var DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// 1. HELPERS DE RED & TIMEOUT (HERMES / TV SAFE)
+// 1. HELPERS DE RED & TIMEOUT (NUVIO-TV SAFE)
 // ==========================================
 
 function fetchWithTimeout(url, options, timeoutMs) {
@@ -141,10 +141,6 @@ function scoreCandidate(slugOrTitle, titles, year) {
     return score;
 }
 
-// ==========================================
-// 2. DETECCIÓN DINÁMICA DE CALIDAD
-// ==========================================
-
 function detectQuality(url, label) {
     var text = ((url || "") + " " + (label || "")).toLowerCase();
     if (text.indexOf(".urlset") !== -1) {
@@ -164,7 +160,7 @@ function detectQuality(url, label) {
 }
 
 // ==========================================
-// 3. EXTRACCIÓN DE FICHA Y PLAYER LARAVEL
+// 2. EXTRACCIÓN DE FICHA Y PLAYER LARAVEL
 // ==========================================
 
 function fetchDirectPage(urls) {
@@ -253,26 +249,50 @@ function extractPlayerTokens(html) {
 }
 
 function resolvePelisSeriesHoy(playerUrl, pageUrl) {
+    var sessionCookie = "";
+
     return fetchWithTimeout(playerUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": pageUrl },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
     .then(function(res) {
         if (!res || !res.ok) return [];
+
+        // Capturar cookies de sesión emitidas por player.pelisserieshoy.com
+        if (res.headers) {
+            if (typeof res.headers.getSetCookie === "function") {
+                var rawCookies = res.headers.getSetCookie();
+                if (Array.isArray(rawCookies) && rawCookies.length > 0) {
+                    var cList = [];
+                    for (var c = 0; c < rawCookies.length; c++) {
+                        cList.push(rawCookies[c].split(";")[0]);
+                    }
+                    sessionCookie = cList.join("; ");
+                }
+            }
+            if (!sessionCookie && typeof res.headers.get === "function") {
+                var raw = res.headers.get("set-cookie");
+                if (raw) sessionCookie = raw.split(";")[0];
+            }
+        }
+
         return res.text();
     })
     .then(function(html) {
         if (!html) return [];
 
-        var tMatch = html.match(/const\s+_t\s*=\s*'([^']+)'/);
-        var qcMatch = html.match(/var\s+_qc\s*=\s*"([^"]+)"/);
-        var qkMatch = html.match(/var\s+_qk\s*=\s*(\[[^\]]+\])/);
+        var tMatch = html.match(/const\s+_t\s*=\s*['"]([^'"]+)['"]/);
+        var qcMatch = html.match(/var\s+_qc\s*=\s*['"]([^'"]+)['"]/);
+        var qkMatch = html.match(/(?:var|let|const)\s+_qk\s*=\s*(\[[^\]]+\])/);
         var q9Match = html.match(/function\s+_q9\s*\(\)\s*\{\s*return\s+([^;]+);/);
 
         if (!tMatch || !qkMatch || !q9Match) return [];
 
         var tok = tMatch[1];
-        var qc = qcMatch ? qcMatch[1] : "";
+        // Respaldo de _qc por regex de IMDb en la propia URL
+        var idUrlMatch = playerUrl.match(/\/f\/([^?&/]+)/);
+        var qc = qcMatch ? qcMatch[1] : (idUrlMatch ? idUrlMatch[1] : "");
+
         var qkArr = null;
         try {
             qkArr = JSON.parse(qkMatch[1]);
@@ -292,21 +312,26 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
             params.tk = qt;
             params.ao = BASE_URL;
 
+            var sHeaders = {
+                "User-Agent": USER_AGENT,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Origin": PLAYER_HOST,
+                "Referer": playerUrl
+            };
+            if (sessionCookie) {
+                sHeaders["Cookie"] = sessionCookie;
+            }
+
             return fetchWithTimeout(PLAYER_HOST + "/s.php", {
                 method: "POST",
-                headers: {
-                    "User-Agent": USER_AGENT,
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Origin": PLAYER_HOST,
-                    "Referer": playerUrl
-                },
+                headers: sHeaders,
                 body: buildFormBody(params)
             }, NETWORK_TIMEOUT)
             .then(function(r) { return r && r.ok ? r.json() : null; })
             .catch(function() { return null; });
         }
 
-        // Una sola llamada directa para listar opciones (sin roundtrips innecesarios)
+        // Listar opciones (a=1)
         return postS({ a: "1" }).then(function(scan) {
             if (!scan) return [];
 
@@ -328,7 +353,7 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
             }
 
             if (items.length === 0 && Array.isArray(scan.s)) {
-                for (var s = 0; s < Math.min(3, scan.s.length); s++) {
+                for (var s = 0; s < Math.min(2, scan.s.length); s++) {
                     if (scan.s[s] && scan.s[s][1]) {
                         items.push({ lang: "LAT", label: scan.s[s][0] || "Stream", id: scan.s[s][1] });
                     }
@@ -399,7 +424,7 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
 }
 
 // ==========================================
-// 4. FUNCIÓN PRINCIPAL EXPORTADA (getStreams)
+// 3. FUNCIÓN PRINCIPAL EXPORTADA (getStreams)
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
