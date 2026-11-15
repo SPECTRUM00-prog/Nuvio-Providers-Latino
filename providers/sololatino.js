@@ -2,7 +2,7 @@
  * Provider: SoloLatino (Películas y Series en Latino, Castellano y Sub)
  * Dominio: https://sololatino.net (Backend Laravel + player.pelisserieshoy.com)
  * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / NuvioTV Firestick Safe)
- * Reglas NuvioTV: Cero AbortController, Handshake a=1 -> a=click -> a=2, resolución rápida.
+ * Reglas NuvioTV: Cero AbortController, Handshake a=1 -> a=click -> a=2 (secuencial anti-WAF).
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -152,6 +152,7 @@ function detectQuality(url, label) {
             if (tags.indexOf("n") !== -1) return "480p";
         }
     }
+    if (text.indexOf("master.m3u8") !== -1) return "1080p";
     if (/(?:^|[^a-z0-9])(?:4k|2160p?)(?:[^a-z0-9]|$)/i.test(text)) return "4K";
     if (/(?:^|[^a-z0-9])1080p?(?:[^a-z0-9]|$)/i.test(text)) return "1080p";
     if (/(?:^|[^a-z0-9])720p?(?:[^a-z0-9]|$)/i.test(text)) return "720p";
@@ -304,7 +305,7 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
             .catch(function() { return null; });
         }
 
-        // PASO 1: Listar opciones (a=1)
+        // PASO 1: Listar opciones disponibles
         return postS({ a: "1" }).then(function(scan) {
             if (!scan) return [];
 
@@ -335,64 +336,55 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
 
             if (items.length === 0) return [];
 
-            // PASO 2: Enviar a=click para autorizar la sesión antes de pedir los enlaces (a=2)
+            // PASO 2: Autorizar sesión con a=click
             return postS({ a: "click", ts: "1" }).then(function() {
-                // PASO 3: Obtener enlaces de video (a=2)
-                var streamPromises = items.map(function(item) {
+                // PASO 3: Resolver secuencialmente uno a uno para evitar bloqueo 403 del WAF
+                var results = [];
+                var seenKeys = [];
+
+                function resolveNext(idx) {
+                    if (idx >= items.length) return Promise.resolve(results);
+                    var item = items[idx];
+
                     return postS({ a: "2", v: item.id, src: scan.src || "" })
                         .then(function(d) {
-                            if (!d || !d.u) return null;
+                            if (d && d.u) {
+                                var rawU = d.u;
+                                var finalUrl = null;
+                                var isMp4 = d.type === "mp4" || rawU.indexOf("/p.php?v=") !== -1;
 
-                            var rawU = d.u;
-                            var finalUrl = null;
-                            var isMp4 = d.type === "mp4" || rawU.indexOf("/p.php?v=") !== -1;
+                                if (rawU.indexOf("/p.php") === 0) {
+                                    finalUrl = PLAYER_HOST + rawU;
+                                } else if (rawU.indexOf("http") === 0 && d.sig) {
+                                    finalUrl = PLAYER_HOST + "/p.php?url=" + encodeURIComponent(rawU) +
+                                               "&sig=" + encodeURIComponent(d.sig) +
+                                               (d.ctx ? "&ctx=" + encodeURIComponent(d.ctx) : "");
+                                } else if (rawU.indexOf("http") === 0) {
+                                    finalUrl = rawU;
+                                }
 
-                            if (rawU.indexOf("/p.php") === 0) {
-                                finalUrl = PLAYER_HOST + rawU;
-                            } else if (rawU.indexOf("http") === 0 && d.sig) {
-                                finalUrl = PLAYER_HOST + "/p.php?url=" + encodeURIComponent(rawU) +
-                                           "&sig=" + encodeURIComponent(d.sig) +
-                                           (d.ctx ? "&ctx=" + encodeURIComponent(d.ctx) : "");
-                            } else if (rawU.indexOf("http") === 0) {
-                                finalUrl = rawU;
+                                if (finalUrl && seenKeys.indexOf(rawU) === -1) {
+                                    seenKeys.push(rawU);
+                                    var cleanLabel = item.label.replace(/[^\w\s+áéíóúñÁÉÍÓÚÑ.-]/g, "").trim() || "Servidor";
+                                    var qual = isMp4 ? "720p" : detectQuality(rawU, cleanLabel);
+
+                                    results.push({
+                                        name: "SoloLatino",
+                                        title: qual + " · " + item.lang + " · " + cleanLabel + (isMp4 ? " (MP4)" : ""),
+                                        quality: qual,
+                                        url: finalUrl,
+                                        headers: { "User-Agent": USER_AGENT, "Referer": playerUrl }
+                                    });
+                                }
                             }
-
-                            if (!finalUrl) return null;
-
-                            var cleanLabel = item.label.replace(/[^\w\s+áéíóúñÁÉÍÓÚÑ.-]/g, "").trim() || "Servidor";
-                            var streamHeaders = { "User-Agent": USER_AGENT, "Referer": playerUrl };
-                            var qual = isMp4 ? "720p" : detectQuality(rawU, cleanLabel);
-
-                            return {
-                                dedupKey: rawU,
-                                name: "SoloLatino",
-                                title: qual + " · " + item.lang + " · " + cleanLabel + (isMp4 ? " (MP4)" : ""),
-                                quality: qual,
-                                url: finalUrl,
-                                headers: streamHeaders
-                            };
+                            return resolveNext(idx + 1);
                         })
-                        .catch(function() { return null; });
-                });
+                        .catch(function() {
+                            return resolveNext(idx + 1);
+                        });
+                }
 
-                return Promise.all(streamPromises).then(function(resolved) {
-                    var out = [];
-                    var seenKeys = [];
-                    for (var r = 0; r < resolved.length; r++) {
-                        var st = resolved[r];
-                        if (st && seenKeys.indexOf(st.dedupKey) === -1) {
-                            seenKeys.push(st.dedupKey);
-                            out.push({
-                                name: st.name,
-                                title: st.title,
-                                quality: st.quality,
-                                url: st.url,
-                                headers: st.headers
-                            });
-                        }
-                    }
-                    return out;
-                });
+                return resolveNext(0);
             });
         });
     })
