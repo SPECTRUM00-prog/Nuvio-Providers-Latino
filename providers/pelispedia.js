@@ -473,7 +473,7 @@ function detectQualityFromUrl(url) {
 
     if (u.indexOf("vidhide") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("callistanise") !== -1) {
         qMap = QUALITY_MAPS.vidhide;
-    } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("vibuxer") !== -1 || u.indexOf("hgcloud") !== -1) {
+    } else if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("vibuxer") !== -1 || u.indexOf("hgcloud") !== -1 || u.indexOf("playerwish") !== -1 || u.indexOf("strwish") !== -1 || u.indexOf("flaswish") !== -1) {
         qMap = QUALITY_MAPS.streamwish;
     } else if (u.indexOf("filemoon") !== -1) {
         qMap = QUALITY_MAPS.filemoon;
@@ -590,9 +590,17 @@ function resolveVidHide(url, refererUrl) {
 
 function resolveStreamWish(url, refererUrl) {
     var targetUrl = url;
-    if (targetUrl.indexOf("hglink.to") !== -1 || targetUrl.indexOf("hanerix.com") !== -1 || targetUrl.indexOf("vibuxer.com") !== -1) {
+    if (
+        targetUrl.indexOf("hglink.to") !== -1 ||
+        targetUrl.indexOf("hanerix.com") !== -1 ||
+        targetUrl.indexOf("hlswish.com") !== -1 ||
+        targetUrl.indexOf("hgcloud.to") !== -1 ||
+        targetUrl.indexOf("streamwish.to") !== -1 ||
+        targetUrl.indexOf("strwish.com") !== -1 ||
+        targetUrl.indexOf("flaswish.com") !== -1
+    ) {
         var idMatch = targetUrl.match(/\/(?:e|f|v)\/([a-zA-Z0-9]+)/);
-        if (idMatch) targetUrl = "https://hlswish.com/e/" + idMatch[1];
+        if (idMatch) targetUrl = "https://playerwish.com/e/" + idMatch[1];
     } else if (targetUrl.indexOf("/f/") !== -1 || targetUrl.indexOf("/v/") !== -1) {
         targetUrl = targetUrl.replace("/f/", "/e/").replace("/v/", "/e/");
     }
@@ -673,9 +681,26 @@ function dispatchDirectResolver(item, playerPageUrl) {
     var sName = (item.server || "").toLowerCase();
     var promise = null;
 
-    if (sName.indexOf("streamwish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1 || u.indexOf("vibuxer") !== -1) {
+    if (
+        sName.indexOf("streamwish") !== -1 ||
+        u.indexOf("streamwish") !== -1 ||
+        u.indexOf("hglink") !== -1 ||
+        u.indexOf("hlswish") !== -1 ||
+        u.indexOf("hanerix") !== -1 ||
+        u.indexOf("flaswish") !== -1 ||
+        u.indexOf("vibuxer") !== -1 ||
+        u.indexOf("playerwish") !== -1 ||
+        u.indexOf("strwish") !== -1 ||
+        u.indexOf("hgcloud") !== -1
+    ) {
         promise = resolveStreamWish(item.url, playerPageUrl);
-    } else if (sName.indexOf("vidhide") !== -1 || u.indexOf("vidhide") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("callistanise") !== -1 || u.indexOf("minochinos") !== -1) {
+    } else if (
+        sName.indexOf("vidhide") !== -1 ||
+        u.indexOf("vidhide") !== -1 ||
+        u.indexOf("morencius") !== -1 ||
+        u.indexOf("callistanise") !== -1 ||
+        u.indexOf("minochinos") !== -1
+    ) {
         promise = resolveVidHide(item.url, playerPageUrl);
     } else if (sName.indexOf("filemoon") !== -1 || u.indexOf("filemoon") !== -1) {
         promise = resolveFilemoon(item.url, playerPageUrl);
