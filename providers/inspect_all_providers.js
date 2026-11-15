@@ -1,5 +1,5 @@
 /**
- * Inspección del Script #5 (57 KB) en player.pelisserieshoy.com
+ * Ver llamadas a /s.php y playStream() dentro de Script #5 de player.pelisserieshoy.com
  * Ejecutar: node providers/inspect_all_providers.js
  */
 
@@ -27,23 +27,19 @@ var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
         body: JSON.stringify({ t: tok })
     });
     var apiJson = await apiRes.json();
-    console.log('Player URL:', apiJson.url);
 
     var pRes = await fetch(apiJson.url, {
         headers: { 'User-Agent': UA, 'Referer': 'https://sololatino.net/pelicula/matrix' }
     });
     var pHtml = await pRes.text();
-
-    // Localizar el Script #5 (donde aparece const _t =)
     var idxT = pHtml.indexOf('const _t =');
-    var script5 = idxT !== -1 ? pHtml.slice(idxT - 40, pHtml.indexOf('</script>', idxT)) : pHtml;
-    console.log('Tamaño bloque Script #5:', script5.length);
+    var script5 = pHtml.slice(idxT - 40, pHtml.indexOf('</script>', idxT));
 
-    ['fetch(', 'XMLHttpRequest', 'loadSource', '_t', '/api/', 'crypto', 'decrypt', 'm3u8', 'sources'].forEach(function(term) {
+    ['playStream(', '/s.php', 'atob(', 'JSON.parse'].forEach(function(term) {
         console.log('\n=== BUSCANDO "' + term + '" ===');
         var i = 0, c = 0;
-        while ((i = script5.indexOf(term, i)) !== -1 && c < 3) {
-            console.log('[' + (++c) + '] ' + script5.slice(Math.max(0, i - 60), i + 260).replace(/\s+/g, ' '));
+        while ((i = script5.indexOf(term, i)) !== -1 && c < 8) {
+            console.log('[' + (++c) + '] ' + script5.slice(Math.max(0, i - 100), i + 260).replace(/\s+/g, ' '));
             i += term.length;
         }
     });
