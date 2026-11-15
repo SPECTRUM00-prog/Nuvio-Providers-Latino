@@ -1,8 +1,8 @@
 /**
  * Provider: SoloLatino (Películas, Series y Anime en Latino, Castellano y Sub)
  * Dominio: https://sololatino.net (Backend Laravel + player.pelisserieshoy.com)
- * Motor: 100% Cadenas de Promesas (Hermes / FireTV / QuickJS Safe)
- * Reglas Hermes: ES5 estricto, fetchWithTimeout + AbortController, resolución M3U8 dinámica.
+ * Motor: 100% Cadenas de Promesas (Hermes / FireTV / QuickJS / NuvioTV 1.1.0 Safe)
+ * Reglas Hermes: ES5 estricto, fetchWithTimeout puro con clearTimeout, resolución M3U8 dinámica.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -24,29 +24,12 @@ var DEFAULT_HEADERS = {
 
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
-    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    var fetchOpts = {};
-
-    if (options) {
-        for (var key in options) {
-            if (Object.prototype.hasOwnProperty.call(options, key)) {
-                fetchOpts[key] = options[key];
-            }
-        }
-    }
-    if (controller) {
-        fetchOpts.signal = controller.signal;
-    }
-
     return new Promise(function(resolve, reject) {
         var timer = setTimeout(function() {
-            if (controller) {
-                try { controller.abort(); } catch (e) {}
-            }
             reject(new Error("Timeout tras " + limit + "ms: " + url));
         }, limit);
 
-        fetch(url, fetchOpts)
+        fetch(url, options || {})
             .then(function(res) {
                 clearTimeout(timer);
                 resolve(res);
@@ -389,7 +372,6 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
             .catch(function() { return null; });
         }
 
-        // 1. Escanear servidores (a=1) y registrar clic de sesión (a=click)
         return Promise.all([
             postS({ a: "1" }),
             postS({ a: "click", ts: "1" })
@@ -405,8 +387,8 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
                 var langCode = langOrder[l];
                 var arr = langsMap[langCode];
                 if (Array.isArray(arr)) {
-                    // Tomar hasta 3 opciones de LAT y 1 de SUB/ESP para no saturar latencia
-                    var limit = langCode === "LAT" ? 3 : 1;
+                    var limit = langCode === "LAT" ? 2 : (langCode === "SUB" ? 1 : 0);
+                    if (items.length === 0 && langCode === "ESP") limit = 1;
                     for (var i = 0; i < Math.min(limit, arr.length); i++) {
                         if (arr[i] && arr[i][1]) {
                             items.push({ lang: langCode, label: arr[i][0] || "Stream", id: arr[i][1] });
@@ -425,7 +407,6 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
 
             if (items.length === 0) return [];
 
-            // 2. Resolver streams en paralelo (a=2)
             var streamPromises = items.map(function(item) {
                 return postS({ a: "2", v: item.id, src: scan.src || "" })
                     .then(function(d) {
