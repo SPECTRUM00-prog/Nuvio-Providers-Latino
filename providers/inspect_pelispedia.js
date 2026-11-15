@@ -1,5 +1,5 @@
 /**
- * Inspección del player interno /vidurl/ en PelisPedia y rutas de SoloLatino.
+ * Inspección del algoritmo de descifrado en /vidurl/ y embeds en SoloLatino.
  * Ejecutar: node providers/inspect_pelispedia.js
  */
 
@@ -23,43 +23,36 @@ function get(url, referer) {
     });
 }
 
-console.log('>>> 1. INSPECCIONANDO VARIABLES DEL PLAYER EN pelispedia.mov/vidurl/tt0133093/');
+console.log('>>> 1. EXTRAYENDO FUNCIÓN DE DESCIFRADO DE pelispedia.mov/vidurl/tt0133093/');
 get('https://pelispedia.mov/vidurl/tt0133093/', 'https://pelispedia.mov/pelicula/matrix')
     .then(function(res) {
         var html = res.body;
-        console.log('Has POW_CHALLENGE:', html.indexOf('POW_CHALLENGE') !== -1);
-        console.log('Has POW_DIFFICULTY:', html.indexOf('POW_DIFFICULTY') !== -1);
-        console.log('Has POW_SALT:', html.indexOf('POW_SALT') !== -1);
-        console.log('Has dataLink:', html.indexOf('dataLink') !== -1);
-
-        var dlIdx = html.indexOf('dataLink');
-        if (dlIdx !== -1) {
-            console.log('\n[CONTEXTO DE dataLink / POW]:');
-            console.log(html.slice(Math.max(0, dlIdx - 350), dlIdx + 700));
-        } else {
-            // Buscar otro script de datos
-            var scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
-            console.log('Scripts encontrados:', scripts.length);
-            scripts.forEach(function(s, i) {
-                if (s.indexOf('sortedEmbeds') !== -1 || s.indexOf('file') !== -1 || s.indexOf('link') !== -1) {
-                    console.log('\n--- Script candidato #' + (i + 1) + ' ---');
-                    console.log(s.slice(0, 900));
+        var scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
+        scripts.forEach(function(s, i) {
+            if (s.indexOf('POW_CHALLENGE') !== -1 || s.indexOf('sortedEmbeds') !== -1 || s.indexOf('decrypt') !== -1 || s.indexOf('CryptoJS') !== -1 || s.indexOf('subtle') !== -1) {
+                console.log('\n--- Script #' + (i + 1) + ' (' + s.length + ' chars) ---');
+                // Imprimir desde donde procesa POW/decrypt hacia adelante
+                var pIdx = s.indexOf('decrypt');
+                if (pIdx === -1) pIdx = s.indexOf('sortedEmbeds');
+                if (pIdx !== -1) {
+                    console.log(s.slice(Math.max(0, pIdx - 400), Math.min(s.length, pIdx + 2200)));
+                } else {
+                    console.log(s.slice(0, 2200));
                 }
-            });
-        }
-
-        console.log('\n>>> 2. REVISANDO ENLACES REALES EN sololatino.net/?s=matrix');
-        return get('https://sololatino.net/?s=matrix', 'https://sololatino.net/');
-    })
-    .then(function(sRes) {
-        var matches = sRes.body.match(/href=["']https?:\/\/sololatino\.net\/[^"']+["']/gi) || [];
-        var filtered = [];
-        matches.forEach(function(m) {
-            if (m.indexOf('/pelicula') !== -1 || m.indexOf('/serie') !== -1 || m.indexOf('/anime') !== -1) {
-                if (filtered.indexOf(m) === -1) filtered.push(m);
             }
         });
-        console.log('Enlaces de catálogo en SoloLatino:', filtered.slice(0, 12));
+
+        console.log('\n>>> 2. REVISANDO EMBEDS EN https://sololatino.net/peliculas/matrix/');
+        return get('https://sololatino.net/peliculas/matrix/', 'https://sololatino.net/');
+    })
+    .then(function(sRes) {
+        console.log('SoloLatino Ficha Status:', sRes.status, '| Bytes:', sRes.body.length);
+        var iframes = sRes.body.match(/<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi) || [];
+        console.log('Iframes en SoloLatino:', iframes);
+        var urls = sRes.body.match(/https?:\/\/[^"'\s<>\\]*(?:embed69|xupalace|vidurl|vidhide|streamwish|hlswish|filemoon|vimeos|ok\.ru|voe)[^"'\s<>\\]*/gi) || [];
+        var unique = [];
+        urls.forEach(function(u) { if (unique.indexOf(u) === -1) unique.push(u); });
+        console.log('URLs de reproductor en SoloLatino:', unique.slice(0, 15));
     })
     .catch(function(err) {
         console.log('Error:', err.message, err.cause || '');
