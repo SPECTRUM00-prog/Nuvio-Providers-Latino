@@ -375,20 +375,22 @@ function unpackFromHtml(html) {
 function detectQualityFromUrl(url) {
     if (!url) return null;
     var u = url.toLowerCase();
+
     if (u.indexOf(".urlset") !== -1) {
         var m = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
         if (m) {
             var tags = m[1].split(",");
-            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1) return "1080p";
-            if (tags.indexOf("h") !== -1) return "720p";
-            if (tags.indexOf("n") !== -1) return "480p";
+            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("h") !== -1) return "1080p";
+            if (tags.indexOf("n") !== -1) return "720p";
+            if (tags.indexOf("l") !== -1) return "480p";
         }
     }
-    if (u.indexOf("master.m3u8") !== -1) return "1080p";
-    if (/(?:^|[^a-z0-9])(?:4k|2160p?)(?:[^a-z0-9]|$)/i.test(u)) return "4K";
-    if (/(?:^|[^a-z0-9])1080p?(?:[^a-z0-9]|$)/i.test(u)) return "1080p";
-    if (/(?:^|[^a-z0-9])720p?(?:[^a-z0-9]|$)/i.test(u)) return "720p";
-    if (/(?:^|[^a-z0-9])480p?(?:[^a-z0-9]|$)/i.test(u)) return "480p";
+
+    var pathOnly = u.split("?")[0].split("#")[0];
+    if (/(?:^|[^a-z0-9])(4k|2160p?)(?:[^a-z0-9]|$)/i.test(pathOnly)) return "4K";
+    if (/(?:^|[^a-z0-9])1080p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "1080p";
+    if (/(?:^|[^a-z0-9])720p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "720p";
+    if (/(?:^|[^a-z0-9])480p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "480p";
     return null;
 }
 
