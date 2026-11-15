@@ -2,7 +2,7 @@
  * Provider: SoloLatino (Películas y Series en Latino, Castellano y Sub)
  * Dominio: https://sololatino.net (Backend Laravel + player.pelisserieshoy.com)
  * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / NuvioTV Firestick Safe)
- * Reglas NuvioTV: Cero AbortController, reenvío de cookies de sesión, resolución rápida.
+ * Reglas NuvioTV: Cero AbortController, Handshake a=1 -> a=click -> a=2, resolución rápida.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -19,7 +19,7 @@ var DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// 1. HELPERS DE RED & TIMEOUT (NUVIO-TV SAFE)
+// 1. HELPERS DE RED & FORM (HERMES / TV SAFE)
 // ==========================================
 
 function fetchWithTimeout(url, options, timeoutMs) {
@@ -249,33 +249,12 @@ function extractPlayerTokens(html) {
 }
 
 function resolvePelisSeriesHoy(playerUrl, pageUrl) {
-    var sessionCookie = "";
-
     return fetchWithTimeout(playerUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": pageUrl },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
     .then(function(res) {
         if (!res || !res.ok) return [];
-
-        // Capturar cookies de sesión emitidas por player.pelisserieshoy.com
-        if (res.headers) {
-            if (typeof res.headers.getSetCookie === "function") {
-                var rawCookies = res.headers.getSetCookie();
-                if (Array.isArray(rawCookies) && rawCookies.length > 0) {
-                    var cList = [];
-                    for (var c = 0; c < rawCookies.length; c++) {
-                        cList.push(rawCookies[c].split(";")[0]);
-                    }
-                    sessionCookie = cList.join("; ");
-                }
-            }
-            if (!sessionCookie && typeof res.headers.get === "function") {
-                var raw = res.headers.get("set-cookie");
-                if (raw) sessionCookie = raw.split(";")[0];
-            }
-        }
-
         return res.text();
     })
     .then(function(html) {
@@ -289,7 +268,6 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
         if (!tMatch || !qkMatch || !q9Match) return [];
 
         var tok = tMatch[1];
-        // Respaldo de _qc por regex de IMDb en la propia URL
         var idUrlMatch = playerUrl.match(/\/f\/([^?&/]+)/);
         var qc = qcMatch ? qcMatch[1] : (idUrlMatch ? idUrlMatch[1] : "");
 
@@ -312,26 +290,21 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
             params.tk = qt;
             params.ao = BASE_URL;
 
-            var sHeaders = {
-                "User-Agent": USER_AGENT,
-                "Content-Type": "application/x-www-form-urlencoded",
-                "Origin": PLAYER_HOST,
-                "Referer": playerUrl
-            };
-            if (sessionCookie) {
-                sHeaders["Cookie"] = sessionCookie;
-            }
-
             return fetchWithTimeout(PLAYER_HOST + "/s.php", {
                 method: "POST",
-                headers: sHeaders,
+                headers: {
+                    "User-Agent": USER_AGENT,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": PLAYER_HOST,
+                    "Referer": playerUrl
+                },
                 body: buildFormBody(params)
             }, NETWORK_TIMEOUT)
             .then(function(r) { return r && r.ok ? r.json() : null; })
             .catch(function() { return null; });
         }
 
-        // Listar opciones (a=1)
+        // PASO 1: Listar opciones (a=1)
         return postS({ a: "1" }).then(function(scan) {
             if (!scan) return [];
 
@@ -362,61 +335,64 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
 
             if (items.length === 0) return [];
 
-            // Resolver streams concurrentemente
-            var streamPromises = items.map(function(item) {
-                return postS({ a: "2", v: item.id, src: scan.src || "" })
-                    .then(function(d) {
-                        if (!d || !d.u) return null;
+            // PASO 2: Enviar a=click para autorizar la sesión antes de pedir los enlaces (a=2)
+            return postS({ a: "click", ts: "1" }).then(function() {
+                // PASO 3: Obtener enlaces de video (a=2)
+                var streamPromises = items.map(function(item) {
+                    return postS({ a: "2", v: item.id, src: scan.src || "" })
+                        .then(function(d) {
+                            if (!d || !d.u) return null;
 
-                        var rawU = d.u;
-                        var finalUrl = null;
-                        var isMp4 = d.type === "mp4" || rawU.indexOf("/p.php?v=") !== -1;
+                            var rawU = d.u;
+                            var finalUrl = null;
+                            var isMp4 = d.type === "mp4" || rawU.indexOf("/p.php?v=") !== -1;
 
-                        if (rawU.indexOf("/p.php") === 0) {
-                            finalUrl = PLAYER_HOST + rawU;
-                        } else if (rawU.indexOf("http") === 0 && d.sig) {
-                            finalUrl = PLAYER_HOST + "/p.php?url=" + encodeURIComponent(rawU) +
-                                       "&sig=" + encodeURIComponent(d.sig) +
-                                       (d.ctx ? "&ctx=" + encodeURIComponent(d.ctx) : "");
-                        } else if (rawU.indexOf("http") === 0) {
-                            finalUrl = rawU;
+                            if (rawU.indexOf("/p.php") === 0) {
+                                finalUrl = PLAYER_HOST + rawU;
+                            } else if (rawU.indexOf("http") === 0 && d.sig) {
+                                finalUrl = PLAYER_HOST + "/p.php?url=" + encodeURIComponent(rawU) +
+                                           "&sig=" + encodeURIComponent(d.sig) +
+                                           (d.ctx ? "&ctx=" + encodeURIComponent(d.ctx) : "");
+                            } else if (rawU.indexOf("http") === 0) {
+                                finalUrl = rawU;
+                            }
+
+                            if (!finalUrl) return null;
+
+                            var cleanLabel = item.label.replace(/[^\w\s+áéíóúñÁÉÍÓÚÑ.-]/g, "").trim() || "Servidor";
+                            var streamHeaders = { "User-Agent": USER_AGENT, "Referer": playerUrl };
+                            var qual = isMp4 ? "720p" : detectQuality(rawU, cleanLabel);
+
+                            return {
+                                dedupKey: rawU,
+                                name: "SoloLatino",
+                                title: qual + " · " + item.lang + " · " + cleanLabel + (isMp4 ? " (MP4)" : ""),
+                                quality: qual,
+                                url: finalUrl,
+                                headers: streamHeaders
+                            };
+                        })
+                        .catch(function() { return null; });
+                });
+
+                return Promise.all(streamPromises).then(function(resolved) {
+                    var out = [];
+                    var seenKeys = [];
+                    for (var r = 0; r < resolved.length; r++) {
+                        var st = resolved[r];
+                        if (st && seenKeys.indexOf(st.dedupKey) === -1) {
+                            seenKeys.push(st.dedupKey);
+                            out.push({
+                                name: st.name,
+                                title: st.title,
+                                quality: st.quality,
+                                url: st.url,
+                                headers: st.headers
+                            });
                         }
-
-                        if (!finalUrl) return null;
-
-                        var cleanLabel = item.label.replace(/[^\w\s+áéíóúñÁÉÍÓÚÑ.-]/g, "").trim() || "Servidor";
-                        var streamHeaders = { "User-Agent": USER_AGENT, "Referer": playerUrl };
-                        var qual = isMp4 ? "720p" : detectQuality(rawU, cleanLabel);
-
-                        return {
-                            dedupKey: rawU,
-                            name: "SoloLatino",
-                            title: qual + " · " + item.lang + " · " + cleanLabel + (isMp4 ? " (MP4)" : ""),
-                            quality: qual,
-                            url: finalUrl,
-                            headers: streamHeaders
-                        };
-                    })
-                    .catch(function() { return null; });
-            });
-
-            return Promise.all(streamPromises).then(function(resolved) {
-                var out = [];
-                var seenKeys = [];
-                for (var r = 0; r < resolved.length; r++) {
-                    var st = resolved[r];
-                    if (st && seenKeys.indexOf(st.dedupKey) === -1) {
-                        seenKeys.push(st.dedupKey);
-                        out.push({
-                            name: st.name,
-                            title: st.title,
-                            quality: st.quality,
-                            url: st.url,
-                            headers: st.headers
-                        });
                     }
-                }
-                return out;
+                    return out;
+                });
             });
         });
     })
