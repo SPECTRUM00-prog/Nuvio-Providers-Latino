@@ -1,5 +1,5 @@
 /**
- * Volcado de fuentes/embeds dentro de player.pelisserieshoy.com/f/tt0133093?et=...
+ * Inspección del Script #5 (57 KB) en player.pelisserieshoy.com
  * Ejecutar: node providers/inspect_all_providers.js
  */
 
@@ -26,35 +26,25 @@ var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, l
         },
         body: JSON.stringify({ t: tok })
     });
-    var json = await apiRes.json();
-    var pRes = await fetch(json.url, {
-        headers: { 'User-Agent': UA, 'Referer': 'https://sololatino.net/pelicula/matrix' },
-        redirect: 'follow'
+    var apiJson = await apiRes.json();
+    console.log('Player URL:', apiJson.url);
+
+    var pRes = await fetch(apiJson.url, {
+        headers: { 'User-Agent': UA, 'Referer': 'https://sololatino.net/pelicula/matrix' }
     });
     var pHtml = await pRes.text();
 
-    console.log('Bytes totales:', pHtml.length);
+    // Localizar el Script #5 (donde aparece const _t =)
+    var idxT = pHtml.indexOf('const _t =');
+    var script5 = idxT !== -1 ? pHtml.slice(idxT - 40, pHtml.indexOf('</script>', idxT)) : pHtml;
+    console.log('Tamaño bloque Script #5:', script5.length);
 
-    var urls = pHtml.match(/https?:\/\/[^"'\s<>\\]+/gi) || [];
-    var uniq = [];
-    urls.forEach(function(u) {
-        if (u.indexOf('w3.org') === -1 && u.indexOf('googleapis') === -1 && u.indexOf('tmdb.org') === -1 && uniq.indexOf(u) === -1) {
-            uniq.push(u);
+    ['fetch(', 'XMLHttpRequest', 'loadSource', '_t', '/api/', 'crypto', 'decrypt', 'm3u8', 'sources'].forEach(function(term) {
+        console.log('\n=== BUSCANDO "' + term + '" ===');
+        var i = 0, c = 0;
+        while ((i = script5.indexOf(term, i)) !== -1 && c < 3) {
+            console.log('[' + (++c) + '] ' + script5.slice(Math.max(0, i - 60), i + 260).replace(/\s+/g, ' '));
+            i += term.length;
         }
     });
-    console.log('\n[URLS ENCONTRADAS]:', uniq.slice(0, 20));
-
-    var scripts = pHtml.match(/<script\b[^>]*>([\s\S]*?)<\/script>/gi) || [];
-    console.log('\n[SCRIPTS TOTALES]:', scripts.length);
-    scripts.forEach(function(s, i) {
-        if (s.indexOf('isAllowedHost') !== -1) return;
-        if (s.length > 80) {
-            console.log('\n--- Script #' + (i + 1) + ' (' + s.length + ' chars) ---');
-            console.log(s.slice(0, 1400));
-        }
-    });
-
-    // Buscar cualquier arreglo/JSON/atob/fetch dentro del HTML
-    var b64 = pHtml.match(/aHR0c(?:HM6|Dov)[A-Za-z0-9+/=_-]+/g) || [];
-    console.log('\n[TOKENS BASE64 aHR0c...]:', b64.slice(0, 10));
 })();
