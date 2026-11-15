@@ -1,15 +1,15 @@
 /**
- * Provider: SoloLatino (Películas, Series y Anime en Latino, Castellano y Sub)
+ * Provider: SoloLatino (Películas y Series en Latino, Castellano y Sub)
  * Dominio: https://sololatino.net (Backend Laravel + player.pelisserieshoy.com)
- * Motor: 100% Cadenas de Promesas (Hermes / FireTV / QuickJS / NuvioTV 1.1.0 Safe)
- * Reglas Hermes: ES5 estricto, fetchWithTimeout puro con clearTimeout, resolución M3U8 dinámica.
+ * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / NuvioTV 1.1.0 Safe)
+ * Reglas NuvioTV: Cero AbortController, fetchWithTimeout limpio con clearTimeout.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://sololatino.net";
 var PLAYER_HOST = "https://player.pelisserieshoy.com";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-var NETWORK_TIMEOUT = 2600;
+var NETWORK_TIMEOUT = 2500;
 
 var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -19,7 +19,7 @@ var DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// 1. HELPERS DE RED, FORM & STRINGS (HERMES SAFE)
+// 1. HELPERS DE RED & TIMEOUT (HERMES / TV SAFE)
 // ==========================================
 
 function fetchWithTimeout(url, options, timeoutMs) {
@@ -134,99 +134,33 @@ function scoreCandidate(slugOrTitle, titles, year) {
         }
     }
 
-    if (score > 0 && year) {
-        var targetYear = parseInt(year, 10);
-        var yearMatches = cleanS.match(/\b(19\d{2}|20\d{2})\b/g);
-        if (yearMatches && yearMatches.length > 0) {
-            var hasExactOrClose = false;
-            var hasForeignMismatch = false;
-            for (var y = 0; y < yearMatches.length; y++) {
-                var yrStr = yearMatches[y];
-                var foundY = parseInt(yrStr, 10);
-                if (Math.abs(foundY - targetYear) <= 1) {
-                    hasExactOrClose = true;
-                } else {
-                    var inTitle = false;
-                    for (var k = 0; k < titles.length; k++) {
-                        if (String(titles[k]).indexOf(yrStr) !== -1) {
-                            inTitle = true;
-                            break;
-                        }
-                    }
-                    if (!inTitle) hasForeignMismatch = true;
-                }
-            }
-            if (hasExactOrClose) score += 20;
-            else if (hasForeignMismatch) score -= 45;
-        }
+    if (score > 0 && year && slugWords.indexOf(String(year)) !== -1) {
+        score += 20;
     }
 
     return score;
 }
 
 // ==========================================
-// 2. DETECCIÓN DINÁMICA DE CALIDAD (REGLA 6)
+// 2. DETECCIÓN DINÁMICA DE CALIDAD
 // ==========================================
 
-function detectQualityFromUrl(url) {
-    if (!url) return null;
-    var u = url.toLowerCase();
-
-    if (u.indexOf(".urlset") !== -1) {
-        var urlsetMatch = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
-        if (urlsetMatch) {
-            var tags = urlsetMatch[1].split(",");
+function detectQuality(url, label) {
+    var text = ((url || "") + " " + (label || "")).toLowerCase();
+    if (text.indexOf(".urlset") !== -1) {
+        var m = text.match(/[,_]([a-z,]+)[,_]\.urlset/);
+        if (m) {
+            var tags = m[1].split(",");
             if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1) return "1080p";
             if (tags.indexOf("h") !== -1) return "720p";
             if (tags.indexOf("n") !== -1) return "480p";
-            if (tags.indexOf("l") !== -1) return "360p";
         }
     }
-
-    var pathOnly = u.split("?")[0].split("#")[0];
-    if (/(?:^|[^a-z0-9])(4k|2160p?)(?:[^a-z0-9]|$)/i.test(pathOnly)) return "4K";
-    if (/(?:^|[^a-z0-9])1080p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "1080p";
-    if (/(?:^|[^a-z0-9])720p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "720p";
-    if (/(?:^|[^a-z0-9])480p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "480p";
-    return null;
-}
-
-function probeM3u8Quality(m3u8Url, headers, hintUrl) {
-    var fastQ = detectQualityFromUrl(hintUrl || m3u8Url);
-    if (fastQ) return Promise.resolve(fastQ);
-
-    return fetchWithTimeout(m3u8Url, {
-        headers: headers || { "User-Agent": USER_AGENT },
-        redirect: "follow"
-    }, 2500)
-    .then(function(res) {
-        if (!res || !res.ok) return "720p";
-        return res.text();
-    })
-    .then(function(text) {
-        if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
-            return "720p";
-        }
-        var maxW = 0;
-        var maxH = 0;
-        var resRegex = /RESOLUTION=(\d+)x(\d+)/gi;
-        var match;
-        while ((match = resRegex.exec(text)) !== null) {
-            var w = parseInt(match[1], 10);
-            var h = parseInt(match[2], 10);
-            if (w > maxW) maxW = w;
-            if (h > maxH) maxH = h;
-        }
-
-        if (maxW >= 3840 || maxH >= 2160) return "4K";
-        if (maxW >= 1920 || maxH >= 1080) return "1080p";
-        if (maxW >= 1280 || maxH >= 720) return "720p";
-        if (maxW >= 854 || maxH >= 480) return "480p";
-        return "720p";
-    })
-    .catch(function() {
-        return "720p";
-    });
+    if (/(?:^|[^a-z0-9])(?:4k|2160p?)(?:[^a-z0-9]|$)/i.test(text)) return "4K";
+    if (/(?:^|[^a-z0-9])1080p?(?:[^a-z0-9]|$)/i.test(text)) return "1080p";
+    if (/(?:^|[^a-z0-9])720p?(?:[^a-z0-9]|$)/i.test(text)) return "720p";
+    if (/(?:^|[^a-z0-9])480p?(?:[^a-z0-9]|$)/i.test(text)) return "480p";
+    return "720p";
 }
 
 // ==========================================
@@ -372,11 +306,8 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
             .catch(function() { return null; });
         }
 
-        return Promise.all([
-            postS({ a: "1" }),
-            postS({ a: "click", ts: "1" })
-        ]).then(function(initRes) {
-            var scan = initRes[0];
+        // Una sola llamada directa para listar opciones (sin roundtrips innecesarios)
+        return postS({ a: "1" }).then(function(scan) {
             if (!scan) return [];
 
             var items = [];
@@ -387,8 +318,7 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
                 var langCode = langOrder[l];
                 var arr = langsMap[langCode];
                 if (Array.isArray(arr)) {
-                    var limit = langCode === "LAT" ? 2 : (langCode === "SUB" ? 1 : 0);
-                    if (items.length === 0 && langCode === "ESP") limit = 1;
+                    var limit = langCode === "LAT" ? 2 : 1;
                     for (var i = 0; i < Math.min(limit, arr.length); i++) {
                         if (arr[i] && arr[i][1]) {
                             items.push({ lang: langCode, label: arr[i][0] || "Stream", id: arr[i][1] });
@@ -407,6 +337,7 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
 
             if (items.length === 0) return [];
 
+            // Resolver streams concurrentemente
             var streamPromises = items.map(function(item) {
                 return postS({ a: "2", v: item.id, src: scan.src || "" })
                     .then(function(d) {
@@ -430,29 +361,16 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
 
                         var cleanLabel = item.label.replace(/[^\w\s+áéíóúñÁÉÍÓÚÑ.-]/g, "").trim() || "Servidor";
                         var streamHeaders = { "User-Agent": USER_AGENT, "Referer": playerUrl };
+                        var qual = isMp4 ? "720p" : detectQuality(rawU, cleanLabel);
 
-                        if (isMp4) {
-                            return {
-                                dedupKey: rawU,
-                                name: "SoloLatino",
-                                title: "720p · " + item.lang + " · " + cleanLabel + " (MP4)",
-                                quality: "720p",
-                                url: finalUrl,
-                                headers: streamHeaders
-                            };
-                        }
-
-                        return probeM3u8Quality(finalUrl, streamHeaders, rawU).then(function(q) {
-                            var qual = q || "720p";
-                            return {
-                                dedupKey: rawU,
-                                name: "SoloLatino",
-                                title: qual + " · " + item.lang + " · " + cleanLabel,
-                                quality: qual,
-                                url: finalUrl,
-                                headers: streamHeaders
-                            };
-                        });
+                        return {
+                            dedupKey: rawU,
+                            name: "SoloLatino",
+                            title: qual + " · " + item.lang + " · " + cleanLabel + (isMp4 ? " (MP4)" : ""),
+                            quality: qual,
+                            url: finalUrl,
+                            headers: streamHeaders
+                        };
                     })
                     .catch(function() { return null; });
             });
