@@ -77,16 +77,19 @@ function shortenUrl(urlStr, maxLen = 88) {
  */
 function auditHermesCompatibility(filePath) {
     const raw = fs.readFileSync(filePath, 'utf8');
-    const noComments = raw
-        .replace(/\/\*[\s\S]*?\*\//g, ' ')
-        .replace(/(^|[^:\\])\/\/.*$/gm, '$1 ');
 
-    const hasBackticks = noComments.includes('`');
-
-    const stripped = noComments
-        .replace(/'(?:\\.|[^'\\\r\n])*'/g, "''")
-        .replace(/"(?:\\.|[^"\\\r\n])*"/g, '""')
-        .replace(/([=(:,!&|?;\s])\/(?:\\.|[^/\\\r\n])+\/[gimsuy]*/g, '$1 ');
+    let hasBackticks = false;
+    const stripped = raw.replace(
+        /('(?:\\.|[^'\\\r\n])*')|("(?:\\.|[^"\\\r\n])*")|(`(?:\\[\s\S]|[^`\\])*`)|(\/\*[\s\S]*?\*\/)|(\/\/[^\r\n]*)/g,
+        function(match, sq, dq, tpl, blockCmt, lineCmt) {
+            if (blockCmt || lineCmt) return ' ';
+            if (tpl) {
+                hasBackticks = true;
+                return '""';
+            }
+            return '""';
+        }
+    ).replace(/([=(:,!&|?;\s])\/(?:\\.|[^/\\\r\n])+\/[gimsuy]*/g, '$1 ');
 
     const issues = [];
     if (/\b(?:async|await|yield)\b/.test(stripped) || /function\s*\*/.test(stripped)) {
@@ -101,8 +104,11 @@ function auditHermesCompatibility(filePath) {
     if (/\.(?:includes|startsWith|endsWith|padStart|padEnd)\s*\(/.test(stripped)) {
         issues.push('Usa includes/startsWith/padStart (prohibido en Hermes)');
     }
-    if (!/\bfetchWithTimeout\b/.test(stripped) || !/\bclearTimeout\b/.test(stripped)) {
-        issues.push('Falta fetchWithTimeout o clearTimeout');
+    if (!/\bfetchWithTimeout\b/.test(stripped)) {
+        issues.push('Falta fetchWithTimeout');
+    }
+    if (!/\bclearTimeout\b/.test(stripped)) {
+        issues.push('Falta clearTimeout');
     }
 
     return {
