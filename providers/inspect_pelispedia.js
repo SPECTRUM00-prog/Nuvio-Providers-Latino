@@ -1,95 +1,66 @@
 /**
- * Verificación de /vidurl/ en PelisPedia y rutas de ficha en SoloLatino.
+ * Inspección del player interno /vidurl/ en PelisPedia y rutas de SoloLatino.
  * Ejecutar: node providers/inspect_pelispedia.js
  */
 
 var https = require('https');
-var urlModule = require('url');
-
 var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-function request(targetUrl, referer) {
+function get(url, referer) {
     return new Promise(function(resolve, reject) {
-        var parsed = urlModule.parse(targetUrl);
-        var req = https.request({
-            hostname: parsed.hostname,
-            path: parsed.path,
-            method: 'GET',
+        https.get(url, {
             headers: {
                 'User-Agent': USER_AGENT,
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Referer': referer || (parsed.protocol + '//' + parsed.host + '/')
-            },
-            timeout: 7000
-        }, function(res) {
-            if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
-                var nextUrl = res.headers.location.indexOf('http') === 0
-                    ? res.headers.location
-                    : (parsed.protocol + '//' + parsed.host + res.headers.location);
-                console.log('   [302/301] -> ' + nextUrl);
-                return resolve(request(nextUrl, targetUrl));
+                'Referer': referer || 'https://pelispedia.mov/'
             }
+        }, function(res) {
             var chunks = [];
             res.on('data', function(c) { chunks.push(c); });
             res.on('end', function() {
-                resolve({
-                    status: res.statusCode,
-                    finalUrl: targetUrl,
-                    body: Buffer.concat(chunks).toString('utf8')
-                });
+                resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') });
             });
-        });
-        req.on('timeout', function() { req.destroy(); reject(new Error('TIMEOUT')); });
-        req.on('error', reject);
-        req.end();
+        }).on('error', reject);
     });
 }
 
-function run() {
-    console.log('>>> 1. SIGUIENDO https://pelispedia.mov/vidurl/tt0133093/');
-    return request('https://pelispedia.mov/vidurl/tt0133093/', 'https://pelispedia.mov/pelicula/matrix')
-        .then(function(res) {
-            console.log('[VIDURL STATUS]:', res.status, '| Final:', res.finalUrl, '| Bytes:', res.body.length);
-            var urls = res.body.match(/https?:\/\/[^"'\s<>\\]+/gi) || [];
-            var clean = [];
-            urls.forEach(function(u) {
-                if (clean.indexOf(u) === -1 && u.indexOf('w3.org') === -1 && u.indexOf('googleapis') === -1) clean.push(u);
+console.log('>>> 1. INSPECCIONANDO VARIABLES DEL PLAYER EN pelispedia.mov/vidurl/tt0133093/');
+get('https://pelispedia.mov/vidurl/tt0133093/', 'https://pelispedia.mov/pelicula/matrix')
+    .then(function(res) {
+        var html = res.body;
+        console.log('Has POW_CHALLENGE:', html.indexOf('POW_CHALLENGE') !== -1);
+        console.log('Has POW_DIFFICULTY:', html.indexOf('POW_DIFFICULTY') !== -1);
+        console.log('Has POW_SALT:', html.indexOf('POW_SALT') !== -1);
+        console.log('Has dataLink:', html.indexOf('dataLink') !== -1);
+
+        var dlIdx = html.indexOf('dataLink');
+        if (dlIdx !== -1) {
+            console.log('\n[CONTEXTO DE dataLink / POW]:');
+            console.log(html.slice(Math.max(0, dlIdx - 350), dlIdx + 700));
+        } else {
+            // Buscar otro script de datos
+            var scripts = html.match(/<script\b[^>]*>[\s\S]*?<\/script>/gi) || [];
+            console.log('Scripts encontrados:', scripts.length);
+            scripts.forEach(function(s, i) {
+                if (s.indexOf('sortedEmbeds') !== -1 || s.indexOf('file') !== -1 || s.indexOf('link') !== -1) {
+                    console.log('\n--- Script candidato #' + (i + 1) + ' ---');
+                    console.log(s.slice(0, 900));
+                }
             });
-            console.log('[URLS EN /vidurl/]:', clean.slice(0, 15));
-            if (clean.length === 0 || res.body.length < 2500) {
-                console.log('[BODY SNIPPET]:\n' + res.body.slice(0, 1200));
-            }
-        })
-        .catch(function(err) {
-            console.log('[VIDURL ERROR]:', err.message, err.cause || '');
-        })
-        .then(function() {
-            console.log('\n>>> 2. RASTREANDO ENLACES DE MATRIX EN SOLOLATINO');
-            return request('https://sololatino.net/?s=matrix');
-        })
-        .then(function(sRes) {
-            var m, allLinks = [];
-            var hrefRegex = /href=["'](https?:\/\/sololatino\.net\/[^"']*matrix[^"']*)["']/gi;
-            while ((m = hrefRegex.exec(sRes.body)) !== null) {
-                if (allLinks.indexOf(m[1]) === -1) allLinks.push(m[1]);
-            }
-            console.log('[ENLACES CON "matrix" EN SOLOLATINO]:', allLinks.slice(0, 8));
+        }
 
-            if (allLinks.length > 0) {
-                return request(allLinks[0], 'https://sololatino.net/').then(function(mRes) {
-                    console.log('[FICHA SOLOLATINO STATUS]:', mRes.status, '| Bytes:', mRes.body.length);
-                    var iframes = mRes.body.match(/<iframe[^>]+(?:src|data-src)=["']([^"']+)["']/gi) || [];
-                    console.log('[IFRAMES EN FICHA SOLOLATINO]:', iframes);
-                    var embedUrls = mRes.body.match(/https?:\/\/[^"'\s<>\\]*(?:embed69|xupalace|vidhide|streamwish|hlswish|filemoon|vimeos|ok\.ru|voe|dood|player)[^"'\s<>\\]*/gi) || [];
-                    var u = [];
-                    embedUrls.forEach(function(x) { if (u.indexOf(x) === -1) u.push(x); });
-                    console.log('[URLS EMBED EN SOLOLATINO]:', u.slice(0, 12));
-                });
+        console.log('\n>>> 2. REVISANDO ENLACES REALES EN sololatino.net/?s=matrix');
+        return get('https://sololatino.net/?s=matrix', 'https://sololatino.net/');
+    })
+    .then(function(sRes) {
+        var matches = sRes.body.match(/href=["']https?:\/\/sololatino\.net\/[^"']+["']/gi) || [];
+        var filtered = [];
+        matches.forEach(function(m) {
+            if (m.indexOf('/pelicula') !== -1 || m.indexOf('/serie') !== -1 || m.indexOf('/anime') !== -1) {
+                if (filtered.indexOf(m) === -1) filtered.push(m);
             }
-        })
-        .catch(function(err) {
-            console.log('[SOLOLATINO ERROR]:', err.message, err.cause || '');
         });
-}
-
-run();
+        console.log('Enlaces de catálogo en SoloLatino:', filtered.slice(0, 12));
+    })
+    .catch(function(err) {
+        console.log('Error:', err.message, err.cause || '');
+    });
