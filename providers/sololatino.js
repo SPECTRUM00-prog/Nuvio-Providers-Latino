@@ -1,15 +1,15 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
- * Motor: Criptografía PoW Dinámica + AES-256-CBC en JS Puro (Zero-Dependencies)
- * Compatible con Android TV y FireTV (Hermes / QuickJS - 100% Promise Chains)
- * Resolvers: VidHide (morencius), StreamWish (playerwish / hglink)
+ * Motor: Criptografía PoW / LINK_CHALLENGE + AES-256-CBC en JS Puro
+ * Optimizado: Entrada rápida vía /vidurl/ (sin esperas de Anubis) + StreamWish playerwish
+ * Compatible con Android TV y FireTV (Hermes / QuickJS - 100% NuvioTV Safe)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var FAST_URL = "https://pelispedia.mov";
 var BASE_URL = "https://embed69.org";
-var MIRROR_URL = "https://pelispedia.mov";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-var NETWORK_TIMEOUT = 2800;
+var NETWORK_TIMEOUT = 2500;
 
 // ==========================================
 // 1. HELPERS DE RED & STRINGS (HERMES SAFE)
@@ -108,7 +108,7 @@ function solvePoW(challengeStr, difficulty) {
     var fullBytes = difficulty >> 1;
     var hasHalfByte = (difficulty & 1) === 1;
 
-    for (var nonce = 0; nonce < 300000; nonce++) {
+    for (var nonce = 0; nonce < 200000; nonce++) {
         var n = nonce, nDigits = 0, tempN = n;
         do { nDigits++; tempN = (tempN / 10) | 0; } while (tempN > 0);
 
@@ -330,7 +330,7 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
 }
 
 // ==========================================
-// 4. DESEMPAQUETADOR DEAN EDWARDS
+// 4. DESEMPAQUETADOR DEAN EDWARDS MULTI-BLOQUE
 // ==========================================
 
 function unpackFromHtml(html) {
@@ -386,11 +386,11 @@ function detectQualityFromUrl(url) {
         }
     }
 
-    var pathOnly = u.split("?")[0].split("#")[0];
-    if (/(?:^|[^a-z0-9])(4k|2160p?)(?:[^a-z0-9]|$)/i.test(pathOnly)) return "4K";
-    if (/(?:^|[^a-z0-9])1080p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "1080p";
-    if (/(?:^|[^a-z0-9])720p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "720p";
-    if (/(?:^|[^a-z0-9])480p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "480p";
+    if (u.indexOf("master.m3u8") !== -1) return "1080p";
+    if (/(?:^|[^a-z0-9])(?:4k|2160p?)(?:[^a-z0-9]|$)/i.test(u)) return "4K";
+    if (/(?:^|[^a-z0-9])1080p?(?:[^a-z0-9]|$)/i.test(u)) return "1080p";
+    if (/(?:^|[^a-z0-9])720p?(?:[^a-z0-9]|$)/i.test(u)) return "720p";
+    if (/(?:^|[^a-z0-9])480p?(?:[^a-z0-9]|$)/i.test(u)) return "480p";
     return null;
 }
 
@@ -403,7 +403,7 @@ function probeM3u8Quality(m3u8Url, headers) {
     return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    }, 2500)
+    }, 2000)
     .then(function(res) {
         if (!res || !res.ok) return "720p";
         return res.text();
@@ -466,7 +466,7 @@ function resolveVidHide(url) {
 
                 var hdrs = { "User-Agent": USER_AGENT, "Referer": finalUrl };
                 return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
-                    return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: hdrs };
+                    return { url: streamUrl, quality: q || "1080p", server: "VidHide", headers: hdrs };
                 });
             }
             return null;
@@ -477,7 +477,6 @@ function resolveVidHide(url) {
 
 function resolveStreamWish(url) {
     var targetUrl = url;
-    // Reescribir a playerwish.com para evitar error SSL de hlswish.com
     if (
         targetUrl.indexOf("hglink") !== -1 ||
         targetUrl.indexOf("hanerix") !== -1 ||
@@ -503,7 +502,7 @@ function resolveStreamWish(url) {
         return res.text().then(function(html) {
             var streamUrl = null;
             var cleanHtml = html.replace(/\\\//g, "/");
-            var directMatch = cleanHtml.match(/(?:file|sources|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
+            var directMatch = cleanHtml.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
                               cleanHtml.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
             if (directMatch) streamUrl = directMatch[1];
 
@@ -519,7 +518,7 @@ function resolveStreamWish(url) {
             if (streamUrl) {
                 var hdrs = { "User-Agent": USER_AGENT, "Referer": finalUrl };
                 return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
-                    return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: hdrs };
+                    return { url: streamUrl, quality: q || "1080p", server: "StreamWish", headers: hdrs };
                 });
             }
             return null;
@@ -579,7 +578,7 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
 }
 
 // ==========================================
-// 8. OBTENER Y DESCIFRAR EMBEDS (CON RESPALDO)
+// 8. OBTENER Y DESCIFRAR EMBEDS
 // ==========================================
 
 function fetchAndDecryptUrl(targetUrl) {
@@ -605,13 +604,14 @@ function fetchAndDecryptUrl(targetUrl) {
 
         var aesKey = null;
 
-        // Soporte Dual: Modo 1 (LINK_CHALLENGE sin Anubis) / Modo 2 (POW_CHALLENGE)
+        // Modo 1 (Rápido): LINK_CHALLENGE (sin Anubis)
         var linkC = html.match(/(?:const|let|var)\s+LINK_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
         var linkS = html.match(/(?:const|let|var)\s+LINK_SALT\s*=\s*['"]([^'"]+)['"]/i);
 
         if (linkC) {
             aesKey = sha256(linkC[1] + (linkS ? linkS[1] : ""));
         } else {
+            // Modo 2: PoW tradicional
             var cMatch = html.match(/(?:const|let|var)\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
             var dMatch = html.match(/(?:const|let|var)\s+POW_DIFFICULTY\s*=\s*(\d+)/i);
             var sMatch = html.match(/(?:const|let|var)\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/i);
@@ -671,10 +671,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         var candidateUrls = [];
         for (var k = 0; k < targetKeys.length; k++) {
             var key = targetKeys[k];
-            // 1. Ruta directa embed69 (tu motor original que vuela en TV)
+            // 1. Entrada rápida directa sin Anubis
+            candidateUrls.push(FAST_URL + "/vidurl/" + key + "/");
+            // 2. Respaldo directo tradicional
             candidateUrls.push(BASE_URL + "/f/" + key);
-            // 2. Respaldo directo en pelispedia.mov (mismo dataLink pero sin Anubis)
-            candidateUrls.push(MIRROR_URL + "/vidurl/" + key + "/");
         }
 
         function tryNextEndpoint(idx) {
