@@ -3,6 +3,12 @@
  * Motor: AniList GraphQL + Algoritmo Universal Split-Cour y Continuo
  * Resolvers: Desu (1080p), VidHide, StreamWish (playerwish / hgcloud), Filemoon, Mixdrop, MP4Upload, Streamtape
  * Versión Restaurada y Estable: Basada en la arquitectura del 8 de Noviembre (100% Firestick / NuvioTV Safe)
+ * v2.4-TVFIX (2026-11): Adaptativo sin setTimeout. El runtime QuickJS de NuvioTV
+ *   (dokar quickjs-kt 1.0.5 + polyfill de PluginRuntime.kt) NO define setTimeout/clearTimeout.
+ *   Todo helper que lo usa rechaza al instante y el provider devuelve 0 streams SOLO en TV.
+ *   Ahora: si no hay timer (TV), fetch directo con presupuesto global Date.now();
+ *   si hay timer (Hermes móvil / PC / Node), se conserva el timeout por llamada.
+ *   Marcador de versión: buscar en logcat tag "Plugin:" el texto [JKAnime][v2.4-tvfix].
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -18,10 +24,38 @@ var DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// 1. HELPERS DE RED & STRINGS (HERMES SAFE)
+// 1. HELPERS DE RED & STRINGS (HERMES SAFE + NUVIOTV QUICKJS SAFE)
+// En NuvioTV (QuickJS) NO existe setTimeout: OkHttp ya corta cada petición
+// (30s connect / 30s read) y el runtime mata el plugin a los 60s.
 // ==========================================
 
+var HAS_TIMER = (typeof setTimeout === "function");
+var GLOBAL_BUDGET_MS = 45000;
+var START_TS = 0;
+
+function tvNow() {
+    try { return Date.now(); } catch (e2) { return 0; }
+}
+
+function tvElapsed() {
+    if (!START_TS) return 0;
+    return tvNow() - START_TS;
+}
+
+function tvRemaining() {
+    var left = GLOBAL_BUDGET_MS - tvElapsed();
+    return (left > 0) ? left : 0;
+}
+
 function textWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.text !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.text().then(function(t) { return t; }).catch(function() { return null; });
+        } catch (e3) {
+            return Promise.resolve(null);
+        }
+    }
     var limit = timeoutMs || 3000;
     return new Promise(function(resolve, reject) {
         var done = false;
@@ -41,6 +75,14 @@ function textWithTimeout(res, timeoutMs) {
 }
 
 function jsonWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.json !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.json().then(function(j) { return j; }).catch(function() { return null; });
+        } catch (e4) {
+            return Promise.resolve(null);
+        }
+    }
     var limit = timeoutMs || 3000;
     return new Promise(function(resolve, reject) {
         var done = false;
@@ -60,7 +102,21 @@ function jsonWithTimeout(res, timeoutMs) {
 }
 
 function fetchWithTimeout(url, options, timeoutMs) {
+    if (tvRemaining() < 400) return Promise.resolve(null);
+
+    if (!HAS_TIMER) {
+        // NuvioTV: sin timer JS posible. OkHttp (30s/30s) es el límite real.
+        try {
+            return fetch(url, options || {})
+                .then(function(res) { return res; })
+                .catch(function() { return null; });
+        } catch (e5) {
+            return Promise.resolve(null);
+        }
+    }
+
     var limit = timeoutMs || NETWORK_TIMEOUT;
+    if (limit > tvRemaining()) limit = tvRemaining();
     var timer = null;
 
     var timeoutPromise = new Promise(function(_, reject) {
@@ -452,7 +508,7 @@ function searchJKAnime(query) {
 function resolveStreamWish(url) {
     var targetUrl = url;
     // Soporte seguro de mirrors activos para StreamWish
-    if (targetUrl.indexOf("hlswish.com") !== -1 || targetUrl.indexOf("hglink.to") !== -1) {
+    if (targetUrl.indexOf("hlswish.com") !== -1 || targetUrl.indexOf("hglink.to") !== -1 || targetUrl.indexOf("flaswish.com") !== -1) {
         var idMatch = targetUrl.match(/\/(?:e|f|v)\/([a-zA-Z0-9]+)/);
         if (idMatch) targetUrl = "https://playerwish.com/e/" + idMatch[1];
     } else if (targetUrl.indexOf("/f/") !== -1 || targetUrl.indexOf("/v/") !== -1) {
@@ -711,7 +767,10 @@ function extractStreamsFromEpisodePage(pageUrl) {
 // ==========================================
 
 function getStreams(tmdbId, mediaType, season, episode) {
-    var isMovie = mediaType === "movie";
+    START_TS = tvNow();
+    var mt = String(mediaType || "").toLowerCase();
+    var isMovie = (mt === "movie" || mt === "pelicula");
+    console.log("[JKAnime][v2.4-tvfix] getStreams tmdbId=" + tmdbId + " type=" + mt + " s=" + season + " e=" + episode + " timer=" + HAS_TIMER);
     var sParsed = parseInt(season, 10);
     var sNum = isNaN(sParsed) ? 1 : sParsed;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
@@ -723,6 +782,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return jsonWithTimeout(res, 3000);
         })
         .then(function(meta) {
+            if (!meta) return [];
             var isAnimation = false;
             if (meta.genres && Array.isArray(meta.genres)) {
                 for (var g = 0; g < meta.genres.length; g++) {
@@ -922,8 +982,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                function tryBatch(urls, batchSize) {
-                    if (urls.length === 0) return Promise.resolve([]);
+                console.log("[JKAnime][v2.4-tvfix] intentando " + uniquePageUrls.length + " paginas de episodio");
+
+                function tryBatch(urls, batchSize, batchNum) {
+                    if (!urls || urls.length === 0) return Promise.resolve([]);
+                    if (batchNum >= 2) return Promise.resolve([]);
+                    if (tvRemaining() < 6000) return Promise.resolve([]);
                     var currentBatch = urls.slice(0, batchSize);
                     var remaining = urls.slice(batchSize);
 
@@ -935,11 +999,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                         for (var r = 0; r < results.length; r++) {
                             if (results[r] && results[r].length > 0) return results[r];
                         }
-                        return tryBatch(remaining, batchSize);
+                        return tryBatch(remaining, batchSize, batchNum + 1);
                     });
                 }
 
-                return tryBatch(uniquePageUrls, 3);
+                return tryBatch(uniquePageUrls, 3, 0);
             });
         })
         .catch(function() {
