@@ -1,5 +1,5 @@
 /**
- * Ver la definición de nt() y VideoEmbedPage (Zc) en Byse
+ * Volcado completo del flujo de reproducción en VideoEmbedPage (Zc)
  * Ejecutar: node providers/inspect_pelisforte.js
  */
 
@@ -20,26 +20,16 @@ function get(url) {
 (async function() {
     var code = await get(CHUNK_URL);
 
-    // 1. Buscar dónde se define nt antes de Et
-    var etIdx = code.indexOf('Et=async');
-    if (etIdx !== -1) {
-        // Buscar hacia atrás la asignación de nt =
-        var subBefore = code.slice(Math.max(0, etIdx - 1500), etIdx);
-        console.log('=== CÓDIGO JUSTO ANTES DE Et (Definición de nt / dt / wt) ===');
-        var ntMatches = subBefore.match(/(?:const|let|var|function)\s+nt\b[\s\S]{1,250}/g) || [];
-        if (ntMatches.length > 0) {
-            ntMatches.forEach(function(m) { console.log(m.replace(/\s+/g, ' ')); });
-        } else {
-            // Mostrar últimos 600 caracteres antes de Et
-            console.log(subBefore.slice(-600).replace(/\s+/g, ' '));
-        }
-    }
+    var zcIdx = code.indexOf('Zc=()=>');
+    if (zcIdx === -1) zcIdx = code.indexOf('Zc=');
 
-    // 2. Buscar VideoEmbedPage (Zc)
-    var zcIdx = code.indexOf('Zc=');
-    if (zcIdx === -1) zcIdx = code.indexOf('function Zc');
-    if (zcIdx !== -1) {
-        console.log('\n=== COMPONENTE VideoEmbedPage (Zc) ===');
-        console.log(code.slice(zcIdx, zcIdx + 1200).replace(/\s+/g, ' '));
-    }
+    console.log('=== FLUJO DE CARGA EN VideoEmbedPage (Zc) ===');
+    var zcBody = code.slice(zcIdx, zcIdx + 3500);
+    // Mostrar fragmentos formateados
+    console.log(zcBody.replace(/\s+/g, ' '));
+
+    // Buscar llamadas a Et, en o APIs dentro de Zc
+    console.log('\n=== LLAMADAS A FUNCIONES DENTRO DE Zc ===');
+    var calls = zcBody.match(/(?:await\s+|then\s*\(\s*)(?:Et|en|si|oi|ct|hr|[a-zA-Z0-9_$]+)\s*\([^)]*\)/g) || [];
+    console.log(calls.slice(0, 10));
 })();
