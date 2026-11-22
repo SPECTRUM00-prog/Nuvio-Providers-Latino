@@ -2,7 +2,7 @@
  * Provider: SoloLatino (Películas y Series en Latino, Castellano y Sub)
  * Dominio: https://sololatino.net (Catálogo 100% Nativo de SoloLatino)
  * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / NuvioTV Firestick Safe)
- * Reglas Hermes: Cero AbortController, Cero dependencias externas, resolución secuencial anti-WAF.
+ * Versión Fusionada y Blindada: Handshake anti-WAF, timeouts en body, tolerancia regional de año.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -10,6 +10,10 @@ var BASE_URL = "https://sololatino.net";
 var PLAYER_HOST = "https://player.pelisserieshoy.com";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var NETWORK_TIMEOUT = 2500;
+var GLOBAL_DEADLINE_MS = 9000;
+var PROBE_HLS_QUALITY = true;
+var HLS_PROBE_TIMEOUT = 1300;
+var MAX_HLS_PROBES = 2;
 
 var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -41,6 +45,48 @@ function fetchWithTimeout(url, options, timeoutMs) {
     });
 }
 
+function bodyWithTimeout(res, method, timeoutMs) {
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    return new Promise(function(resolve, reject) {
+        var timer = setTimeout(function() {
+            reject(new Error("Body timeout tras " + limit + "ms"));
+        }, limit);
+        try {
+            res[method]().then(function(data) {
+                clearTimeout(timer);
+                resolve(data);
+            }).catch(function(err) {
+                clearTimeout(timer);
+                reject(err);
+            });
+        } catch (e) {
+            clearTimeout(timer);
+            reject(e);
+        }
+    });
+}
+
+function textWithTimeout(res, timeoutMs) {
+    return bodyWithTimeout(res, "text", timeoutMs);
+}
+
+function jsonWithTimeout(res, timeoutMs) {
+    return bodyWithTimeout(res, "json", timeoutMs);
+}
+
+function isResOk(res) {
+    return !!res && (res.ok === true || (typeof res.status === "number" && res.status >= 200 && res.status < 300));
+}
+
+function ctxTimeLeft(ctx) {
+    if (!ctx || !ctx.deadline) return 60000;
+    return ctx.deadline - Date.now();
+}
+
+function ctxExpired(ctx) {
+    return !!(ctx && ctx.deadline && Date.now() >= ctx.deadline);
+}
+
 function padZero(num) {
     var n = parseInt(num, 10) || 0;
     return n < 10 ? "0" + n : String(n);
@@ -67,6 +113,15 @@ function fnv1aHash(str) {
         }
     }
     return (h >>> 0).toString(16);
+}
+
+function toAbsolute(href, base) {
+    if (!href) return "";
+    var h = String(href).replace(/^\s+|\s+$/g, "");
+    if (h.indexOf("https://") === 0 || h.indexOf("http://") === 0) return h;
+    if (h.indexOf("//") === 0) return "https:" + h;
+    if (h.indexOf("/") === 0) return base + h;
+    return base + "/" + h;
 }
 
 function normalizeSlug(text) {
@@ -139,15 +194,43 @@ function scoreCandidate(slugOrTitle, titles, year) {
         }
     }
 
-    if (score > 0 && year && slugWords.indexOf(String(year)) !== -1) {
-        score += 20;
+    // Regla 6: Bonificar año exacto. Tolerancia de ±1 año para estrenos LATAM vs EE. UU.
+    // Solo penaliza (-25) si el año difiere en más de 1 año (protege secuelas/remakes).
+    if (score > 0 && year) {
+        var targetYear = parseInt(year, 10);
+        if (slugWords.indexOf(String(year)) !== -1) {
+            score += 20;
+        } else {
+            for (var y = 0; y < slugWords.length; y++) {
+                var wY = slugWords[y];
+                if (/^(19|20)\d{2}$/.test(wY)) {
+                    var foundY = parseInt(wY, 10);
+                    if (Math.abs(foundY - targetYear) > 1) {
+                        var titleHasYear = false;
+                        for (var ti = 0; ti < titles.length; ti++) {
+                            var titleWords = cleanText(titles[ti]).split(/\s+/);
+                            if (titleWords.indexOf(wY) !== -1) {
+                                titleHasYear = true;
+                                break;
+                            }
+                        }
+                        if (!titleHasYear) {
+                            score = Math.max(0, score - 25);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
     }
 
     return score;
 }
 
 function detectQuality(url, label) {
-    var text = ((url || "") + " " + (label || "")).toLowerCase();
+    var cleanUrl = String(url || "").split("?")[0].split("#")[0].toLowerCase();
+    var text = cleanUrl + " " + String(label || "").toLowerCase();
+
     if (text.indexOf(".urlset") !== -1) {
         var m = text.match(/[,_]([a-z,]+)[,_]\.urlset/);
         if (m) {
@@ -165,20 +248,56 @@ function detectQuality(url, label) {
     return "720p";
 }
 
+function classifyResolution(w, h) {
+    if (w >= 3800 || h >= 2100) return "4K";
+    if (w >= 1800 || h >= 1000) return "1080p";
+    if (w >= 1200 || h >= 690) return "720p";
+    if (w >= 800 || h >= 420) return "480p";
+    return "Auto";
+}
+
+function probeHlsQuality(url, referer) {
+    return fetchWithTimeout(url, {
+        headers: { "User-Agent": USER_AGENT, "Referer": referer }
+    }, HLS_PROBE_TIMEOUT)
+        .then(function(res) {
+            if (!isResOk(res)) return "";
+            return textWithTimeout(res, HLS_PROBE_TIMEOUT);
+        })
+        .then(function(txt) {
+            if (!txt) return "";
+            var re = /RESOLUTION=(\d+)x(\d+)/gi;
+            var bestW = 0;
+            var bestH = 0;
+            var m;
+            while ((m = re.exec(txt)) !== null) {
+                var w = parseInt(m[1], 10);
+                var h = parseInt(m[2], 10);
+                if (w * h > bestW * bestH) {
+                    bestW = w;
+                    bestH = h;
+                }
+            }
+            if (bestH > 0) return classifyResolution(bestW, bestH);
+            return "";
+        })
+        .catch(function() { return ""; });
+}
+
 // ==========================================
 // 2. EXTRACCIÓN DE FICHA Y PLAYER LARAVEL
 // ==========================================
 
-function fetchDirectPage(urls) {
+function fetchDirectPage(urls, ctx) {
     if (!urls || urls.length === 0) return Promise.resolve(null);
 
     function tryNext(idx) {
-        if (idx >= urls.length) return Promise.resolve(null);
+        if (idx >= urls.length || ctxExpired(ctx)) return Promise.resolve(null);
         var u = urls[idx];
         return fetchWithTimeout(u, { headers: DEFAULT_HEADERS, redirect: "follow" }, NETWORK_TIMEOUT)
             .then(function(res) {
-                if (!res || !res.ok) return tryNext(idx + 1);
-                return res.text().then(function(html) {
+                if (!isResOk(res)) return tryNext(idx + 1);
+                return textWithTimeout(res).then(function(html) {
                     if (html && html.indexOf("data-player-token") !== -1) {
                         return { url: res.url || u, html: html };
                     }
@@ -191,24 +310,24 @@ function fetchDirectPage(urls) {
     return tryNext(0);
 }
 
-function searchSoloLatino(queries, isMovie, titles, year) {
+function searchSoloLatino(queries, isMovie, titles, year, ctx) {
     function tryQuery(idx) {
-        if (idx >= queries.length) return Promise.resolve(null);
+        if (idx >= queries.length || ctxExpired(ctx)) return Promise.resolve(null);
         var searchUrl = BASE_URL + "/buscar?q=" + encodeURIComponent(queries[idx]);
 
         return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
-            .then(function(res) { return res && res.ok ? res.text() : ""; })
+            .then(function(res) { return isResOk(res) ? textWithTimeout(res) : ""; })
             .then(function(html) {
                 if (!html) return tryQuery(idx + 1);
 
                 var prefix = isMovie ? "/pelicula/" : "/serie/";
-                var regex = /href=["'](https?:\/\/sololatino\.net\/(?:pelicula|serie)\/[^"'\s<>]+)["']/gi;
+                var regex = /href=["']((?:(?:https?:)?\/\/sololatino\.net)?\/(?:pelicula|serie)\/[^"'\s<>]+)["']/gi;
                 var candidates = [];
                 var seen = [];
                 var m;
 
                 while ((m = regex.exec(html)) !== null) {
-                    var link = m[1];
+                    var link = toAbsolute(m[1], BASE_URL);
                     if (link.indexOf(prefix) === -1 || seen.indexOf(link) !== -1) continue;
                     seen.push(link);
 
@@ -254,19 +373,21 @@ function extractPlayerTokens(html) {
     return { csrf: csrf, tokens: tokens };
 }
 
-function resolvePelisSeriesHoy(playerUrl, pageUrl) {
+function resolvePelisSeriesHoy(playerUrl, pageUrl, ctx) {
+    if (ctxExpired(ctx)) return Promise.resolve([]);
+
     return fetchWithTimeout(playerUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": pageUrl },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
     .then(function(res) {
-        if (!res || !res.ok) return [];
-        return res.text();
+        if (!isResOk(res)) return [];
+        return textWithTimeout(res);
     })
     .then(function(html) {
         if (!html) return [];
 
-        var tMatch = html.match(/const\s+_t\s*=\s*['"]([^'"]+)['"]/);
+        var tMatch = html.match(/const\s+_t\s*=\s*'([^']+)'/);
         var qcMatch = html.match(/var\s+_qc\s*=\s*['"]([^'"]+)['"]/);
         var qkMatch = html.match(/(?:var|let|const)\s+_qk\s*=\s*(\[[^\]]+\])/);
         var q9Match = html.match(/function\s+_q9\s*\(\)\s*\{\s*return\s+([^;]+);/);
@@ -306,8 +427,14 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
                 },
                 body: buildFormBody(params)
             }, NETWORK_TIMEOUT)
-            .then(function(r) { return r && r.ok ? r.json() : null; })
+            .then(function(r) { return isResOk(r) ? jsonWithTimeout(r) : null; })
             .catch(function() { return null; });
+        }
+
+        function fallbackQuality(isMp4, rawU, cleanLabel) {
+            if (isMp4) return "720p";
+            if (rawU.indexOf("master.m3u8") !== -1) return "1080p";
+            return detectQuality(rawU, cleanLabel);
         }
 
         // PASO 1: Listar opciones disponibles
@@ -340,46 +467,68 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
             }
 
             if (items.length === 0) return [];
+            if (ctxExpired(ctx)) return [];
 
             // PASO 2: Autorizar sesión con a=click
             return postS({ a: "click", ts: "1" }).then(function() {
                 // PASO 3: Resolver SECUENCIALMENTE para que el WAF no devuelva 403
                 var results = [];
                 var seenKeys = [];
+                var seenUrls = [];
 
                 function resolveNext(idx) {
-                    if (idx >= items.length) return Promise.resolve(results);
+                    if (idx >= items.length || ctxExpired(ctx)) return Promise.resolve(results);
                     var item = items[idx];
 
                     return postS({ a: "2", v: item.id, src: scan.src || "" })
                         .then(function(d) {
                             if (d && d.u) {
-                                var rawU = d.u;
+                                var rawU = String(d.u);
                                 var finalUrl = null;
                                 var isMp4 = d.type === "mp4" || rawU.indexOf("/p.php?v=") !== -1;
 
                                 if (rawU.indexOf("/p.php") === 0) {
                                     finalUrl = PLAYER_HOST + rawU;
+                                } else if (rawU.indexOf("//") === 0) {
+                                    finalUrl = "https:" + rawU;
                                 } else if (rawU.indexOf("http") === 0 && d.sig) {
                                     finalUrl = PLAYER_HOST + "/p.php?url=" + encodeURIComponent(rawU) +
-                                               "&sig=" + encodeURIComponent(d.sig) +
-                                               (d.ctx ? "&ctx=" + encodeURIComponent(d.ctx) : "");
+                                               "&sig=" + encodeURIComponent(String(d.sig)) +
+                                               (d.ctx ? "&ctx=" + encodeURIComponent(String(d.ctx)) : "");
                                 } else if (rawU.indexOf("http") === 0) {
                                     finalUrl = rawU;
                                 }
 
-                                if (finalUrl && seenKeys.indexOf(rawU) === -1) {
-                                    seenKeys.push(rawU);
+                                if (finalUrl && seenKeys.indexOf(rawU) === -1 && seenUrls.indexOf(finalUrl) === -1) {
                                     var cleanLabel = item.label.replace(/[^\w\s+áéíóúñÁÉÍÓÚÑ.-]/g, "").trim() || "Servidor";
-                                    var qual = isMp4 ? "720p" : (rawU.indexOf("master.m3u8") !== -1 ? "1080p" : detectQuality(rawU, cleanLabel));
 
-                                    results.push({
-                                        name: "SoloLatino",
-                                        title: qual + " · " + item.lang + " · " + cleanLabel + (isMp4 ? " (MP4)" : ""),
-                                        quality: qual,
-                                        url: finalUrl,
-                                        headers: { "User-Agent": USER_AGENT, "Referer": playerUrl }
-                                    });
+                                    var canProbe = PROBE_HLS_QUALITY && !isMp4 &&
+                                        finalUrl.indexOf(".m3u8") !== -1 &&
+                                        ctx && typeof ctx.probes === "number" &&
+                                        ctx.probes < MAX_HLS_PROBES &&
+                                        ctxTimeLeft(ctx) > 2100;
+
+                                    var pushWithQuality = function(qual) {
+                                        seenKeys.push(rawU);
+                                        seenUrls.push(finalUrl);
+                                        results.push({
+                                            name: "SoloLatino",
+                                            title: qual + " · " + item.lang + " · " + cleanLabel + (isMp4 ? " (MP4)" : ""),
+                                            quality: qual,
+                                            url: finalUrl,
+                                            headers: { "User-Agent": USER_AGENT, "Referer": playerUrl }
+                                        });
+                                        return resolveNext(idx + 1);
+                                    };
+
+                                    if (canProbe) {
+                                        ctx.probes++;
+                                        return probeHlsQuality(finalUrl, playerUrl).then(function(detected) {
+                                            return pushWithQuality(detected || fallbackQuality(isMp4, rawU, cleanLabel));
+                                        });
+                                    }
+
+                                    return pushWithQuality(fallbackQuality(isMp4, rawU, cleanLabel));
                                 }
                             }
                             return resolveNext(idx + 1);
@@ -402,25 +551,35 @@ function resolvePelisSeriesHoy(playerUrl, pageUrl) {
 
 function getStreams(tmdbId, mediaType, season, episode) {
     var isMovie = mediaType === "movie";
-    var sNum = parseInt(season, 10) || 1;
-    var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
+
+    var tmdbIdStr = String(tmdbId === undefined || tmdbId === null ? "" : tmdbId).replace(/[^0-9]/g, "");
+    if (!tmdbIdStr) return Promise.resolve([]);
+
+    var sParsed = parseInt(season, 10);
+    var sNum = isNaN(sParsed) ? 1 : sParsed;
+    var eParsed = parseInt(episode, 10);
+    var eNum = isNaN(eParsed) ? 1 : eParsed;
     var epPadded = padZero(eNum);
 
-    var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
+    var ctx = { deadline: Date.now() + GLOBAL_DEADLINE_MS, probes: 0 };
+
+    var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbIdStr + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
     return fetchWithTimeout(tmdbUrl, null, 2500)
         .then(function(res) {
-            if (!res || !res.ok) throw new Error("TMDB HTTP Error");
-            return res.json();
+            if (!isResOk(res)) throw new Error("TMDB HTTP Error");
+            return jsonWithTimeout(res);
         })
         .then(function(meta) {
+            if (!meta) throw new Error("TMDB vacio");
+
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
-            var year = (isMovie ? meta.release_date : meta.first_air_date || "").slice(0, 4);
+            var year = ((isMovie ? meta.release_date : meta.first_air_date) || "").slice(0, 4);
 
             var titles = [];
             if (title) titles.push(title);
-            if (origTitle && origTitle !== title) titles.push(origTitle);
+            if (origTitle && titles.indexOf(origTitle) === -1) titles.push(origTitle);
 
             var altArr = (meta.alternative_titles && (meta.alternative_titles.results || meta.alternative_titles.titles)) || [];
             for (var i = 0; i < altArr.length; i++) {
@@ -454,26 +613,35 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            return fetchDirectPage(directUrls.slice(0, 4)).then(function(pageObj) {
+            return fetchDirectPage(directUrls.slice(0, 4), ctx).then(function(pageObj) {
                 if (pageObj) return pageObj;
 
-                return searchSoloLatino(searchQueries.slice(0, 3), isMovie, titles, year).then(function(foundBaseUrl) {
+                return searchSoloLatino(searchQueries.slice(0, 3), isMovie, titles, year, ctx).then(function(foundBaseUrl) {
                     if (!foundBaseUrl) return null;
-                    var finalUrl = isMovie
-                        ? foundBaseUrl
-                        : foundBaseUrl.replace(/\/$/, "") + "/temporada-" + sNum + "/episodio-" + eNum;
-                    return fetchDirectPage([finalUrl]);
+
+                    var cleanBase = foundBaseUrl.replace(/\/$/, "");
+                    if (isMovie) return fetchDirectPage([cleanBase], ctx);
+
+                    if (cleanBase.indexOf("/temporada-") !== -1 && cleanBase.indexOf("/episodio-") !== -1) {
+                        return fetchDirectPage([cleanBase], ctx);
+                    }
+
+                    return fetchDirectPage([
+                        cleanBase + "/temporada-" + sNum + "/episodio-" + eNum,
+                        cleanBase + "/temporada-" + sNum + "/episodio-" + epPadded
+                    ], ctx);
                 });
             });
         })
         .then(function(pageObj) {
             if (!pageObj) return [];
+            if (ctxExpired(ctx)) return [];
 
             var tokenInfo = extractPlayerTokens(pageObj.html);
             if (!tokenInfo) return [];
 
             function tryToken(tIdx) {
-                if (tIdx >= Math.min(2, tokenInfo.tokens.length)) return Promise.resolve(null);
+                if (tIdx >= Math.min(2, tokenInfo.tokens.length) || ctxExpired(ctx)) return Promise.resolve(null);
                 var tok = tokenInfo.tokens[tIdx].token;
 
                 return fetchWithTimeout(BASE_URL + "/api/player-url", {
@@ -489,7 +657,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     },
                     body: JSON.stringify({ t: tok })
                 }, NETWORK_TIMEOUT)
-                .then(function(res) { return res && res.ok ? res.json() : null; })
+                .then(function(res) { return isResOk(res) ? jsonWithTimeout(res) : null; })
                 .then(function(json) {
                     if (json && json.url && json.url.indexOf("pelisserieshoy.com") !== -1) {
                         return json.url;
@@ -501,7 +669,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             return tryToken(0).then(function(playerUrl) {
                 if (!playerUrl) return [];
-                return resolvePelisSeriesHoy(playerUrl, pageObj.url);
+                return resolvePelisSeriesHoy(playerUrl, pageObj.url, ctx);
             });
         })
         .catch(function() {
@@ -509,6 +677,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
         });
 }
 
-if (typeof module !== "undefined") {
+if (typeof module !== "undefined" && module.exports) {
     module.exports = { getStreams: getStreams };
 }
