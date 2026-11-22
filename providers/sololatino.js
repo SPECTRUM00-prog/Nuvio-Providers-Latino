@@ -1,15 +1,30 @@
 /**
- * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
- * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
+ * Plugin de SoloLatino (Peliculas y Series) para Nuvio Media Hub
+ * Motor: Criptografia PoW Dinamica + AES-256-CBC en JS Puro (Zero-Dependencies)
+ * Compatible con Android TV / FireTV (QuickJS + __native_fetch), Hermes y Node
+ * Resolvers: VidHide (morencius), StreamWish (playerwish / hglink)
+ *
+ * Cambios 1.1.1 (hardening NuvioTV):
+ *  - fetch(url, options || {}) + try/catch sincrono: el puente __native_fetch de
+ *    NuvioTV 1.1.1 puede rechazar opciones nulas o lanzar de forma sincrona.
+ *  - textWithTimeout / jsonWithTimeout: timeout tambien sobre el CUERPO
+ *    (headers 200 con cuerpo colgado ya no congelan el flujo).
+ *  - getStreams garantizado a devolver Promesa -> [] ante cualquier fallo.
+ *  - solvePoW: ruta rapida single-block (challenge corto) + ruta general
+ *    multi-bloque para challenges largos (>= 56 bytes) sin hash corrupto.
+ *  - Deduplicacion final por url (Regla 8).
+ *  - Ruta primaria embed69 + respaldo pelispedia.mov/vidurl (LINK_CHALLENGE),
+ *    ya que embed69.org responde 403 (WAF Anubis) a clientes no-navegador.
  */
 
-var TMDB_API_KEY = "095c75dc34801b38130d7b931e704a38";
+var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://embed69.org";
+var MIRROR_URL = "https://pelispedia.mov";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var NETWORK_TIMEOUT = 2800;
 
 // ==========================================
-// 1. HELPERS DE RED & STRINGS (HERMES SAFE)
+// 1. HELPERS DE RED & STRINGS (HERMES / QUICKJS SAFE)
 // ==========================================
 
 function fetchWithTimeout(url, options, timeoutMs) {
@@ -22,7 +37,18 @@ function fetchWithTimeout(url, options, timeoutMs) {
         }, limit);
     });
 
-    return Promise.race([fetch(url, options), timeoutPromise])
+    var fetchPromise = null;
+    try {
+        fetchPromise = fetch(url, options || {});
+        if (!fetchPromise || typeof fetchPromise.then !== "function") {
+            fetchPromise = Promise.reject(new Error("fetch sin promesa"));
+        }
+    } catch (eSync) {
+        if (timer) clearTimeout(timer);
+        fetchPromise = Promise.reject(eSync);
+    }
+
+    return Promise.race([fetchPromise, timeoutPromise])
         .then(function(res) {
             if (timer) clearTimeout(timer);
             return res;
@@ -33,9 +59,48 @@ function fetchWithTimeout(url, options, timeoutMs) {
         });
 }
 
+// Timeout sobre el CUERPO: un CDN puede responder headers 200 y colgarse enviando datos.
+function textWithTimeout(res, timeoutMs) {
+    var limit = timeoutMs || 3200;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.text().then(function(text) {
+                if (!done) { done = true; clearTimeout(timer); resolve(text); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
+function jsonWithTimeout(res, timeoutMs) {
+    var limit = timeoutMs || 3200;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.json().then(function(json) {
+                if (!done) { done = true; clearTimeout(timer); resolve(json); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
 function decodeB64ToBytes(b64) {
     var chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=";
-    var str = String(b64).replace(/-/g, "+").replace(/_/g, "/").replace(/[=]+$/, "");
+    var str = String(b64).replace(/-/g, "+").replace(/_/g, "/").replace(/[^A-Za-z0-9+/=]/g, "").replace(/[=]+$/, "");
     if (str.length % 4 === 1) return new Uint8Array(0);
     var output = [];
     for (var bc = 0, bs = 0, buffer, idx = 0; buffer = str.charAt(idx++); ~buffer && (bs = bc % 4 ? bs * 64 + buffer : buffer, bc++ % 4) ? output.push(255 & bs >> (-2 * bc & 6)) : 0) {
@@ -81,7 +146,7 @@ function utf8BytesToString(bytes) {
 }
 
 // ==========================================
-// 2. MOTOR SHA-256 ZERO-ALLOCATION (PoW)
+// 2. MOTOR SHA-256 (COMPRESOR REUTILIZABLE)
 // ==========================================
 
 var SHA256_K = [
@@ -95,7 +160,7 @@ var SHA256_K = [
     0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2
 ];
 
-function sha256Transform(H, W) {
+function sha256Compress(H, W) {
     var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
     for (var t = 0; t < 64; t++) {
         var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
@@ -112,84 +177,137 @@ function sha256Transform(H, W) {
     H[4] = (H[4] + e) | 0; H[5] = (H[5] + f) | 0; H[6] = (H[6] + g) | 0; H[7] = (H[7] + h) | 0;
 }
 
+function sha256Schedule(padded, offset, W) {
+    var t, g0, g1;
+    for (t = 0; t < 16; t++) W[t] = padded.getUint32(offset + t * 4, false);
+    for (t = 16; t < 64; t++) {
+        g0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
+        g1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
+        W[t] = (W[t - 16] + g0 + W[t - 7] + g1) | 0;
+    }
+}
+
+// Buffers pre-asignados para la ruta rapida del PoW (zero-allocation)
+var POW_W = new Uint32Array(64);
+var POW_H = [0, 0, 0, 0, 0, 0, 0, 0];
+var POW_BUFFER = new Uint8Array(128);
+var POW_VIEW = new DataView(POW_BUFFER.buffer);
+
+var SHA256_IV = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+
 function solvePoW(challengeStr, difficulty) {
     var cBytes = stringToUtf8Bytes(challengeStr);
+    var cLen = cBytes.length;
     var fullBytes = difficulty >> 1;
     var hasHalfByte = (difficulty & 1) === 1;
 
-    for (var nonce = 0; nonce < 300000; nonce++) {
-        var nStr = String(nonce);
-        var nBytes = stringToUtf8Bytes(nStr);
-        var totalLen = cBytes.length + nBytes.length;
+    // Ruta rapida: challenge + nonce caben en un solo bloque SHA-256 (totalLen <= 55)
+    if (cLen + 20 <= 55) {
+        for (var nonce = 0; nonce < 300000; nonce++) {
+            var n = nonce, nDigits = 0, tempN = n;
+            do { nDigits++; tempN = (tempN / 10) | 0; } while (tempN > 0);
 
-        var bitLen = totalLen * 8;
-        var newLen = (((totalLen + 8) >> 6) + 1) << 6;
+            var totalLen = cLen + nDigits;
+            POW_BUFFER.fill(0);
+            POW_BUFFER.set(cBytes, 0);
+
+            var pos = totalLen - 1;
+            tempN = n;
+            do {
+                POW_BUFFER[pos--] = 48 + (tempN % 10);
+                tempN = (tempN / 10) | 0;
+            } while (tempN > 0);
+
+            POW_BUFFER[totalLen] = 0x80;
+            POW_VIEW.setUint32(60, totalLen * 8, false);
+
+            sha256Schedule(POW_VIEW, 0, POW_W);
+
+            for (var hi = 0; hi < 8; hi++) POW_H[hi] = SHA256_IV[hi];
+            sha256Compress(POW_H, POW_W);
+
+            var h0 = POW_H[0] >>> 0;
+            var h1 = POW_H[1] >>> 0;
+
+            var match = true;
+            if (fullBytes >= 1 && (h0 >>> 24) !== 0) match = false;
+            if (match && fullBytes >= 2 && ((h0 >>> 16) & 0xff) !== 0) match = false;
+            if (match && fullBytes >= 3 && ((h0 >>> 8) & 0xff) !== 0) match = false;
+            if (match && fullBytes >= 4 && (h0 & 0xff) !== 0) match = false;
+            if (match && hasHalfByte) {
+                var shift = (3 - fullBytes) * 8 + 4;
+                var nibble = fullBytes < 4 ? (h0 >>> shift) & 0x0f : (h1 >>> 28);
+                if (nibble !== 0) match = false;
+            }
+
+            if (match) return nonce;
+        }
+        return -1;
+    }
+
+    // Ruta general multi-bloque: challenges largos (padding correcto para cualquier longitud)
+    for (var nonce2 = 0; nonce2 < 300000; nonce2++) {
+        var nStr = String(nonce2);
+        var nBytes = stringToUtf8Bytes(nStr);
+        var totalLen2 = cLen + nBytes.length;
+
+        var bitLen = totalLen2 * 8;
+        var newLen = (((totalLen2 + 8) >> 6) + 1) << 6;
         var padded = new Uint8Array(newLen);
         padded.set(cBytes, 0);
-        padded.set(nBytes, cBytes.length);
-        padded[totalLen] = 0x80;
+        padded.set(nBytes, cLen);
+        padded[totalLen2] = 0x80;
 
         var view = new DataView(padded.buffer);
         view.setUint32(newLen - 4, bitLen, false);
 
-        var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+        var H = [SHA256_IV[0], SHA256_IV[1], SHA256_IV[2], SHA256_IV[3], SHA256_IV[4], SHA256_IV[5], SHA256_IV[6], SHA256_IV[7]];
         var W = new Uint32Array(64);
 
         for (var b = 0; b < newLen; b += 64) {
-            for (var t = 0; t < 16; t++) W[t] = view.getUint32(b + t * 4, false);
-            for (var t = 16; t < 64; t++) {
-                var g0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
-                var g1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
-                W[t] = (W[t - 16] + g0 + W[t - 7] + g1) | 0;
-            }
-            sha256Transform(H, W);
+            sha256Schedule(view, b, W);
+            sha256Compress(H, W);
         }
 
-        var h0 = H[0] >>> 0;
-        var h1 = H[1] >>> 0;
+        var hh0 = H[0] >>> 0;
+        var hh1 = H[1] >>> 0;
 
-        var match = true;
-        if (fullBytes >= 1 && (h0 >>> 24) !== 0) match = false;
-        if (match && fullBytes >= 2 && ((h0 >>> 16) & 0xff) !== 0) match = false;
-        if (match && fullBytes >= 3 && ((h0 >>> 8) & 0xff) !== 0) match = false;
-        if (match && fullBytes >= 4 && (h0 & 0xff) !== 0) match = false;
-        if (match && hasHalfByte) {
-            var shift = (3 - fullBytes) * 8 + 4;
-            var nibble = fullBytes < 4 ? (h0 >>> shift) & 0x0f : (h1 >>> 28);
-            if (nibble !== 0) match = false;
+        var match2 = true;
+        if (fullBytes >= 1 && (hh0 >>> 24) !== 0) match2 = false;
+        if (match2 && fullBytes >= 2 && ((hh0 >>> 16) & 0xff) !== 0) match2 = false;
+        if (match2 && fullBytes >= 3 && ((hh0 >>> 8) & 0xff) !== 0) match2 = false;
+        if (match2 && fullBytes >= 4 && (hh0 & 0xff) !== 0) match2 = false;
+        if (match2 && hasHalfByte) {
+            var shift2 = (3 - fullBytes) * 8 + 4;
+            var nibble2 = fullBytes < 4 ? (hh0 >>> shift2) & 0x0f : (hh1 >>> 28);
+            if (nibble2 !== 0) match2 = false;
         }
 
-        if (match) return nonce;
+        if (match2) return nonce2;
     }
     return -1;
 }
 
 function sha256(input) {
     var bytes = typeof input === "string" ? stringToUtf8Bytes(input) : input;
-    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var H = [SHA256_IV[0], SHA256_IV[1], SHA256_IV[2], SHA256_IV[3], SHA256_IV[4], SHA256_IV[5], SHA256_IV[6], SHA256_IV[7]];
     var bitLen = bytes.length * 8;
     var newLen = (((bytes.length + 8) >> 6) + 1) << 6;
     var padded = new Uint8Array(newLen);
     padded.set(bytes);
     padded[bytes.length] = 0x80;
-
     var view = new DataView(padded.buffer);
     view.setUint32(newLen - 4, bitLen, false);
     var W = new Uint32Array(64);
 
     for (var i = 0; i < newLen; i += 64) {
-        for (var t = 0; t < 16; t++) W[t] = view.getUint32(i + t * 4, false);
-        for (var t = 16; t < 64; t++) {
-            var g0 = ((W[t - 15] >>> 7) | (W[t - 15] << 25)) ^ ((W[t - 15] >>> 18) | (W[t - 15] << 14)) ^ (W[t - 15] >>> 3);
-            var g1 = ((W[t - 2] >>> 17) | (W[t - 2] << 15)) ^ ((W[t - 2] >>> 19) | (W[t - 2] << 13)) ^ (W[t - 2] >>> 10);
-            W[t] = (W[t - 16] + g0 + W[t - 7] + g1) | 0;
-        }
-        sha256Transform(H, W);
+        sha256Schedule(view, i, W);
+        sha256Compress(H, W);
     }
 
     var out = new Uint8Array(32);
     var outView = new DataView(out.buffer);
-    for (var i = 0; i < 8; i++) outView.setUint32(i * 4, H[i], false);
+    for (var j = 0; j < 8; j++) outView.setUint32(j * 4, H[j], false);
     return out;
 }
 
@@ -217,7 +335,7 @@ var SBOX = new Uint8Array([
 ]);
 
 var INV_SBOX = new Uint8Array(256);
-for (var i = 0; i < 256; i++) INV_SBOX[SBOX[i]] = i;
+for (var i0 = 0; i0 < 256; i0++) INV_SBOX[SBOX[i0]] = i0;
 var RCON = [0x00, 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
 function gmult(a, b) {
@@ -302,8 +420,8 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
         }
         var pad = decrypted[decrypted.length - 1];
         if (pad < 1 || pad > 16) return null;
-        for (var i = decrypted.length - pad; i < decrypted.length; i++) {
-            if (decrypted[i] !== pad) return null;
+        for (var k = decrypted.length - pad; k < decrypted.length; k++) {
+            if (decrypted[k] !== pad) return null;
         }
         return utf8BytesToString(decrypted.slice(0, decrypted.length - pad));
     } catch (e) {
@@ -312,11 +430,14 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
 }
 
 // ==========================================
-// 4. DESEMPAQUETADOR DEAN EDWARDS UNIVERSAL
+// 4. DESEMPAQUETADOR DEAN EDWARDS (MULTI-BLOQUE)
 // ==========================================
 
-function unpackDeanEdwards(p, a, c, k) {
+function unpackFromHtml(html) {
+    if (!html) return "";
+    var packRegex = /eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]+\)\{[\s\S]*?\}\((['"])([\s\S]+?)\1\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(['"])([\s\S]+?)\5\.split\(['"]\|['"]\)/g;
     var dict = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
+
     function decodeBase(val, radix) {
         var res = 0;
         for (var i = 0; i < val.length; i++) {
@@ -326,38 +447,51 @@ function unpackDeanEdwards(p, a, c, k) {
         }
         return res;
     }
-    return p.replace(/\b([0-9a-zA-Z]+)\b/g, function(token) {
-        var index = decodeBase(token, a);
-        if (isNaN(index) || index >= k.length) return token;
-        return (k[index] && k[index] !== "") ? k[index] : token;
-    });
+
+    var results = [];
+    var packMatch;
+
+    while ((packMatch = packRegex.exec(html)) !== null) {
+        var p = packMatch[2];
+        var a = parseInt(packMatch[3], 10);
+        var k = packMatch[6].split("|");
+
+        var unpacked = p.replace(/\b([0-9a-zA-Z]+)\b/g, function(token) {
+            var index = decodeBase(token, a);
+            if (isNaN(index) || index >= k.length) return token;
+            return (k[index] && k[index] !== "") ? k[index] : token;
+        });
+
+        results.push(unpacked.replace(/\\'/g, "'").replace(/\\"/g, '"').replace(/\\\//g, "/"));
+    }
+
+    return results.join("\n");
 }
 
 // ==========================================
-// 5. DETECCIÓN DINÁMICA DE CALIDAD REAL
+// 5. DETECCION DINAMICA DE CALIDAD (REGLA 7)
 // ==========================================
 
 function detectQualityFromUrl(url) {
     if (!url) return null;
-    var clean = url.split("?")[0].toLowerCase();
+    var u = url.toLowerCase();
 
-    // Detección en .urlset (VidHide / StreamWish)
-    if (clean.indexOf(".urlset") !== -1) {
-        var urlsetMatch = clean.match(/[_,]([a-z,]+)\.urlset/i);
-        if (urlsetMatch) {
-            var tags = urlsetMatch[1].split(",");
-            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("fhd") !== -1) return "1080p";
-            if (tags.indexOf("h") !== -1 || tags.indexOf("hd") !== -1) return "720p";
-            if (tags.indexOf("n") !== -1 || tags.indexOf("sd") !== -1) return "480p";
-            if (tags.indexOf("l") !== -1) return "360p";
+    if (u.indexOf(".urlset") !== -1) {
+        var m = u.match(/[,_]([a-z,]+)[,_]\.urlset/);
+        if (m) {
+            var tags = m[1].split(",");
+            // VidHide / StreamWish / Filemoon: x/o/h = 1080p, n = 720p, l = 480p
+            if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("h") !== -1) return "1080p";
+            if (tags.indexOf("n") !== -1) return "720p";
+            if (tags.indexOf("l") !== -1) return "480p";
         }
     }
 
-    if (/(?:[-_./]|^)(?:4k|2160p?)(?:[-_./]|$)/i.test(clean)) return "4K";
-    if (/(?:[-_./]|^)(?:1080p?|fhd)(?:[-_./]|$)/i.test(clean)) return "1080p";
-    if (/(?:[-_./]|^)(?:720p?)(?:[-_./]|$)/i.test(clean)) return "720p";
-    if (/(?:[-_./]|^)(?:480p?)(?:[-_./]|$)/i.test(clean)) return "480p";
-
+    var pathOnly = u.split("?")[0].split("#")[0];
+    if (/(?:^|[^a-z0-9])(4k|2160p?)(?:[^a-z0-9]|$)/i.test(pathOnly)) return "4K";
+    if (/(?:^|[^a-z0-9])1080p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "1080p";
+    if (/(?:^|[^a-z0-9])720p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "720p";
+    if (/(?:^|[^a-z0-9])480p?(?:[^a-z0-9]|$)/i.test(pathOnly)) return "480p";
     return null;
 }
 
@@ -373,30 +507,29 @@ function probeM3u8Quality(m3u8Url, headers) {
     }, 2500)
     .then(function(res) {
         if (!res || !res.ok) return "720p";
-        return res.text();
+        return textWithTimeout(res, 2500);
     })
     .then(function(text) {
         if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
-            if (m3u8Url.indexOf("1080") !== -1) return "1080p";
-            if (m3u8Url.indexOf("720") !== -1) return "720p";
             return "720p";
         }
-        var maxH = 0;
-        var resRegex = /RESOLUTION=\d+x(\d+)/gi;
+        var maxW = 0, maxH = 0;
+        var resRegex = /RESOLUTION=(\d+)x(\d+)/gi;
         var match;
         while ((match = resRegex.exec(text)) !== null) {
-            var h = parseInt(match[1], 10);
+            var w = parseInt(match[1], 10);
+            var h = parseInt(match[2], 10);
+            if (w > maxW) maxW = w;
             if (h > maxH) maxH = h;
         }
-        if (maxH >= 2160) return "4K";
-        if (maxH >= 1080) return "1080p";
-        if (maxH >= 720) return "720p";
-        if (maxH >= 480) return "480p";
+        // Evaluar ANCHO Y ALTO: 1920x804 panoramico = 1080p (Regla 7)
+        if (maxW >= 3840 || maxH >= 2160) return "4K";
+        if (maxW >= 1920 || maxH >= 1080) return "1080p";
+        if (maxW >= 1280 || maxH >= 720) return "720p";
+        if (maxW >= 854 || maxH >= 480) return "480p";
         return "720p";
     })
-    .catch(function() {
-        return "720p";
-    });
+    .catch(function() { return "720p"; });
 }
 
 // ==========================================
@@ -411,36 +544,54 @@ function resolveVidHide(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
-    .then(function(res) { return res ? res.text() : ""; })
-    .then(function(html) {
-        var streamUrl = null;
-        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-            var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) || unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
-            if (m3u8Match) streamUrl = m3u8Match[1] || m3u8Match[0];
-        }
+    .then(function(res) {
+        if (!res || !res.ok) return null;
+        var finalUrl = res.url || url;
+        return textWithTimeout(res, NETWORK_TIMEOUT).then(function(html) {
+            var streamUrl = null;
+            var unpacked = unpackFromHtml(html);
+            if (unpacked) {
+                var m3u8 = unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
+                           unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
+                if (m3u8) streamUrl = m3u8[1] || m3u8[0];
+            }
 
-        if (!streamUrl) {
-            var direct = html.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-            if (direct) streamUrl = direct[1].replace(/\\/g, "");
-        }
+            if (!streamUrl) {
+                var cleanHtml = html.replace(/\\\//g, "/");
+                var direct = cleanHtml.match(/(?:file|source|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+                if (direct) streamUrl = direct[1];
+            }
 
-        if (streamUrl) {
-            if (streamUrl.indexOf("/") === 0) streamUrl = host + streamUrl;
-            var hdrs = { "User-Agent": USER_AGENT, "Referer": url };
-            return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
-                return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: hdrs };
-            });
-        }
-        return null;
+            if (streamUrl) {
+                if (streamUrl.indexOf("//") === 0) streamUrl = "https:" + streamUrl;
+                else if (streamUrl.indexOf("/") === 0) streamUrl = host + streamUrl;
+
+                var hdrs = { "User-Agent": USER_AGENT, "Referer": finalUrl };
+                return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
+                    return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: hdrs };
+                });
+            }
+            return null;
+        });
     })
     .catch(function() { return null; });
 }
 
 function resolveStreamWish(url) {
     var targetUrl = url;
-    if (targetUrl.indexOf("/f/") !== -1 || targetUrl.indexOf("/v/") !== -1) {
+    // Reescribir a playerwish.com para evitar error SSL de hlswish.com / flaswish.com
+    if (
+        targetUrl.indexOf("hglink") !== -1 ||
+        targetUrl.indexOf("hanerix") !== -1 ||
+        targetUrl.indexOf("hlswish") !== -1 ||
+        targetUrl.indexOf("hgcloud") !== -1 ||
+        targetUrl.indexOf("streamwish") !== -1 ||
+        targetUrl.indexOf("strwish") !== -1 ||
+        targetUrl.indexOf("flaswish") !== -1
+    ) {
+        var idMatch = targetUrl.match(/\/(?:e|f|v)\/([a-zA-Z0-9]+)/);
+        if (idMatch) targetUrl = "https://playerwish.com/e/" + idMatch[1];
+    } else if (targetUrl.indexOf("/f/") !== -1 || targetUrl.indexOf("/v/") !== -1) {
         targetUrl = targetUrl.replace("/f/", "/e/").replace("/v/", "/e/");
     }
 
@@ -448,28 +599,33 @@ function resolveStreamWish(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
-    .then(function(res) { return res ? res.text() : ""; })
-    .then(function(html) {
-        var streamUrl = null;
-        var packMatch = html.match(/eval\(function\(p,a,c,k,e,[a-zA-Z0-9_]\)\{[\s\S]+?\}\('([\s\S]+?)',(\d+),(\d+),'([\s\S]+?)'\.split\('\|'\)/);
-        if (packMatch) {
-            var unpacked = unpackDeanEdwards(packMatch[1], parseInt(packMatch[2], 10), parseInt(packMatch[3], 10), packMatch[4].split("|"));
-            var m3u8 = unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
-            if (m3u8) streamUrl = m3u8[0];
-        }
+    .then(function(res) {
+        if (!res || !res.ok) return null;
+        var finalUrl = res.url || targetUrl;
+        return textWithTimeout(res, NETWORK_TIMEOUT).then(function(html) {
+            var streamUrl = null;
+            var cleanHtml = html.replace(/\\\//g, "/");
+            var directMatch = cleanHtml.match(/(?:file|sources|src)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
+                              cleanHtml.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
+            if (directMatch) streamUrl = directMatch[1];
 
-        if (!streamUrl) {
-            var directMatch = html.match(/(?:file|sources)\s*:\s*["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i);
-            if (directMatch) streamUrl = directMatch[1].replace(/\\/g, "");
-        }
+            if (!streamUrl) {
+                var unpacked = unpackFromHtml(html);
+                if (unpacked) {
+                    var m3u8 = unpacked.match(/["'](https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)["']/i) ||
+                               unpacked.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>]*/i);
+                    if (m3u8) streamUrl = m3u8[1] || m3u8[0];
+                }
+            }
 
-        if (streamUrl) {
-            var hdrs = { "User-Agent": USER_AGENT, "Referer": targetUrl };
-            return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
-                return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: hdrs };
-            });
-        }
-        return null;
+            if (streamUrl) {
+                var hdrs = { "User-Agent": USER_AGENT, "Referer": finalUrl };
+                return probeM3u8Quality(streamUrl, hdrs).then(function(q) {
+                    return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: hdrs };
+                });
+            }
+            return null;
+        });
     })
     .catch(function() { return null; });
 }
@@ -484,7 +640,7 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
     var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=external_ids";
 
     return fetchWithTimeout(url, null, 2500)
-        .then(function(res) { return res ? res.json() : null; })
+        .then(function(res) { return res && res.ok ? jsonWithTimeout(res, 2500) : null; })
         .then(function(data) {
             if (!data) return null;
             var imdbId = (data.external_ids && data.external_ids.imdb_id) || data.imdb_id || null;
@@ -495,7 +651,7 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
                 var epUrl = "https://api.themoviedb.org/3/tv/" + tmdbId + "/season/" + s + "/episode/" + e + "/external_ids?api_key=" + TMDB_API_KEY;
 
                 return fetchWithTimeout(epUrl, null, 2500)
-                    .then(function(epRes) { return epRes ? epRes.json() : null; })
+                    .then(function(epRes) { return epRes && epRes.ok ? jsonWithTimeout(epRes, 2500) : null; })
                     .then(function(epData) {
                         return {
                             title: data.name,
@@ -525,30 +681,22 @@ function getMediaData(tmdbId, mediaType, seasonNum, episodeNum) {
 }
 
 // ==========================================
-// 8. OBTENER Y DESCIFRAR EMBEDS DE EMBED69
+// 8. OBTENER Y DESCIFRAR EMBEDS (EMBED69 + RESPALDO)
 // ==========================================
 
-function fetchAndDecryptEmbed69(targetUrl) {
+function fetchAndDecryptUrl(targetUrl) {
     return fetchWithTimeout(targetUrl, {
-        headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
+        headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }
     }, NETWORK_TIMEOUT)
     .then(function(res) {
         if (!res || !res.ok) return "";
-        return res.text();
+        return textWithTimeout(res, NETWORK_TIMEOUT);
     })
     .then(function(html) {
         if (!html) return [];
 
-        var challengeMatch = html.match(/(?:const|let|var)\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
-        var difficultyMatch = html.match(/(?:const|let|var)\s+POW_DIFFICULTY\s*=\s*(\d+)/i);
-        var saltMatch = html.match(/(?:const|let|var)\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/i);
         var dataLinkMatch = html.match(/(?:let|var|const)\s+dataLink\s*=\s*(\[[\s\S]*?\])\s*;/i);
-
-        if (!challengeMatch || !dataLinkMatch) return [];
-
-        var challenge = challengeMatch[1];
-        var difficulty = parseInt(difficultyMatch ? difficultyMatch[1] : "3", 10);
-        var salt = saltMatch ? saltMatch[1] : "";
+        if (!dataLinkMatch) return [];
 
         var dataLink = null;
         try {
@@ -557,12 +705,26 @@ function fetchAndDecryptEmbed69(targetUrl) {
             return [];
         }
 
-        var nonce = solvePoW(challenge, difficulty);
-        if (nonce === -1) return [];
+        var aesKey = null;
 
-        var aesKey = sha256(challenge + nonce + salt);
+        // Soporte Dual: Modo 1 (LINK_CHALLENGE sin PoW) / Modo 2 (POW_CHALLENGE)
+        var linkC = html.match(/(?:const|let|var)\s+LINK_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
+        var linkS = html.match(/(?:const|let|var)\s+LINK_SALT\s*=\s*['"]([^'"]+)['"]/i);
+
+        if (linkC) {
+            aesKey = sha256(linkC[1] + (linkS ? linkS[1] : ""));
+        } else {
+            var cMatch = html.match(/(?:const|let|var)\s+POW_CHALLENGE\s*=\s*['"]([^'"]+)['"]/i);
+            var dMatch = html.match(/(?:const|let|var)\s+POW_DIFFICULTY\s*=\s*(\d+)/i);
+            var sMatch = html.match(/(?:const|let|var)\s+POW_SALT\s*=\s*['"]([^'"]+)['"]/i);
+            if (!cMatch) return [];
+
+            var nonce = solvePoW(cMatch[1], parseInt(dMatch ? dMatch[1] : "3", 10));
+            if (nonce === -1) return [];
+            aesKey = sha256(cMatch[1] + nonce + (sMatch ? sMatch[1] : ""));
+        }
+
         var embeds = [];
-
         for (var i = 0; i < dataLink.length; i++) {
             var file = dataLink[i];
             var lang = file.video_language === "LAT" ? "Latino" : file.video_language === "ESP" ? "Castellano" : "Subtitulado";
@@ -571,7 +733,7 @@ function fetchAndDecryptEmbed69(targetUrl) {
                     var embed = file.sortedEmbeds[j];
                     var decryptedUrl = decryptAES(embed.link, aesKey);
                     if (decryptedUrl) {
-                        embeds.push({ url: decryptedUrl, server: embed.servername, lang: lang });
+                        embeds.push({ url: decryptedUrl.replace(/`/g, "").trim(), server: embed.servername, lang: lang });
                     }
                 }
             }
@@ -582,12 +744,10 @@ function fetchAndDecryptEmbed69(targetUrl) {
 }
 
 // ==========================================
-// 9. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// 9. FUNCION PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
 
-function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-    if (!tmdbId) return Promise.resolve([]);
-
+function getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum) {
     var isTv = mediaType === "tv" || mediaType === "series";
     var s = seasonNum !== undefined && seasonNum !== null ? parseInt(seasonNum, 10) : 1;
     var e = episodeNum !== undefined && episodeNum !== null ? parseInt(episodeNum, 10) : 1;
@@ -595,40 +755,40 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     return getMediaData(tmdbId, mediaType, s, e).then(function(media) {
         if (!media || !media.imdbId || !/^tt\d+$/.test(media.imdbId)) return [];
 
-        var candidateUrls = [];
+        var targetKeys = [];
         if (!isTv) {
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
+            targetKeys.push(media.imdbId);
         } else {
             if (media.isEpisodeImdb) {
-                candidateUrls.push(BASE_URL + "/f/" + media.imdbId);
+                targetKeys.push(media.imdbId);
             }
             var epPadded = e < 10 ? "0" + e : String(e);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + epPadded);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-" + s + "x" + e);
-            candidateUrls.push(BASE_URL + "/f/" + media.imdbId + "-s" + s + "e" + epPadded);
+            targetKeys.push(media.imdbId + "-" + s + "x" + epPadded);
+            targetKeys.push(media.imdbId + "-" + s + "x" + e);
+            targetKeys.push(media.imdbId + "-s" + s + "e" + epPadded);
         }
 
-        var uniqueUrls = [];
-        for (var u = 0; u < candidateUrls.length; u++) {
-            if (uniqueUrls.indexOf(candidateUrls[u]) === -1) {
-                uniqueUrls.push(candidateUrls[u]);
-            }
+        var candidateUrls = [];
+        for (var k = 0; k < targetKeys.length; k++) {
+            var key = targetKeys[k];
+            // 1. Ruta directa embed69
+            candidateUrls.push(BASE_URL + "/f/" + key);
+            // 2. Respaldo pelispedia.mov/vidurl (LINK_CHALLENGE, sin WAF Anubis)
+            candidateUrls.push(MIRROR_URL + "/vidurl/" + key + "/");
         }
 
-        var fetchPromises = uniqueUrls.map(function(url) {
-            return fetchAndDecryptEmbed69(url);
-        });
+        function tryNextEndpoint(idx) {
+            if (idx >= candidateUrls.length) return Promise.resolve([]);
+            var target = candidateUrls[idx];
 
-        return Promise.all(fetchPromises).then(function(allEmbeds) {
-            var embedsToResolve = [];
-            for (var a = 0; a < allEmbeds.length; a++) {
-                if (allEmbeds[a] && allEmbeds[a].length > 0) {
-                    embedsToResolve = allEmbeds[a];
-                    break;
-                }
-            }
+            return fetchAndDecryptUrl(target).then(function(embeds) {
+                if (embeds && embeds.length > 0) return embeds;
+                return tryNextEndpoint(idx + 1);
+            });
+        }
 
-            if (embedsToResolve.length === 0) return [];
+        return tryNextEndpoint(0).then(function(embedsToResolve) {
+            if (!embedsToResolve || embedsToResolve.length === 0) return [];
 
             var resolvePromises = embedsToResolve.map(function(item) {
                 var urlLower = item.url.toLowerCase();
@@ -637,9 +797,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
                 if (sName.indexOf("vidhide") !== -1 || urlLower.indexOf("vidhide") !== -1 || urlLower.indexOf("morencius") !== -1 || urlLower.indexOf("minochinos") !== -1 || urlLower.indexOf("callistanise") !== -1) {
                     promise = resolveVidHide(item.url);
-                } else if (sName.indexOf("streamwish") !== -1 || urlLower.indexOf("streamwish") !== -1 || urlLower.indexOf("hglink") !== -1 || urlLower.indexOf("hlswish") !== -1 || urlLower.indexOf("flaswish") !== -1) {
+                } else if (sName.indexOf("streamwish") !== -1 || urlLower.indexOf("streamwish") !== -1 || urlLower.indexOf("hglink") !== -1 || urlLower.indexOf("hlswish") !== -1 || urlLower.indexOf("flaswish") !== -1 || urlLower.indexOf("playerwish") !== -1 || urlLower.indexOf("vibuxer") !== -1) {
                     promise = resolveStreamWish(item.url);
                 } else {
+                    // Servidores sin resolver propio (voe, etc.): se ignoran sin gastar peticiones
                     promise = Promise.resolve(null);
                 }
 
@@ -649,8 +810,8 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                             return {
                                 name: "SoloLatino",
                                 title: res.quality + " · " + res.server + " (" + item.lang + ")",
-                                quality: res.quality,
                                 url: res.url,
+                                quality: res.quality,
                                 headers: res.headers || {
                                     "User-Agent": USER_AGENT,
                                     "Referer": item.url
@@ -666,18 +827,29 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
             return Promise.all(resolvePromises).then(function(results) {
                 var streams = [];
+                var seen = {};
                 for (var i = 0; i < results.length; i++) {
-                    if (results[i]) streams.push(results[i]);
+                    if (results[i] && results[i].url && !seen[results[i].url]) {
+                        seen[results[i].url] = true;
+                        streams.push(results[i]);
+                    }
                 }
                 return streams;
             });
         });
-    }).catch(function() {
-        return [];
     });
 }
 
-if (typeof module !== "undefined") {
-    module.exports = { getStreams: getStreams };
+// Contrato: getStreams SIEMPRE devuelve una Promesa que resuelve a un Array.
+function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+    try {
+        if (!tmdbId) return Promise.resolve([]);
+        return getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum);
+    } catch (eSync) {
+        return Promise.resolve([]);
+    }
 }
 
+if (typeof module !== "undefined" && module.exports) {
+    module.exports = { getStreams: getStreams };
+} 
