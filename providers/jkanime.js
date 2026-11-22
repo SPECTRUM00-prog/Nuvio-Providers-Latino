@@ -2,13 +2,7 @@
  * Provider: JKAnime (Anime Series, Películas, Donghua)
  * Motor: AniList GraphQL + Algoritmo Universal Split-Cour y Continuo
  * Resolvers: Desu (1080p), VidHide, StreamWish (playerwish / hgcloud), Filemoon, Mixdrop, MP4Upload, Streamtape
- * Versión Restaurada y Estable: Basada en la arquitectura del 8 de Noviembre (100% Firestick / NuvioTV Safe)
- * v2.4-TVFIX (2026-11): Adaptativo sin setTimeout. El runtime QuickJS de NuvioTV
- *   (dokar quickjs-kt 1.0.5 + polyfill de PluginRuntime.kt) NO define setTimeout/clearTimeout.
- *   Todo helper que lo usa rechaza al instante y el provider devuelve 0 streams SOLO en TV.
- *   Ahora: si no hay timer (TV), fetch directo con presupuesto global Date.now();
- *   si hay timer (Hermes móvil / PC / Node), se conserva el timeout por llamada.
- *   Marcador de versión: buscar en logcat tag "Plugin:" el texto [JKAnime][v2.4-tvfix].
+ * Versión Restaurada y Blindada: Compatible con QuickJS (NuvioTV sin setTimeout) y Hermes (Móvil/Node)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -24,9 +18,7 @@ var DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// 1. HELPERS DE RED & STRINGS (HERMES SAFE + NUVIOTV QUICKJS SAFE)
-// En NuvioTV (QuickJS) NO existe setTimeout: OkHttp ya corta cada petición
-// (30s connect / 30s read) y el runtime mata el plugin a los 60s.
+// 1. HELPERS DE RED & STRINGS (HERMES / NUVIOTV SAFE)
 // ==========================================
 
 var HAS_TIMER = (typeof setTimeout === "function");
@@ -105,7 +97,6 @@ function fetchWithTimeout(url, options, timeoutMs) {
     if (tvRemaining() < 400) return Promise.resolve(null);
 
     if (!HAS_TIMER) {
-        // NuvioTV: sin timer JS posible. OkHttp (30s/30s) es el límite real.
         try {
             return fetch(url, options || {})
                 .then(function(res) { return res; })
@@ -249,10 +240,7 @@ function scoreCandidate(candidateSlug, titles, year) {
         }
     }
 
-    if (score > 0 && year && cleanS.indexOf(String(year)) !== -1) {
-        score += 20;
-    }
-
+    // No añadir bonus de año en JKAnime para que los slugs limpios no queden por debajo
     return score;
 }
 
@@ -296,12 +284,11 @@ function detectQualityFromUrl(url) {
     var clean = url.split("?")[0].toLowerCase();
 
     if (clean.indexOf(".urlset") !== -1) {
-        var urlsetMatch = clean.match(/[,_]([a-z,]+)[,_]\.urlset/);
+        var urlsetMatch = clean.match(/[_,]([a-z,]+)\.urlset/);
         if (urlsetMatch) {
             var tags = urlsetMatch[1].split(",");
-            // Mapa por familia (Regla 7): VidHide/StreamWish/Filemoon h=1080, n=720, l=480
-            var isVswFamily = clean.indexOf("vidhide") !== -1 || clean.indexOf("minochinos") !== -1 || clean.indexOf("morencius") !== -1 || clean.indexOf("callistanise") !== -1 || clean.indexOf("streamwish") !== -1 || clean.indexOf("hlswish") !== -1 || clean.indexOf("flaswish") !== -1 || clean.indexOf("playerwish") !== -1 || clean.indexOf("hglink") !== -1 || clean.indexOf("filemoon") !== -1;
-            if (isVswFamily) {
+            var isVsw = clean.indexOf("vidhide") !== -1 || clean.indexOf("minochinos") !== -1 || clean.indexOf("morencius") !== -1 || clean.indexOf("callistanise") !== -1 || clean.indexOf("streamwish") !== -1 || clean.indexOf("hlswish") !== -1 || clean.indexOf("flaswish") !== -1 || clean.indexOf("playerwish") !== -1 || clean.indexOf("hglink") !== -1 || clean.indexOf("filemoon") !== -1;
+            if (isVsw) {
                 if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("h") !== -1) return "1080p";
                 if (tags.indexOf("n") !== -1) return "720p";
                 if (tags.indexOf("l") !== -1) return "480p";
@@ -507,7 +494,6 @@ function searchJKAnime(query) {
 
 function resolveStreamWish(url) {
     var targetUrl = url;
-    // Soporte seguro de mirrors activos para StreamWish
     if (targetUrl.indexOf("hlswish.com") !== -1 || targetUrl.indexOf("hglink.to") !== -1 || targetUrl.indexOf("flaswish.com") !== -1) {
         var idMatch = targetUrl.match(/\/(?:e|f|v)\/([a-zA-Z0-9]+)/);
         if (idMatch) targetUrl = "https://playerwish.com/e/" + idMatch[1];
@@ -583,7 +569,7 @@ function resolveMixdrop(url) {
             var unpacked = unpackFromHtml(html);
             if (unpacked) {
                 var match = unpacked.match(/MDCore\.(?:wurl|vurl)\s*=\s*["']([^"']+)["']/i) ||
-                            unpacked.match(/["'](https?:\/\/[a-zA-Z0-9.-]+(?:\.delivery\.mxcontent\.net|\.mixdrop)[^"'\s<>]+\.mp4[^"'\s<>]*)["']/i);
+                            unpacked.match(/["']((?:https?:)?\/\/[a-zA-Z0-9.-]+(?:\.delivery\.mxcontent\.net|\.mixdrop)[^"'\s<>]+\.mp4[^"'\s<>]*)["']/i);
                 if (match) {
                     var finalUrl = match[1];
                     if (finalUrl.indexOf("//") === 0) finalUrl = "https:" + finalUrl;
@@ -617,7 +603,9 @@ function resolveVidHide(url) {
                 }
 
                 if (streamUrl) {
-                    if (streamUrl.indexOf("/") === 0) streamUrl = host + streamUrl;
+                    if (streamUrl.indexOf("//") === 0) streamUrl = "https:" + streamUrl;
+                    else if (streamUrl.indexOf("/") === 0) streamUrl = host + streamUrl;
+
                     return probeM3u8Quality(streamUrl, { "User-Agent": USER_AGENT, "Referer": finalUrl }).then(function(q) {
                         return { url: streamUrl, serverName: "VidHide", quality: q, headers: { "User-Agent": USER_AGENT, "Referer": finalUrl } };
                     });
@@ -684,7 +672,6 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
     if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("strwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hgcloud") !== -1 || u.indexOf("flaswish") !== -1 || u.indexOf("playerwish") !== -1) return resolveStreamWish(url);
-    // Byse exige fingerprint de navegador + PoW captcha: filtrar ANTES de gastar peticiones
     if (u.indexOf("byse") !== -1 || u.indexOf("bysekoze") !== -1) return Promise.resolve(null);
     if (u.indexOf("filemoon") !== -1) return resolveFilemoon(url);
     if (u.indexOf("mixdrop") !== -1 || u.indexOf("mxdrop") !== -1) return resolveMixdrop(url);
@@ -770,7 +757,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
     START_TS = tvNow();
     var mt = String(mediaType || "").toLowerCase();
     var isMovie = (mt === "movie" || mt === "pelicula");
-    console.log("[JKAnime][v2.4-tvfix] getStreams tmdbId=" + tmdbId + " type=" + mt + " s=" + season + " e=" + episode + " timer=" + HAS_TIMER);
     var sParsed = parseInt(season, 10);
     var sNum = isNaN(sParsed) ? 1 : sParsed;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
@@ -850,7 +836,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     break;
                 }
             }
-
+            
             var effectiveSeason = sNum;
             var effectiveEpisode = eNum;
             var absoluteEp = eNum;
@@ -878,21 +864,16 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 var aniTarget = resolveUniversalTarget(aniListMedia, effectiveSeason, effectiveEpisode, absoluteEp);
                 var candidateSlugs = [];
 
+                // 1. Slugs limpios originales (SIN año) al frente
                 if (aniTarget && aniTarget.slug) {
                     candidateSlugs.push({
                         slug: aniTarget.slug,
                         targetEp: aniTarget.targetEp,
                         isContinuous: aniTarget.isContinuous
                     });
-                    if (year) {
-                        candidateSlugs.push({
-                            slug: aniTarget.slug + "-" + year,
-                            targetEp: aniTarget.targetEp,
-                            isContinuous: aniTarget.isContinuous
-                        });
-                    }
                 }
 
+                // 2. Slugs encontrados directamente por el buscador nativo de JKAnime
                 for (var n = 0; n < nativeSlugs.length; n++) {
                     var nSlug = nativeSlugs[n];
                     var exists = false;
@@ -902,6 +883,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     if (!exists) candidateSlugs.push({ slug: nSlug, targetEp: null, isContinuous: false });
                 }
 
+                // 3. Slugs limpios derivados de títulos
                 for (var t = 0; t < titles.length; t++) {
                     var sBase = cleanTitle(titles[t]);
                     if (sBase) {
@@ -910,15 +892,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             if (candidateSlugs[e1].slug === sBase) { ex1 = true; break; }
                         }
                         if (!ex1) candidateSlugs.push({ slug: sBase, targetEp: null, isContinuous: false });
-
-                        if (year) {
-                            var sYear = sBase + "-" + year;
-                            var ex2 = false;
-                            for (var e2 = 0; e2 < candidateSlugs.length; e2++) {
-                                if (candidateSlugs[e2].slug === sYear) { ex2 = true; break; }
-                            }
-                            if (!ex2) candidateSlugs.push({ slug: sYear, targetEp: null, isContinuous: false });
-                        }
                     }
                 }
 
@@ -982,12 +955,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                console.log("[JKAnime][v2.4-tvfix] intentando " + uniquePageUrls.length + " paginas de episodio");
-
                 function tryBatch(urls, batchSize, batchNum) {
                     if (!urls || urls.length === 0) return Promise.resolve([]);
-                    if (batchNum >= 2) return Promise.resolve([]);
-                    if (tvRemaining() < 6000) return Promise.resolve([]);
+                    if (batchNum >= 4) return Promise.resolve([]);
+                    if (tvRemaining() < 4000) return Promise.resolve([]);
                     var currentBatch = urls.slice(0, batchSize);
                     var remaining = urls.slice(batchSize);
 
@@ -1011,6 +982,6 @@ function getStreams(tmdbId, mediaType, season, episode) {
         });
 }
 
-if (typeof module !== "undefined") {
+if (typeof module !== "undefined" && module.exports) {
     module.exports = { getStreams: getStreams };
 }
