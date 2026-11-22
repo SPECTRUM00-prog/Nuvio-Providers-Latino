@@ -1,7 +1,7 @@
 /**
  * Plugin de SoloLatino (Películas y Series) para Nuvio Media Hub
  * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
- * Resolvers: VidHide (morencius), StreamWish (hglink), Voe
+ * Resolvers: VidHide (morencius), StreamWish (hlswish)
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -40,13 +40,10 @@ function stringToUtf8Bytes(str) {
     var bytes = [];
     for (var i = 0; i < str.length; i++) {
         var code = str.charCodeAt(i);
-        if (code < 0x80) {
-            bytes.push(code);
-        } else if (code < 0x800) {
-            bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
-        } else if (code < 0xd800 || code >= 0xe000) {
-            bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
-        } else {
+        if (code < 0x80) bytes.push(code);
+        else if (code < 0x800) bytes.push(0xc0 | (code >> 6), 0x80 | (code & 0x3f));
+        else if (code < 0xd800 || code >= 0xe000) bytes.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
+        else {
             i++;
             code = 0x10000 + (((code & 0x3ff) << 10) | (str.charCodeAt(i) & 0x3ff));
             bytes.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
@@ -56,23 +53,18 @@ function stringToUtf8Bytes(str) {
 }
 
 function utf8BytesToString(bytes) {
-    var str = "";
-    var i = 0;
+    var str = "", i = 0;
     while (i < bytes.length) {
         var b1 = bytes[i++];
-        if (b1 < 0x80) {
-            str += String.fromCharCode(b1);
-        } else if (b1 > 0xbf && b1 < 0xe0) {
+        if (b1 < 0x80) str += String.fromCharCode(b1);
+        else if (b1 > 0xbf && b1 < 0xe0) {
             var b2 = bytes[i++];
             str += String.fromCharCode(((b1 & 0x1f) << 6) | (b2 & 0x3f));
         } else if (b1 > 0xdf && b1 < 0xf0) {
-            var b2 = bytes[i++];
-            var b3 = bytes[i++];
+            var b2 = bytes[i++], b3 = bytes[i++];
             str += String.fromCharCode(((b1 & 0x0f) << 12) | ((b2 & 0x3f) << 6) | (b3 & 0x3f));
         } else {
-            var b2 = bytes[i++];
-            var b3 = bytes[i++];
-            var b4 = bytes[i++];
+            var b2 = bytes[i++], b3 = bytes[i++], b4 = bytes[i++];
             var code = (((b1 & 0x07) << 18) | ((b2 & 0x3f) << 12) | ((b3 & 0x3f) << 6) | (b4 & 0x3f)) - 0x10000;
             str += String.fromCharCode(0xd800 + (code >> 10), 0xdc00 + (code & 0x3ff));
         }
@@ -175,7 +167,6 @@ function sha256(input) {
 
     var view = new DataView(padded.buffer);
     view.setUint32(newLen - 4, bitLen, false);
-
     var W = new Uint32Array(64);
 
     for (var i = 0; i < newLen; i += 64) {
@@ -187,7 +178,6 @@ function sha256(input) {
         }
 
         var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], h = H[7];
-
         for (var t = 0; t < 64; t++) {
             var S1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
             var ch = (e & f) ^ (~e & g);
@@ -251,9 +241,7 @@ function gmult(a, b) {
 
 function keyExpansion256(key) {
     var w = new Uint32Array(60);
-    for (var i = 0; i < 8; i++) {
-        w[i] = (key[4 * i] << 24) | (key[4 * i + 1] << 16) | (key[4 * i + 2] << 8) | key[4 * i + 3];
-    }
+    for (var i = 0; i < 8; i++) w[i] = (key[4 * i] << 24) | (key[4 * i + 1] << 16) | (key[4 * i + 2] << 8) | key[4 * i + 3];
     for (var i = 8; i < 60; i++) {
         var temp = w[i - 1];
         if (i % 8 === 0) {
@@ -271,7 +259,6 @@ function keyExpansion256(key) {
 function invCipherBlock(block, w) {
     var state = new Uint8Array(16);
     state.set(block);
-
     function addRoundKey(rnd) {
         for (var c = 0; c < 4; c++) {
             var word = w[rnd * 4 + c];
@@ -281,17 +268,14 @@ function invCipherBlock(block, w) {
             state[c * 4 + 3] ^= word & 0xff;
         }
     }
-
     addRoundKey(14);
     for (var round = 13; round >= 1; round--) {
         var t1 = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
         var t = state[2]; state[2] = state[10]; state[10] = t;
         t = state[6]; state[6] = state[14]; state[14] = t;
         var t4 = state[3]; state[3] = state[7]; state[7] = state[11]; state[11] = state[15]; state[15] = t4;
-
         for (var i = 0; i < 16; i++) state[i] = INV_SBOX[state[i]];
         addRoundKey(round);
-
         for (var c = 0; c < 4; c++) {
             var s0 = state[c * 4], s1 = state[c * 4 + 1], s2 = state[c * 4 + 2], s3 = state[c * 4 + 3];
             state[c * 4 + 0] = gmult(s0, 0x0e) ^ gmult(s1, 0x0b) ^ gmult(s2, 0x0d) ^ gmult(s3, 0x09);
@@ -300,7 +284,6 @@ function invCipherBlock(block, w) {
             state[c * 4 + 3] = gmult(s0, 0x0b) ^ gmult(s1, 0x0d) ^ gmult(s2, 0x09) ^ gmult(s3, 0x0e);
         }
     }
-
     var t1 = state[13]; state[13] = state[9]; state[9] = state[5]; state[5] = state[1]; state[1] = t1;
     var t = state[2]; state[2] = state[10]; state[10] = t;
     t = state[6]; state[6] = state[14]; state[14] = t;
@@ -314,19 +297,16 @@ function decryptAES(encryptedBase64, aesKeyBytes) {
     try {
         var raw = decodeB64ToBytes(encryptedBase64);
         if (raw.length < 32 || raw.length % 16 !== 0) return null;
-
         var iv = raw.slice(0, 16);
         var ciphertext = raw.slice(16);
         var w = keyExpansion256(aesKeyBytes);
         var decrypted = new Uint8Array(ciphertext.length);
-
         for (var i = 0; i < ciphertext.length; i += 16) {
             var block = ciphertext.slice(i, i + 16);
             var invBlock = invCipherBlock(block, w);
             var prevBlock = i === 0 ? iv : ciphertext.slice(i - 16, i);
             for (var j = 0; j < 16; j++) decrypted[i + j] = invBlock[j] ^ prevBlock[j];
         }
-
         var pad = decrypted[decrypted.length - 1];
         if (pad < 1 || pad > 16) return null;
         for (var i = decrypted.length - pad; i < decrypted.length; i++) {
@@ -347,13 +327,11 @@ function unpackJS(packed) {
         var regex = /eval\(function\(p,a,c,k,e,[r|d]\)\{[\s\S]*?\}\((['"][\s\S]+?['"]),\s*(\d+),\s*(\d+),\s*['"]([\s\S]+?)['"]\.split\('\|'\)/i;
         var match = packed.match(regex);
         if (!match) return null;
-
         var p = match[1].slice(1, -1);
         var a = match[2];
         var k = match[4];
         var words = k.split("|");
         var radix = parseInt(a, 10);
-
         var unbase = function(val, base) {
             var chars = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ";
             if (base <= 36) return parseInt(val, base);
@@ -361,7 +339,6 @@ function unpackJS(packed) {
             for (var i = 0; i < val.length; i++) res = res * base + chars.indexOf(val[i]);
             return res;
         };
-
         return p.replace(/\b[0-9a-zA-Z]+\b/g, function(token) {
             var idx = unbase(token, radix);
             return words[idx] !== undefined && words[idx] !== "" ? words[idx] : token;
@@ -381,7 +358,7 @@ function probeM3u8Quality(m3u8Url, headers) {
     return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
-    }, 2500)
+    }, 2000)
     .then(function(res) {
         if (!res.ok) return "720p";
         return res.text();
@@ -392,7 +369,6 @@ function probeM3u8Quality(m3u8Url, headers) {
             if (/720/i.test(m3u8Url)) return "720p";
             return "720p";
         }
-
         var maxH = 0;
         var resRegex = /RESOLUTION=\d+x(\d+)/gi;
         var match;
@@ -400,7 +376,6 @@ function probeM3u8Quality(m3u8Url, headers) {
             var h = parseInt(match[1], 10);
             if (h > maxH) maxH = h;
         }
-
         if (maxH >= 2160) return "4K";
         if (maxH >= 1080) return "1080p";
         if (maxH >= 720) return "720p";
@@ -436,6 +411,7 @@ function resolveVidHide(url) {
         }
 
         if (streamUrl) {
+            // Referer exacto de la URL embed para que el CDN privado no corte la conexión
             var headers = { "User-Agent": USER_AGENT, "Referer": url };
             return probeM3u8Quality(streamUrl, headers).then(function(q) {
                 return { url: streamUrl, quality: q || "720p", server: "VidHide", headers: headers };
@@ -449,6 +425,8 @@ function resolveVidHide(url) {
 function resolveStreamWish(url) {
     var cleanUrl = url.split("?")[0].replace(/\/$/, "");
     var id = cleanUrl.split("/").pop();
+    
+    // Consulta directa por hlswish.com que responde el m3u8 empaquetado
     var targetUrl = "https://hlswish.com/e/" + id;
 
     return fetchWithTimeout(targetUrl, {
@@ -475,43 +453,6 @@ function resolveStreamWish(url) {
             var headers = { "User-Agent": USER_AGENT, "Referer": targetUrl };
             return probeM3u8Quality(streamUrl, headers).then(function(q) {
                 return { url: streamUrl, quality: q || "720p", server: "StreamWish", headers: headers };
-            });
-        }
-        return null;
-    })
-    .catch(function() { return null; });
-}
-
-function resolveVoe(url) {
-    return fetchWithTimeout(url, {
-        headers: { "User-Agent": USER_AGENT, "Referer": url },
-        redirect: "follow"
-    }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
-    .then(function(html) {
-        var streamUrl = null;
-        var hlsMatch = html.match(/["']hls["']\s*:\s*["']([^"']+)["']/i) ||
-                       html.match(/["']file["']\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
-        if (hlsMatch) streamUrl = hlsMatch[1];
-
-        // Decodificación Base64 típica de VOE
-        if (!streamUrl) {
-            var b64Match = html.match(/prompt\([^,]+,["']([a-zA-Z0-9+/=]+)["']\)/i) ||
-                           html.match(/sources\s*=\s*JSON\.parse\(atob\(["']([a-zA-Z0-9+/=]+)["']\)\)/i);
-            if (b64Match) {
-                try {
-                    var decBytes = decodeB64ToBytes(b64Match[1]);
-                    var decStr = utf8BytesToString(decBytes);
-                    var innerHls = decStr.match(/https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*/i);
-                    if (innerHls) streamUrl = innerHls[0];
-                } catch(e) {}
-            }
-        }
-
-        if (streamUrl) {
-            var headers = { "User-Agent": USER_AGENT, "Referer": url };
-            return probeM3u8Quality(streamUrl, headers).then(function(q) {
-                return { url: streamUrl, quality: q || "1080p", server: "Voe", headers: headers };
             });
         }
         return null;
@@ -668,17 +609,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                 var sName = (item.server || "").toLowerCase();
                 var promise = null;
 
-                // Soporte universal para VidHide (incluyendo morencius)
                 if (sName.indexOf("vidhide") !== -1 || u.indexOf("vidhide") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) {
                     promise = resolveVidHide(item.url);
-                } 
-                // Soporte universal para StreamWish (incluyendo hglink)
-                else if (sName.indexOf("streamwish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
+                } else if (sName.indexOf("streamwish") !== -1 || u.indexOf("streamwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("hanerix") !== -1 || u.indexOf("flaswish") !== -1) {
                     promise = resolveStreamWish(item.url);
-                } 
-                // Soporte de alta velocidad para VOE
-                else if (sName.indexOf("voe") !== -1 || u.indexOf("voe.sx") !== -1 || u.indexOf("voe-network") !== -1) {
-                    promise = resolveVoe(item.url);
                 } else {
                     promise = Promise.resolve(null);
                 }
