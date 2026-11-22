@@ -16,23 +16,83 @@ var DEFAULT_HEADERS = {
     "Referer": BASE_URL + "/"
 };
 
+function textWithTimeout(res, timeoutMs) {
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.text().then(function(t) {
+                if (!done) { done = true; clearTimeout(timer); resolve(t); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
+function jsonWithTimeout(res, timeoutMs) {
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.json().then(function(j) {
+                if (!done) { done = true; clearTimeout(timer); resolve(j); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Timeout"));
-            }, limit);
+    var timer = null;
+    var timeoutPromise = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            reject(new Error("Timeout"));
+        }, limit);
+    });
+
+    var fetchPromise = null;
+    try {
+        fetchPromise = fetch(url, options || {});
+        if (!fetchPromise || typeof fetchPromise.then !== "function") {
+            fetchPromise = Promise.reject(new Error("fetch sin promesa"));
+        }
+    } catch (eSync) {
+        if (timer) clearTimeout(timer);
+        fetchPromise = Promise.reject(eSync);
+    }
+
+    return Promise.race([fetchPromise, timeoutPromise])
+        .then(function(res) {
+            if (timer) clearTimeout(timer);
+            return res;
         })
-    ]).catch(function() { return null; });
+        .catch(function() {
+            if (timer) clearTimeout(timer);
+            return null;
+        });
 }
 
 function cleanTitle(str) {
     if (!str) return "";
-    return str
+    var normalized = str;
+    try {
+        normalized = str.normalize("NFD");
+    } catch (e) {}
+    return normalized
         .toLowerCase()
-        .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .replace(/[^a-z0-9\s]+/g, " ")
         .replace(/\s+/g, " ")
@@ -135,7 +195,7 @@ function probeM3u8Quality(m3u8Url, headers) {
     }, 2500)
     .then(function(res) {
         if (!res || !res.ok) return "720p";
-        return res.text();
+        return textWithTimeout(res, 3000);
     })
     .then(function(text) {
         if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
@@ -173,7 +233,7 @@ function resolveVimeos(embedUrl) {
     return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
     }, 2800)
-    .then(function(res) { return res ? res.text() : ""; })
+    .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
     .then(function(html) {
         var streamUrl = null;
         var unpacked = unpackJS(html);
@@ -208,7 +268,7 @@ function resolveStreamWish(url) {
     var targetUrl = idMatch ? "https://hlswish.com/e/" + idMatch[1] : url;
 
     return fetchWithTimeout(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
             if (direct) {
@@ -232,7 +292,7 @@ function resolveStreamWish(url) {
 
 function resolveFilemoon(url) {
     return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
             if (direct) {
@@ -274,7 +334,7 @@ function getStreams(tmdbId, mediaType) {
     return fetchWithTimeout(tmdbUrl, {}, 2500)
         .then(function(res) {
             if (!res || !res.ok) throw new Error("TMDB Error");
-            return res.json();
+            return jsonWithTimeout(res, 3000);
         })
         .then(function(meta) {
             var title = meta.title || meta.original_title || "";
@@ -298,7 +358,7 @@ function getStreams(tmdbId, mediaType) {
             return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2800)
                 .then(function(res) {
                     if (!res || !res.ok) return null;
-                    return res.json();
+                    return jsonWithTimeout(res, 3000);
                 })
                 .then(function(searchRes) {
                     var posts = (searchRes && searchRes.data && searchRes.data.posts) || [];
@@ -364,4 +424,4 @@ function getStreams(tmdbId, mediaType) {
 
 if (typeof module !== "undefined") {
     module.exports = { getStreams: getStreams };
-}
+} 
