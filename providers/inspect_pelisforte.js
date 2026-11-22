@@ -1,35 +1,38 @@
 /**
- * Volcado completo del flujo de reproducción en VideoEmbedPage (Zc)
+ * Inspección de todos los servidores y pestañas de Coraline en PelisForte
  * Ejecutar: node providers/inspect_pelisforte.js
  */
 
 var https = require('https');
-var CHUNK_URL = 'https://byseraguci.com/assets/videoPagesBundle-Bgi0QmPo.js';
-var USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+var TARGET = 'https://www2.pelisforte.se/pelicula/coraline-2009-1602884329';
+var UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-function get(url) {
-    return new Promise(function(resolve, reject) {
-        https.get(url, { headers: { 'User-Agent': USER_AGENT } }, function(res) {
-            var c = [];
-            res.on('data', function(d) { c.push(d); });
-            res.on('end', function() { resolve(Buffer.concat(c).toString('utf8')); });
-        }).on('error', reject);
+https.get(TARGET, { headers: { 'User-Agent': UA, 'Referer': 'https://www2.pelisforte.se/' } }, function(res) {
+    var chunks = [];
+    res.on('data', function(c) { chunks.push(c); });
+    res.on('end', function() {
+        var html = Buffer.concat(chunks).toString('utf8');
+        console.log('Status:', res.statusCode, '| Bytes:', html.length);
+
+        // 1. Ver qué pestañas de idioma existen
+        var tabs = html.match(/<span\s+tab=["']([^"']+)["'][^>]*>([\s\S]*?)<\/span>/gi) || [];
+        console.log('\n=== PESTAÑAS DE IDIOMA ===');
+        tabs.forEach(function(t) { console.log(t.replace(/\s+/g, ' ')); });
+
+        // 2. Ver todas las opciones y sus nombres de servidor
+        var opts = html.match(/<a\s+[^>]*href=["']#options-\d+["'][^>]*>([\s\S]*?)<\/a>/gi) || [];
+        console.log('\n=== BOTONES DE SERVIDOR DETECTADOS (' + opts.length + ') ===');
+        opts.forEach(function(o, i) {
+            console.log('[' + (i + 1) + '] ' + o.replace(/\s+/g, ' '));
+        });
+
+        // 3. Ver todos los iframes mp4.nu
+        var iframes = html.match(/id=["']options-\d+["'][^>]*>[\s\S]*?<iframe[^>]+src=["'](https?:\/\/mp4\.nu\/\?h=[^"']+)["']/gi) || [];
+        console.log('\n=== IFRAMES DE mp4.nu (' + iframes.length + ') ===');
+        iframes.forEach(function(ifr, i) {
+            console.log('[' + (i + 1) + '] ' + ifr.replace(/\s+/g, ' '));
+        });
     });
-}
-
-(async function() {
-    var code = await get(CHUNK_URL);
-
-    var zcIdx = code.indexOf('Zc=()=>');
-    if (zcIdx === -1) zcIdx = code.indexOf('Zc=');
-
-    console.log('=== FLUJO DE CARGA EN VideoEmbedPage (Zc) ===');
-    var zcBody = code.slice(zcIdx, zcIdx + 3500);
-    // Mostrar fragmentos formateados
-    console.log(zcBody.replace(/\s+/g, ' '));
-
-    // Buscar llamadas a Et, en o APIs dentro de Zc
-    console.log('\n=== LLAMADAS A FUNCIONES DENTRO DE Zc ===');
-    var calls = zcBody.match(/(?:await\s+|then\s*\(\s*)(?:Et|en|si|oi|ct|hr|[a-zA-Z0-9_$]+)\s*\([^)]*\)/g) || [];
-    console.log(calls.slice(0, 10));
-})();
+}).on('error', function(e) {
+    console.log('Error:', e.message);
+});
