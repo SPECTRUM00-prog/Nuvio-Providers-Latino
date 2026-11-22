@@ -21,6 +21,44 @@ var DEFAULT_HEADERS = {
 // 1. HELPERS DE RED & STRINGS (HERMES SAFE)
 // ==========================================
 
+function textWithTimeout(res, timeoutMs) {
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.text().then(function(t) {
+                if (!done) { done = true; clearTimeout(timer); resolve(t); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
+function jsonWithTimeout(res, timeoutMs) {
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.json().then(function(j) {
+                if (!done) { done = true; clearTimeout(timer); resolve(j); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
     var timer = null;
@@ -202,9 +240,16 @@ function detectQualityFromUrl(url) {
     var clean = url.split("?")[0].toLowerCase();
 
     if (clean.indexOf(".urlset") !== -1) {
-        var urlsetMatch = clean.match(/[_,]([a-z,]+)\.urlset/i);
+        var urlsetMatch = clean.match(/[,_]([a-z,]+)[,_]\.urlset/);
         if (urlsetMatch) {
             var tags = urlsetMatch[1].split(",");
+            // Mapa por familia (Regla 7): VidHide/StreamWish/Filemoon h=1080, n=720, l=480
+            var isVswFamily = clean.indexOf("vidhide") !== -1 || clean.indexOf("minochinos") !== -1 || clean.indexOf("morencius") !== -1 || clean.indexOf("callistanise") !== -1 || clean.indexOf("streamwish") !== -1 || clean.indexOf("hlswish") !== -1 || clean.indexOf("flaswish") !== -1 || clean.indexOf("playerwish") !== -1 || clean.indexOf("hglink") !== -1 || clean.indexOf("filemoon") !== -1;
+            if (isVswFamily) {
+                if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("h") !== -1) return "1080p";
+                if (tags.indexOf("n") !== -1) return "720p";
+                if (tags.indexOf("l") !== -1) return "480p";
+            }
             if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("fhd") !== -1) return "1080p";
             if (tags.indexOf("h") !== -1 || tags.indexOf("hd") !== -1) return "720p";
             if (tags.indexOf("n") !== -1 || tags.indexOf("sd") !== -1) return "480p";
@@ -230,7 +275,7 @@ function probeM3u8Quality(m3u8Url, headers, defaultQuality) {
     return fetchWithTimeout(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" }, 2500)
         .then(function(res) {
             if (!res || !res.ok) return fallback;
-            return res.text();
+            return textWithTimeout(res, 3000);
         })
         .then(function(text) {
             if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
@@ -310,7 +355,7 @@ function fetchAniListMapping(searchName) {
         },
         body: JSON.stringify({ query: gqlQuery, variables: { search: searchName } })
     }, 2800)
-    .then(function(res) { return res ? res.json() : null; })
+    .then(function(res) { return res ? jsonWithTimeout(res, 3000) : null; })
     .then(function(json) {
         return (json && json.data && json.data.Page && json.data.Page.media) || [];
     })
@@ -383,7 +428,7 @@ function searchJKAnime(query) {
     var searchUrl = BASE_URL + "/buscar/" + encodeURIComponent(query) + "/";
 
     return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2800)
-        .then(function(res) { return res && res.ok ? res.text() : ""; })
+        .then(function(res) { return res && res.ok ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             var slugs = [];
             var regex = /href=["']https?:\/\/jkanime\.net\/([a-zA-Z0-9-]+)\/["']/gi;
@@ -418,7 +463,7 @@ function resolveStreamWish(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": targetUrl },
         redirect: "follow"
     }, 2800)
-    .then(function(res) { return res ? res.text() : ""; })
+    .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
     .then(function(html) {
         var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
         if (direct) {
@@ -443,7 +488,7 @@ function resolveStreamWish(url) {
 
 function resolveFilemoon(url) {
     return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": url }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
             if (direct) {
@@ -470,7 +515,7 @@ function resolveMixdrop(url) {
     if (embedUrl.indexOf("http") !== 0) embedUrl = "https:" + embedUrl;
 
     return fetchWithTimeout(embedUrl, { headers: { "User-Agent": USER_AGENT, "Referer": embedUrl }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             if (!html) return null;
             var directMatch = html.match(/MDCore\.(?:wurl|vurl)\s*=\s*["']([^"']+)["']/i);
@@ -502,7 +547,7 @@ function resolveVidHide(url) {
         .then(function(res) {
             if (!res) return null;
             var finalUrl = res.url || url;
-            return res.text().then(function(html) {
+            return textWithTimeout(res, 3000).then(function(html) {
                 var streamUrl = null;
                 var unpacked = unpackFromHtml(html);
                 if (unpacked) {
@@ -528,7 +573,7 @@ function resolveVidHide(url) {
 
 function resolveMp4upload(url) {
     return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": "https://www.mp4upload.com/" }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             if (!html) return null;
 
@@ -550,7 +595,7 @@ function resolveStreamtape(url) {
     if (targetUrl.indexOf("http") !== 0) targetUrl = "https://" + targetUrl.replace(/^\/\//, "");
 
     return fetchWithTimeout(targetUrl, { headers: { "User-Agent": USER_AGENT, "Referer": targetUrl }, redirect: "follow" }, 2500)
-        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             var match = html.match(/document\.getElementById\(['"](?:robotlink|ideoolink|noroot)['"]\)\.innerHTML\s*=\s*['"]([^'"]+)['"]\s*\+\s*(?:\(['"]([^'"]+)['"]\)\.substring\((\d+)\)|['"]([^'"]+)['"])/i);
             if (match) {
@@ -566,7 +611,7 @@ function resolveStreamtape(url) {
 
 function resolveDesuMagi(url) {
     return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }, redirect: "follow" }, 2800)
-        .then(function(res) { return res ? res.text() : ""; })
+        .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             var m3u8Match = html.match(/https?:\/\/[^"'\s\\]+playmudos\.com\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i) ||
                             html.match(/https?:\/\/[^"'\s\\]+\.m3u8[^"'\s\\]*/i);
@@ -583,7 +628,9 @@ function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
     if (u.indexOf("streamwish") !== -1 || u.indexOf("hlswish") !== -1 || u.indexOf("strwish") !== -1 || u.indexOf("hglink") !== -1 || u.indexOf("hgcloud") !== -1 || u.indexOf("flaswish") !== -1 || u.indexOf("playerwish") !== -1) return resolveStreamWish(url);
-    if (u.indexOf("filemoon") !== -1 || u.indexOf("byse") !== -1 || u.indexOf("bysekoze") !== -1) return resolveFilemoon(url);
+    // Byse exige fingerprint de navegador + PoW captcha: filtrar ANTES de gastar peticiones
+    if (u.indexOf("byse") !== -1 || u.indexOf("bysekoze") !== -1) return Promise.resolve(null);
+    if (u.indexOf("filemoon") !== -1) return resolveFilemoon(url);
     if (u.indexOf("mixdrop") !== -1 || u.indexOf("mxdrop") !== -1) return resolveMixdrop(url);
     if (u.indexOf("vidhide") !== -1 || u.indexOf("morencius") !== -1 || u.indexOf("minochinos") !== -1 || u.indexOf("callistanise") !== -1) return resolveVidHide(url);
     if (u.indexOf("mp4upload") !== -1) return resolveMp4upload(url);
@@ -594,7 +641,7 @@ function dispatchResolver(url) {
 
 function extractStreamsFromEpisodePage(pageUrl) {
     return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 2800)
-        .then(function(res) { return res && res.ok ? res.text() : ""; })
+        .then(function(res) { return res && res.ok ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
             var rawEmbeds = [];
 
@@ -665,14 +712,15 @@ function extractStreamsFromEpisodePage(pageUrl) {
 
 function getStreams(tmdbId, mediaType, season, episode) {
     var isMovie = mediaType === "movie";
-    var sNum = parseInt(season, 10) || 1;
+    var sParsed = parseInt(season, 10);
+    var sNum = isNaN(sParsed) ? 1 : sParsed;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
     var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
     return fetchWithTimeout(tmdbUrl, null, 2500)
         .then(function(res) {
             if (!res || !res.ok) throw new Error("TMDB HTTP Error");
-            return res.json();
+            return jsonWithTimeout(res, 3000);
         })
         .then(function(meta) {
             var isAnimation = false;
@@ -742,7 +790,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     break;
                 }
             }
-            
+
             var effectiveSeason = sNum;
             var effectiveEpisode = eNum;
             var absoluteEp = eNum;
