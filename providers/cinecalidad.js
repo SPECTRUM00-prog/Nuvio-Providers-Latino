@@ -21,44 +21,6 @@ var DEFAULT_HEADERS = {
 // 1. HELPERS DE RED Y NORMALIZACIÓN
 // ==========================================
 
-function textWithTimeout(res, timeoutMs) {
-    var limit = timeoutMs || 3000;
-    return new Promise(function(resolve, reject) {
-        var done = false;
-        var timer = setTimeout(function() {
-            if (!done) { done = true; reject(new Error("Body timeout")); }
-        }, limit);
-        try {
-            res.text().then(function(t) {
-                if (!done) { done = true; clearTimeout(timer); resolve(t); }
-            }).catch(function(e) {
-                if (!done) { done = true; clearTimeout(timer); reject(e); }
-            });
-        } catch (e) {
-            if (!done) { done = true; clearTimeout(timer); reject(e); }
-        }
-    });
-}
-
-function jsonWithTimeout(res, timeoutMs) {
-    var limit = timeoutMs || 3000;
-    return new Promise(function(resolve, reject) {
-        var done = false;
-        var timer = setTimeout(function() {
-            if (!done) { done = true; reject(new Error("Body timeout")); }
-        }, limit);
-        try {
-            res.json().then(function(j) {
-                if (!done) { done = true; clearTimeout(timer); resolve(j); }
-            }).catch(function(e) {
-                if (!done) { done = true; clearTimeout(timer); reject(e); }
-            });
-        } catch (e) {
-            if (!done) { done = true; clearTimeout(timer); reject(e); }
-        }
-    });
-}
-
 function fetchWithTimeout(url, options, timeoutMs) {
     var limit = timeoutMs || NETWORK_TIMEOUT;
     var timer = null;
@@ -69,18 +31,7 @@ function fetchWithTimeout(url, options, timeoutMs) {
         }, limit);
     });
 
-    var fetchPromise = null;
-    try {
-        fetchPromise = fetch(url, options || {});
-        if (!fetchPromise || typeof fetchPromise.then !== "function") {
-            fetchPromise = Promise.reject(new Error("fetch sin promesa"));
-        }
-    } catch (eSync) {
-        if (timer) clearTimeout(timer);
-        fetchPromise = Promise.reject(eSync);
-    }
-
-    return Promise.race([fetchPromise, timeoutPromise])
+    return Promise.race([fetch(url, options), timeoutPromise])
         .then(function(res) {
             if (timer) clearTimeout(timer);
             return res;
@@ -210,7 +161,7 @@ function probeM3u8Quality(m3u8Url, headers) {
     }, 2500)
     .then(function(res) {
         if (!res || !res.ok) return "720p";
-        return textWithTimeout(res, 3000);
+        return res.text();
     })
     .then(function(text) {
         if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
@@ -219,22 +170,18 @@ function probeM3u8Quality(m3u8Url, headers) {
             return "720p";
         }
 
-        var maxW = 0;
         var maxH = 0;
-        var resRegex = /RESOLUTION=(\d+)x(\d+)/gi;
+        var resRegex = /RESOLUTION=\d+x(\d+)/gi;
         var match;
         while ((match = resRegex.exec(text)) !== null) {
-            var w = parseInt(match[1], 10);
-            var h = parseInt(match[2], 10);
-            if (w > maxW) maxW = w;
+            var h = parseInt(match[1], 10);
             if (h > maxH) maxH = h;
         }
 
-        // Evaluar ANCHO Y ALTO: 1920x804 panoramico = 1080p (Regla 7)
-        if (maxW >= 3840 || maxH >= 2160) return "4K";
-        if (maxW >= 1920 || maxH >= 1080) return "1080p";
-        if (maxW >= 1280 || maxH >= 720) return "720p";
-        if (maxW >= 854 || maxH >= 480) return "480p";
+        if (maxH >= 2160) return "4K";
+        if (maxH >= 1080) return "1080p";
+        if (maxH >= 720) return "720p";
+        if (maxH >= 480) return "480p";
         return "720p";
     })
     .catch(function() {
@@ -256,14 +203,14 @@ function resolveVimeos(embedUrl) {
     return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
     }, 2800)
-    .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
+    .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
         var streamUrl = null;
         var unpacked = unpackJS(html);
         if (unpacked) {
             var m3u8Match = unpacked.match(/["']([^"']+\.m3u8[^"']*)['"]/i) ||
                             unpacked.match(/(https?:\/\/[^"'\s<>]+\.m3u8[^"'\s<>]*)/i);
-            if (m3u8Match) streamUrl = (m3u8Match[1] || m3u8Match[0]).replace(/\\/g, "");
+            if (m3u8Match) streamUrl = m3u8Match[1].replace(/\\/g, "");
         }
         if (!streamUrl) {
             var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
@@ -294,7 +241,7 @@ function resolveTorrentMagnet(tItem, refererUrl) {
     return fetchWithTimeout(tItem.url, {
         headers: { "User-Agent": USER_AGENT, "Referer": refererUrl }
     }, 2500)
-    .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
+    .then(function(res) { return res ? res.text() : ""; })
     .then(function(html) {
         var magnetMatch = html.match(/magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^"'\s<>]*/i);
         if (magnetMatch) {
@@ -319,16 +266,14 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
 
     var isTv = mediaType === "tv" || mediaType === "series";
-    var sParsed = parseInt(seasonNum, 10);
-    var s = isNaN(sParsed) ? 1 : sParsed;
-    var eParsed = parseInt(episodeNum, 10);
-    var e = isNaN(eParsed) ? 1 : eParsed;
+    var s = parseInt(seasonNum || 1, 10);
+    var e = parseInt(episodeNum || 1, 10);
     var tmdbUrl = "https://api.themoviedb.org/3/" + (isTv ? "tv" : "movie") + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
     return fetchWithTimeout(tmdbUrl, {}, 2500)
         .then(function(res) {
             if (!res || !res.ok) throw new Error("TMDB Error");
-            return jsonWithTimeout(res, 3000);
+            return res.json();
         })
         .then(function(meta) {
             var title = isTv ? (meta.name || meta.original_name) : (meta.title || meta.original_title);
@@ -352,7 +297,7 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2800)
                 .then(function(res) {
                     if (!res || !res.ok) return "";
-                    return textWithTimeout(res, 3000);
+                    return res.text();
                 })
                 .then(function(html) {
                     if (!html) return [];
