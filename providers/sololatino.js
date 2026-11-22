@@ -3,7 +3,7 @@
  * Compatible con Android TV y FireTV (Hermes Engine - 100% Promise Chains)
  */
 
-var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
+var TMDB_API_KEY = "095c75dc34801b38130d7b931e704a38";
 var BASE_URL = "https://embed69.org";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
