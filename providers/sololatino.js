@@ -9,9 +9,9 @@ var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://sololatino.net";
 var PLAYER_HOST = "https://player.pelisserieshoy.com";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-var NETWORK_TIMEOUT = 2500;
-var GLOBAL_DEADLINE_MS = 9000;
-var PROBE_HLS_QUALITY = true;
+var NETWORK_TIMEOUT = 2800;
+var GLOBAL_DEADLINE_MS = 14000;
+var PROBE_HLS_QUALITY = false;
 var HLS_PROBE_TIMEOUT = 1300;
 var MAX_HLS_PROBES = 2;
 
