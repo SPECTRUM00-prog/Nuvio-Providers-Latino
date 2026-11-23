@@ -4,6 +4,41 @@
  * Arquitectura: Next.js App Router + API REST Interna (/api/movies y /api/series)
  * Resolvers: KeKi (HLS Directo), Flix (GoodStream POST /dl), Magi (Filemoon)
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / Android TV / FireTV / Desktop)
+ *
+ * Cambios v1.1-NUVIOTV (2026-11) - capa runtime portada de pelispedia v1.1-NUVIOTV /
+ * hackstore v2.3-NUVIOTV / jkanime v2.9 / sololatino v2.0 / cinecalidad v2.4-NUVIOTV /
+ * animeav1 v1.2-NUVIOTV (mismo patron ya verificado en TV).
+ *  1) FIX CRITICO DE TV: el QuickJS de NuvioTV (dokar quickjs-kt + polyfill de
+ *     PluginRuntime.kt) NO define setTimeout/clearTimeout. La v1.0 los usaba sin
+ *     condicion dentro de fetchWithTimeout -> el executor de la promesa lanzaba
+ *     TypeError al instante, TODA la cadena rechazaba y getStreams devolvia []
+ *     SOLO en TV (en PC/Hermes funcionaba). Ahora HAS_TIMER detecta el runtime:
+ *     si hay timer (Hermes movil / PC / Node) se conserva el timeout por llamada;
+ *     si no hay (TV) fetch directo con el limite real de OkHttp (30s connect /
+ *     30s read).
+ *  2) PRESUPUESTO GLOBAL Date.now() de 45s (el runtime mata el plugin a los 60s):
+ *     cada fetch verifica tvRemaining() y se cancela con null si queda < 400ms,
+ *     para que el provider devuelva lo que tenga en vez de morir con error; y en
+ *     TV el probe m3u8 solo corre si quedan >= 25s de presupuesto (el probe va
+ *     sin cancelacion JS y OkHttp tarda hasta 30s en cortar una lectura colgada).
+ *  3) PUENTE __native_fetch (NuvioTV 1.1.1): fetch(url, options || {}) y
+ *     try/catch sincrono: el puente puede rechazar opciones nulas (la v1.0
+ *     pasaba null en la peticion a TMDB) o lanzar de forma sincrona, cortando
+ *     la cadena en silencio.
+ *  4) TIMEOUT TAMBIEN SOBRE EL CUERPO: textWithTimeout / jsonWithTimeout en
+ *     TODAS las respuestas (TMDB, /search, paginas de titulo y API interna
+ *     /api/movies|series/{id}/stream). Headers 200 con cuerpo colgado ya no
+ *     congelan la cadena.
+ *  5) FALLOS DE RED RESUELVEN null (no rechazan): fetchWithTimeout resuelve null
+ *     en timeout/error y todos los call sites toleran null (if (!res || !res.ok)),
+ *     igual que en pelispedia/hackstore/pelisforte.
+ *  6) DIAGNOSTICO por console.error (NuvioTV/FireOS silencia console.log) +
+ *     CONTRATO GARANTIZADO: getStreams SIEMPRE devuelve una Promesa que resuelve
+ *     a Array (try/catch sincrono + catch final).
+ *  7) LOGICA DE SCRAPING INTACTA (v1.0): busqueda /search?q= multi-query con
+ *     scoring de slugs (umbral 35), extraccion de episodeId/movieId del HTML,
+ *     API interna de streams, resolvers KeKi (HLS directo) / Flix (GoodStream
+ *     POST /dl + unpacker Dean Edwards) / Magi (Filemoon) y probe de calidad m3u8.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -18,26 +53,146 @@ var DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// 1. HELPERS DE RED & STRINGS (HERMES SAFE)
+// 1. CAPA DE EJECUCION (HERMES / QUICKJS / NUVIOTV SAFE)
+// En NuvioTV (QuickJS) NO existe setTimeout: OkHttp ya corta cada peticion
+// (30s connect / 30s read) y el runtime mata el plugin a los 60s.
 // ==========================================
 
-function fetchWithTimeout(url, options, timeoutMs) {
-    var limit = timeoutMs || NETWORK_TIMEOUT;
-    return Promise.race([
-        fetch(url, options),
-        new Promise(function(_, reject) {
-            setTimeout(function() {
-                reject(new Error("Timeout"));
-            }, limit);
-        })
-    ]);
+var HAS_TIMER = (typeof setTimeout === "function");
+var GLOBAL_BUDGET_MS = 45000;
+var START_TS = 0;
+
+var LOG_TAG = "[PelisGO][v1.1]";
+
+function tvNow() {
+    try { return Date.now(); } catch (e2) { return 0; }
 }
+
+function tvElapsed() {
+    if (!START_TS) return 0;
+    return tvNow() - START_TS;
+}
+
+function tvRemaining() {
+    var left = GLOBAL_BUDGET_MS - tvElapsed();
+    return (left > 0) ? left : 0;
+}
+
+function logDiag(msg) {
+    try { console.error(LOG_TAG + " " + msg); } catch (eLog) {}
+}
+
+function textWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.text !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.text().then(function(t) { return t; }).catch(function() { return null; });
+        } catch (e3) {
+            return Promise.resolve(null);
+        }
+    }
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.text().then(function(t) {
+                if (!done) { done = true; clearTimeout(timer); resolve(t); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
+function jsonWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.json !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.json().then(function(j) { return j; }).catch(function() { return null; });
+        } catch (e4) {
+            return Promise.resolve(null);
+        }
+    }
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.json().then(function(j) {
+                if (!done) { done = true; clearTimeout(timer); resolve(j); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
+function fetchWithTimeout(url, options, timeoutMs) {
+    if (tvRemaining() < 400) {
+        logDiag("presupuesto agotado, fetch cancelado: " + url);
+        return Promise.resolve(null);
+    }
+
+    var fetchPromise = null;
+    try {
+        fetchPromise = fetch(url, options || {});
+        if (!fetchPromise || typeof fetchPromise.then !== "function") {
+            fetchPromise = Promise.reject(new Error("fetch sin promesa"));
+        }
+    } catch (eSync) {
+        return Promise.resolve(null);
+    }
+
+    if (!HAS_TIMER) {
+        // NuvioTV: sin timer JS posible. OkHttp (30s/30s) es el limite real.
+        return fetchPromise
+            .then(function(res) { return res; })
+            .catch(function() { return null; });
+    }
+
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    if (limit > tvRemaining()) limit = tvRemaining();
+    var timer = null;
+
+    var timeoutPromise = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            reject(new Error("Timeout"));
+        }, limit);
+    });
+
+    return Promise.race([fetchPromise, timeoutPromise])
+        .then(function(res) {
+            if (timer) clearTimeout(timer);
+            return res;
+        })
+        .catch(function() {
+            if (timer) clearTimeout(timer);
+            return null;
+        });
+}
+
+// ==========================================
+// 1b. HELPERS DE STRINGS (HERMES SAFE)
+// ==========================================
 
 function cleanTitle(str) {
     if (!str) return "";
-    return str
+    var normalized = str;
+    try {
+        // QuickJS/entornos reducidos pueden no traer String.prototype.normalize
+        normalized = str.normalize("NFD");
+    } catch (eNorm) {}
+    return normalized
         .toLowerCase()
-        .normalize("NFD")
         .replace(/[\u0300-\u036f]/g, "")
         .replace(/[^a-z0-9\s]+/g, " ")
         .replace(/\s+/g, " ")
@@ -126,13 +281,22 @@ function unpackJS(packed) {
 function probeM3u8Quality(m3u8Url, headers) {
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve("720p");
 
+    if (!HAS_TIMER && tvRemaining() < 25000) {
+        // NuvioTV: el probe corre SIN cancelacion JS (no hay timer) y OkHttp tarda
+        // hasta 30s en cortar una lectura colgada. Se lanza solo si quedan >= 25s
+        // de presupuesto, con margen frente al kill del runtime (60s).
+        // Si no: calidad por defecto.
+        logDiag("presupuesto insuficiente para probe m3u8 (" + tvRemaining() + "ms), calidad por defecto");
+        return Promise.resolve("720p");
+    }
+
     return fetchWithTimeout(m3u8Url, {
         headers: headers || { "User-Agent": USER_AGENT },
         redirect: "follow"
     }, 2000)
     .then(function(res) {
-        if (!res.ok) return "720p";
-        return res.text();
+        if (!res || !res.ok) return "720p";
+        return textWithTimeout(res, 2500);
     })
     .then(function(text) {
         if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
@@ -182,8 +346,12 @@ function resolveGoodStream(url) {
         },
         body: postBody
     }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
+    .then(function(res) {
+        if (!res || !res.ok) return null;
+        return textWithTimeout(res, 3000);
+    })
     .then(function(html) {
+        if (!html) return null;
         if (html.indexOf("File is no longer available") !== -1 || html.indexOf("deleted") !== -1) {
             return null;
         }
@@ -216,8 +384,12 @@ function resolveFilemoon(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
     }, NETWORK_TIMEOUT)
-    .then(function(res) { return res.text(); })
+    .then(function(res) {
+        if (!res || !res.ok) return null;
+        return textWithTimeout(res, 3000);
+    })
     .then(function(html) {
+        if (!html) return null;
         var direct = html.match(/(?:file|sources|src)\s*:\s*["']([^"']+\.m3u8[^"']*)["']/i);
         if (direct) {
             var streamUrl = direct[1].replace(/\\/g, "");
@@ -271,9 +443,14 @@ function getMediaData(tmdbId, mediaType) {
     var type = isTv ? "tv" : "movie";
     var url = "https://api.themoviedb.org/3/" + type + "/" + tmdbId + "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
 
-    return fetchWithTimeout(url, null, 2500)
-        .then(function(res) { return res.json(); })
+    return fetchWithTimeout(url, {}, 2500)
+        .then(function(res) {
+            if (!res || !res.ok) throw new Error("TMDB HTTP " + (res ? res.status : "null"));
+            return jsonWithTimeout(res, 3000);
+        })
         .then(function(data) {
+            if (!data) return null;
+
             var titles = [];
             if (data.title) titles.push(data.title);
             if (data.name) titles.push(data.name);
@@ -292,13 +469,18 @@ function getMediaData(tmdbId, mediaType) {
                 }
             }
 
+            logDiag("TMDB ok: '" + (isTv ? data.name : data.title || "?") + "' (" + ((data.release_date || data.first_air_date || "").substring(0, 4)) + ") timer=" + HAS_TIMER);
+
             return {
                 title: isTv ? data.name : data.title,
                 titles: uniqueTitles,
                 year: (data.release_date || data.first_air_date || "").substring(0, 4)
             };
         })
-        .catch(function() { return null; });
+        .catch(function(eTmdb) {
+            logDiag("TMDB fallo: " + (eTmdb && eTmdb.message ? eTmdb.message : eTmdb));
+            return null;
+        });
 }
 
 // ==========================================
@@ -310,8 +492,9 @@ function searchPelisGO(query, isTv) {
     var searchUrl = BASE_URL + "/search?q=" + encodeURIComponent(query);
 
     return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
-        .then(function(res) { return res && res.ok ? res.text() : ""; })
+        .then(function(res) { return res && res.ok ? textWithTimeout(res, 3000) : ""; })
         .then(function(html) {
+            if (!html) html = "";
             var linkPattern = isTv ? /href=["'](\/series\/[^"'\s<>]+)["']/gi : /href=["'](\/movies\/[^"'\s<>]+)["']/gi;
             var slugs = [];
             var m;
@@ -341,7 +524,7 @@ function searchMultiQuery(queries, isTv) {
 // 7. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
 // ==========================================
 
-function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+function getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum) {
     if (!tmdbId) return Promise.resolve([]);
 
     var isTv = mediaType === "tv" || mediaType === "series";
@@ -365,7 +548,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
         }
 
         return searchMultiQuery(searchQueries, isTv).then(function(slugs) {
-            if (!slugs || slugs.length === 0) return [];
+            if (!slugs || slugs.length === 0) {
+                logDiag("busqueda sin resultados (" + Math.round(tvElapsed()) + "ms)");
+                return [];
+            }
 
             var scoredCandidates = [];
             for (var u = 0; u < slugs.length; u++) {
@@ -375,22 +561,27 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                 }
             }
 
-            if (scoredCandidates.length === 0) return [];
+            if (scoredCandidates.length === 0) {
+                logDiag("sin candidatos validos tras scoring");
+                return [];
+            }
 
             scoredCandidates.sort(function(a, b) { return b.score - a.score; });
+            logDiag("busqueda: " + slugs.length + " slugs, " + scoredCandidates.length + " validos (" + Math.round(tvElapsed()) + "ms)");
 
             function tryCandidates(cIdx) {
                 if (cIdx >= scoredCandidates.length) return Promise.resolve([]);
                 var currentSlug = scoredCandidates[cIdx].slug;
+                logDiag("candidato " + (cIdx + 1) + "/" + scoredCandidates.length + ": " + currentSlug + " (" + Math.round(tvElapsed()) + "ms)");
 
-                var pageUrl = isTv ? 
+                var pageUrl = isTv ?
                     (BASE_URL + "/series/" + currentSlug + "/temporada/" + s + "/episodio/" + e) :
                     (BASE_URL + "/movies/" + currentSlug);
 
                 return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
                     .then(function(res) {
-                        if (!res.ok) return null;
-                        return res.text();
+                        if (!res || !res.ok) return null;
+                        return textWithTimeout(res, 3000);
                     })
                     .then(function(html) {
                         if (!html) return null;
@@ -409,7 +600,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                         return fetchWithTimeout(streamApi, {
                             headers: { "User-Agent": USER_AGENT, "Accept": "application/json", "Referer": pageUrl }
                         }, NETWORK_TIMEOUT)
-                        .then(function(r) { return r.json(); })
+                        .then(function(r) {
+                            if (!r || !r.ok) return null;
+                            return jsonWithTimeout(r, 3000);
+                        })
                         .then(function(streamJson) {
                             return (streamJson && streamJson.links && streamJson.links.length > 0) ? streamJson.links : null;
                         });
@@ -418,9 +612,11 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                         if (!links || links.length === 0) {
                             return tryCandidates(cIdx + 1);
                         }
+                        logDiag("api stream: " + links.length + " enlaces (" + Math.round(tvElapsed()) + "ms)");
 
                         var resolvePromises = links.map(function(item) {
                             return dispatchLinkResolver(item).then(function(res) {
+                                logDiag("resolver " + (item.server || item.name || "?") + "/" + (item.language || "?") + " -> " + (res && res.url ? "OK" : "null") + " (" + Math.round(tvElapsed()) + "ms)");
                                 if (res && res.url) {
                                     return {
                                         name: "PelisGO",
@@ -439,7 +635,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                             for (var r = 0; r < results.length; r++) {
                                 if (results[r]) streams.push(results[r]);
                             }
-                            if (streams.length > 0) return streams;
+                            if (streams.length > 0) {
+                                logDiag("total " + streams.length + " streams (" + Math.round(tvElapsed()) + "ms)");
+                                return streams;
+                            }
                             return tryCandidates(cIdx + 1);
                         });
                     });
@@ -447,11 +646,25 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
 
             return tryCandidates(0);
         });
-    }).catch(function() {
+    }).catch(function(eStage) {
+        logDiag("fallo de etapa: " + (eStage && eStage.message ? eStage.message : eStage));
         return [];
     });
 }
 
-if (typeof module !== "undefined") {
+// Contrato: getStreams SIEMPRE devuelve una Promesa que resuelve a un Array.
+function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+    try {
+        START_TS = tvNow();
+        logDiag("getStreams tmdbId=" + tmdbId + " type=" + mediaType + " s=" + seasonNum + " e=" + episodeNum);
+        if (!tmdbId) return Promise.resolve([]);
+        return getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum);
+    } catch (eSync) {
+        logDiag("excepcion sincrona: " + (eSync && eSync.message ? eSync.message : eSync));
+        return Promise.resolve([]);
+    }
+}
+
+if (typeof module !== "undefined" && module.exports) {
     module.exports = { getStreams: getStreams };
 }
