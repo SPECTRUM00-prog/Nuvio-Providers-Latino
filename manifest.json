@@ -1,12 +1,12 @@
 {
   "name": "Nuvio-Spectrum-Latino",
-  "version": "2.8.3",
+  "version": "2.8.1",
   "scrapers": [
     {
       "id": "cinecalidad",
       "name": "CineCalidad",
-      "description": "Películas y Series en Latino Full HD desde CineCalidad (Vimeos, GoodStream, StreamWish, Filemoon).",
-      "version": "2.3.0",
+      "description": "Películas y Series en Latino Full HD desde CineCalidad (Vimeos HLS + Magnets P2P Dual). Compatible NuvioTV QuickJS.",
+      "version": "2.4.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": [
         "movie",
@@ -38,12 +38,11 @@
     {
       "id": "lamovie",
       "name": "LaMovie",
-      "description": "Películas y Series en Español Latino desde LaMovie (Vimeos, GoodStream, StreamWish).",
-      "version": "2.2.0",
+      "description": "Películas en Español Latino desde LaMovie (wp-api v1 + Vimeos HLS). Compatible NuvioTV QuickJS.",
+      "version": "2.3.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": [
-        "movie",
-        "tv"
+        "movie"
       ],
       "filename": "providers/lamovie.js",
       "enabled": true,
@@ -86,8 +85,8 @@
     {
       "id": "pelisforte",
       "name": "PelisForte",
-      "description": "Películas y Series en Latino, Castellano y Sub con Doblajes Originales (OK.ru CDN 1080p Directo, Byse, StreamWish, VidHide).",
-      "version": "1.0.0",
+      "description": "Películas y Series en Latino/Castellano/Sub desde PelisForte (gateway mp4.nu + StreamWish/VidHide/Filemoon). Compatible NuvioTV QuickJS.",
+      "version": "1.1.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": [
         "movie",
@@ -102,8 +101,8 @@
     {
       "id": "pelispedia",
       "name": "PelisPedia",
-      "description": "Películas, Series y Anime en Español Latino desde PelisPedia (VidHide, StreamWish, Voe).",
-      "version": "1.0.0",
+      "description": "Películas, Series y Anime en Español Latino desde PelisPedia (VidHide, StreamWish, Voe). v1.1: fix NuvioTV (QuickJS sin setTimeout) + timeout en cuerpo.",
+      "version": "1.1.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": [
         "movie",
