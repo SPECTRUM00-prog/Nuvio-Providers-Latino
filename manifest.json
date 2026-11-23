@@ -21,8 +21,8 @@
     {
       "id": "pelisgo",
       "name": "PelisGO",
-      "description": "Películas y Series en Latino y Castellano en 1080p (KeKi Direct HLS, Flix GoodStream, Magi Filemoon).",
-      "version": "1.0.0",
+      "description": "Películas y Series en Latino y Castellano en 1080p (KeKi Direct HLS, Flix GoodStream, Magi Filemoon). v1.1: fix NuvioTV (QuickJS sin setTimeout) + timeout en cuerpo.",
+      "version": "1.1.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": [
         "movie",
