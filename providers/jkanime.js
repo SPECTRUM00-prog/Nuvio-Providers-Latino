@@ -3,12 +3,26 @@
  * Motor: AniList GraphQL + Algoritmo Universal Split-Cour y Continuo
  * Resolvers: Desu (1080p), VidHide, StreamWish (playerwish / hgcloud), Filemoon, Mixdrop, MP4Upload, Streamtape
  * Versión Restaurada y Estable: Basada en la arquitectura del 8 de Noviembre (100% Firestick / NuvioTV Safe)
+ * v2.9-FINAL (2026-11): Base v2.6-diag (la que dio 5 streams / 4 vivos en el audit
+ *   260822 S1E1) + 4 mejoras quirúrgicas SIN tocar el pipeline de slugs:
+ *   1) umRegex de jkplayer restaurado y ampliado: /jkplayer/<player>(.php)?<cola>
+ *      (la v2.8-full exigía "\.php\?" y las URLs reales son /jkplayer/um?e=... sin
+ *      .php -> se perdían los 2 streams Desu 1080p).
+ *   2) acek-cdn.com (CDN de VidHide) añadido a la familia VSW en detectQualityFromUrl:
+ *      variantes _,l,n,h, -> h=1080p (antes etiquetaba 720p por caer en el mapa genérico).
+ *   3) Resolver genérico para hosts desconocidos (voe.sx, d-s.io, ...): fetch del embed
+ *      + regex m3u8/mp4 sobre HTML crudo y packer desempaquetado. Se saltan hosts de
+ *      descarga (mediafire/mega/1fichier) y Byse (captcha PoW).
+ *   4) Dedupe de streams por URL exacta (um/umv de Desu apuntan al MISMO m3u8 -> antes
+ *      salían 2 entradas idénticas) + orden final por calidad (1080p primero, estable).
+ *   SIN el cap "slice(0,4)" de la v2.8-full: se resuelven TODOS los embeds de la página
+ *   (ese cap dejaba solo mediafire/mega/hgcloud/vidhide y por eso daba 1 stream).
  * v2.4-TVFIX (2026-11): Adaptativo sin setTimeout. El runtime QuickJS de NuvioTV
  *   (dokar quickjs-kt 1.0.5 + polyfill de PluginRuntime.kt) NO define setTimeout/clearTimeout.
  *   Todo helper que lo usa rechaza al instante y el provider devuelve 0 streams SOLO en TV.
  *   Ahora: si no hay timer (TV), fetch directo con presupuesto global Date.now();
  *   si hay timer (Hermes móvil / PC / Node), se conserva el timeout por llamada.
- *   Marcador de versión: buscar en logcat tag "Plugin:jkanime" el texto [JKAnime][v2.6-diag].
+ *   Marcador de versión: buscar en logcat tag "Plugin:jkanime" el texto [JKAnime][v2.9-final].
  *   DIAGNOSTICO: esta build escribe TODO por console.error (nivel Error de logcat),
  *   porque NuvioTV/FireOS silencia los mensajes Debug (console.log) en release.
  * v2.5-SLUGFIX (2026-11): Corrige 3 bugs de resolución de slug (fallaba en TODOS los
@@ -321,8 +335,9 @@ function detectQualityFromUrl(url) {
         var urlsetMatch = clean.match(/[,_]([a-z,]+)[,_]\.urlset/);
         if (urlsetMatch) {
             var tags = urlsetMatch[1].split(",");
-            // Mapa por familia (Regla 7): VidHide/StreamWish/Filemoon h=1080, n=720, l=480
-            var isVswFamily = clean.indexOf("vidhide") !== -1 || clean.indexOf("minochinos") !== -1 || clean.indexOf("morencius") !== -1 || clean.indexOf("callistanise") !== -1 || clean.indexOf("streamwish") !== -1 || clean.indexOf("hlswish") !== -1 || clean.indexOf("flaswish") !== -1 || clean.indexOf("playerwish") !== -1 || clean.indexOf("hglink") !== -1 || clean.indexOf("filemoon") !== -1;
+            // Mapa por familia (Regla 7): VidHide/StreamWish/Filemoon h=1080, n=720, l=480.
+            // v2.9: acek-cdn.com es el CDN que sirve el HLS de VidHide (hls2/..._,l,n,h,.urlset).
+            var isVswFamily = clean.indexOf("vidhide") !== -1 || clean.indexOf("minochinos") !== -1 || clean.indexOf("morencius") !== -1 || clean.indexOf("callistanise") !== -1 || clean.indexOf("streamwish") !== -1 || clean.indexOf("hlswish") !== -1 || clean.indexOf("flaswish") !== -1 || clean.indexOf("playerwish") !== -1 || clean.indexOf("hglink") !== -1 || clean.indexOf("filemoon") !== -1 || clean.indexOf("acek-cdn") !== -1;
             if (isVswFamily) {
                 if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("h") !== -1) return "1080p";
                 if (tags.indexOf("n") !== -1) return "720p";
@@ -563,7 +578,7 @@ function searchJKAnime(query) {
     return Promise.all([
         fetchWithTimeout(apiUrl, { headers: DEFAULT_HEADERS }, 2500)
             .then(function(res) {
-                if (!res || !res.ok) { console.error("[JKAnime][v2.6-diag] search API HTTP " + (res ? res.status : "null") + " q='" + query + "'"); return null; }
+                if (!res || !res.ok) { console.error("[JKAnime][v2.9-final] search API HTTP " + (res ? res.status : "null") + " q='" + query + "'"); return null; }
                 return jsonWithTimeout(res, 2500);
             })
             .then(function(json) {
@@ -583,7 +598,7 @@ function searchJKAnime(query) {
             .catch(function() {}),
         fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2500)
             .then(function(res) {
-                if (!res || !res.ok) { console.error("[JKAnime][v2.6-diag] search HTML HTTP " + (res ? res.status : "null") + " q='" + query + "'"); return ""; }
+                if (!res || !res.ok) { console.error("[JKAnime][v2.9-final] search HTML HTTP " + (res ? res.status : "null") + " q='" + query + "'"); return ""; }
                 return textWithTimeout(res, 2500);
             })
             .then(function(html) {
@@ -604,7 +619,7 @@ function searchJKAnime(query) {
         for (var i = 0; i < htmlSlugs.length; i++) {
             if (out.indexOf(htmlSlugs[i]) === -1) out.push(htmlSlugs[i]);
         }
-        console.error("[JKAnime][v2.6-diag] search '" + query + "': api=" + apiSlugs.length + " html=" + htmlSlugs.length + " total=" + out.length);
+        console.error("[JKAnime][v2.9-final] search '" + query + "': api=" + apiSlugs.length + " html=" + htmlSlugs.length + " total=" + out.length);
         return out;
     });
 }
@@ -788,6 +803,34 @@ function resolveDesuMagi(url) {
         }).catch(function() { return null; });
 }
 
+// v2.9: resolver genérico para hosts desconocidos (voe.sx, d-s.io, etc.).
+// Busca m3u8/mp4 tanto en el HTML crudo como en el packer desempaquetado.
+function resolveGenericEmbed(url) {
+    return fetchWithTimeout(url, { headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }, redirect: "follow" }, 2800)
+        .then(function(res) { return res ? textWithTimeout(res, 3000) : ""; })
+        .then(function(html) {
+            if (!html) return null;
+            var unpacked = unpackFromHtml(html) || "";
+            var hay = html + "\n" + unpacked;
+            var hostTag = url.replace(/^https?:\/\//i, "").split("/")[0] || "Genérico";
+
+            var m3u8 = hay.match(/https?:\/\/[^"'\s<>\\]+\.m3u8[^"'\s<>\\]*/i);
+            if (m3u8) {
+                return probeM3u8Quality(m3u8[0], { "User-Agent": USER_AGENT, "Referer": url }).then(function(q) {
+                    return { url: m3u8[0], serverName: hostTag, quality: q || "720p", headers: { "User-Agent": USER_AGENT, "Referer": url } };
+                });
+            }
+
+            var mp4 = hay.match(/https?:\/\/[^"'\s<>\\]+\.mp4[^"'\s<>\\]*/i);
+            if (mp4) {
+                var q4 = detectQualityFromUrl(mp4[0]) || "720p";
+                return { url: mp4[0], serverName: hostTag, quality: q4, headers: { "User-Agent": USER_AGENT, "Referer": url } };
+            }
+            return null;
+        })
+        .catch(function() { return null; });
+}
+
 function dispatchResolver(url) {
     if (!url) return Promise.resolve(null);
     var u = url.toLowerCase();
@@ -800,13 +843,16 @@ function dispatchResolver(url) {
     if (u.indexOf("mp4upload") !== -1) return resolveMp4upload(url);
     if (u.indexOf("streamtape") !== -1) return resolveStreamtape(url);
     if (u.indexOf("/jkplayer/") !== -1 || u.indexOf("playmudos") !== -1) return resolveDesuMagi(url);
-    return Promise.resolve(null);
+    // v2.9: hosts desconocidos -> intento genérico. Los hosts de descarga directa se
+    // saltan para no gastar peticiones (su HTML no contiene m3u8/mp4 de stream).
+    if (u.indexOf("mediafire") !== -1 || u.indexOf("mega.nz") !== -1 || u.indexOf("mega.io") !== -1 || u.indexOf("1fichier") !== -1) return Promise.resolve(null);
+    return resolveGenericEmbed(url);
 }
 
 function extractStreamsFromEpisodePage(pageUrl) {
     return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 2800)
         .then(function(res) {
-            if (!res || !res.ok) { console.error("[JKAnime][v2.6-diag] pagina HTTP " + (res ? res.status : "null") + " url=" + pageUrl); return ""; }
+            if (!res || !res.ok) { console.error("[JKAnime][v2.9-final] pagina HTTP " + (res ? res.status : "null") + " url=" + pageUrl); return ""; }
             return textWithTimeout(res, 3000);
         })
         .then(function(html) {
@@ -831,7 +877,10 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 if (d && d.indexOf("http") === 0) rawEmbeds.push(d);
             }
 
-            var umRegex = /https?:\/\/jkanime\.net\/jkplayer\/(?:um|umv|uk)[^\s"'<>]+/gi, umMatch;
+            // v2.9: cualquier player interno de jkanime (um, umv, uk, um2, asp...), con o
+            // sin .php. La v2.8-full exigía "\.php\?" y las URLs reales son /jkplayer/um?e=...
+            // (sin .php): por eso se perdían los streams Desu 1080p.
+            var umRegex = /https?:\/\/jkanime\.net\/jkplayer\/[a-z0-9_]{1,12}(?:\.php)?[^\s"'<>]*/gi, umMatch;
             while ((umMatch = umRegex.exec(html)) !== null) {
                 rawEmbeds.push(umMatch[0].replace(/&amp;/g, "&"));
             }
@@ -844,14 +893,19 @@ function extractStreamsFromEpisodePage(pageUrl) {
             }
 
             if (uniqueEmbeds.length === 0) {
-                if (html.length > 0) console.error("[JKAnime][v2.6-diag] pagina 200 sin embeds (html=" + html.length + " chars) url=" + pageUrl);
+                if (html.length > 0) console.error("[JKAnime][v2.9-final] pagina 200 sin embeds (html=" + html.length + " chars) url=" + pageUrl);
                 return [];
             }
 
             var promises = uniqueEmbeds.map(function(embedUrl) {
+                var hostTag = String(embedUrl).replace(/^https?:\/\//i, "").split("/")[0] || "?";
                 return dispatchResolver(embedUrl)
                     .then(function(res) {
-                        if (!res || !res.url) return null;
+                        if (!res || !res.url) {
+                            console.error("[JKAnime][v2.9-final] resolver " + hostTag + " -> SIN resultado");
+                            return null;
+                        }
+                        console.error("[JKAnime][v2.9-final] resolver " + hostTag + " -> OK " + res.serverName + " " + (res.quality || "?"));
                         var q = res.quality || "720p";
                         return {
                             name: "JKAnime",
@@ -861,7 +915,10 @@ function extractStreamsFromEpisodePage(pageUrl) {
                             headers: res.headers || {}
                         };
                     })
-                    .catch(function() { return null; });
+                    .catch(function(eR) {
+                        console.error("[JKAnime][v2.9-final] resolver " + hostTag + " -> EXCEPCION " + (eR && eR.message ? eR.message : ""));
+                        return null;
+                    });
             });
 
             return Promise.all(promises);
@@ -869,9 +926,30 @@ function extractStreamsFromEpisodePage(pageUrl) {
         .then(function(results) {
             var valid = [];
             for (var i = 0; i < results.length; i++) {
-                if (results[i]) valid.push(results[i]);
+                if (results[i] && results[i].url) valid.push(results[i]);
             }
-            return valid;
+
+            // v2.9: dedupe por URL exacta. Los endpoints um/umv de Desu devuelven el
+            // MISMO m3u8 -> antes salían 2 entradas idénticas en la lista.
+            var seenUrls = [];
+            var uniqueStreams = [];
+            for (var d = 0; d < valid.length; d++) {
+                if (seenUrls.indexOf(valid[d].url) === -1) {
+                    seenUrls.push(valid[d].url);
+                    uniqueStreams.push(valid[d]);
+                }
+            }
+
+            // v2.9: mejor calidad primero (desempate estable por orden de aparición).
+            var qRank = { "4K": 5, "1080p": 4, "720p": 3, "480p": 2, "360p": 1 };
+            uniqueStreams.sort(function(a, b) {
+                var ra = qRank[a.quality] || 0;
+                var rb = qRank[b.quality] || 0;
+                if (ra !== rb) return rb - ra;
+                return seenUrls.indexOf(a.url) - seenUrls.indexOf(b.url);
+            });
+
+            return uniqueStreams;
         })
         .catch(function() { return []; });
 }
@@ -884,7 +962,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
     START_TS = tvNow();
     var mt = String(mediaType || "").toLowerCase();
     var isMovie = (mt === "movie" || mt === "pelicula");
-    console.error("[JKAnime][v2.6-diag] getStreams tmdbId=" + tmdbId + " type=" + mt + " s=" + season + " e=" + episode + " timer=" + HAS_TIMER);
+    console.error("[JKAnime][v2.9-final] getStreams tmdbId=" + tmdbId + " type=" + mt + " s=" + season + " e=" + episode + " timer=" + HAS_TIMER);
     var sParsed = parseInt(season, 10);
     var sNum = isNaN(sParsed) ? 1 : sParsed;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
@@ -907,7 +985,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
             if (!isAnimation) {
-                console.error("[JKAnime][v2.6-diag] TMDB sin genero 16 (animation). Se devuelve vacio.");
+                console.error("[JKAnime][v2.9-final] TMDB sin genero 16 (animation). Se devuelve vacio.");
                 return [];
             }
 
@@ -923,7 +1001,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
             if (!isAsianAnim) {
-                console.error("[JKAnime][v2.6-diag] TMDB sin origen asiatico (lang=" + origLang + "). Se devuelve vacio.");
+                console.error("[JKAnime][v2.9-final] TMDB sin origen asiatico (lang=" + origLang + "). Se devuelve vacio.");
                 return [];
             }
 
@@ -988,7 +1066,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            console.error("[JKAnime][v2.6-diag] TMDB ok: s1Count=" + s1Count + " effS=" + effectiveSeason + " effE=" + effectiveEpisode + " abs=" + absoluteEp + " keyword='" + searchKeyword + "'");
+            console.error("[JKAnime][v2.9-final] TMDB ok: s1Count=" + s1Count + " effS=" + effectiveSeason + " effE=" + effectiveEpisode + " abs=" + absoluteEp + " keyword='" + searchKeyword + "'");
 
             return Promise.all([
                 fetchAniListMapping(searchKeyword),
@@ -1019,7 +1097,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 return secondRound.then(function(nativeSlugs) {
 
                 var aniTarget = resolveUniversalTarget(aniListMedia, effectiveSeason, effectiveEpisode, absoluteEp, titles);
-                console.error("[JKAnime][v2.6-diag] AniList=" + (aniListMedia ? aniListMedia.length : 0) + " items, nativos=" + nativeSlugs.length + ", target=" + (aniTarget && aniTarget.slug ? aniTarget.slug + " ep=" + aniTarget.targetEp : "NINGUNO"));
+                console.error("[JKAnime][v2.9-final] AniList=" + (aniListMedia ? aniListMedia.length : 0) + " items, nativos=" + nativeSlugs.length + ", target=" + (aniTarget && aniTarget.slug ? aniTarget.slug + " ep=" + aniTarget.targetEp : "NINGUNO"));
                 var candidateSlugs = [];
 
                 if (aniTarget && aniTarget.slug) {
@@ -1098,7 +1176,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
 
                 if (scoredSlugs.length === 0) {
-                    console.error("[JKAnime][v2.6-diag] SIN slugs con score >= 35 de " + candidateSlugs.length + " candidatos");
+                    console.error("[JKAnime][v2.9-final] SIN slugs con score >= 35 de " + candidateSlugs.length + " candidatos");
                     return [];
                 }
 
@@ -1113,7 +1191,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                 var diagTop = [];
                 for (var dt = 0; dt < scoredSlugs.length && dt < 5; dt++) diagTop.push(scoredSlugs[dt].slug + ":" + scoredSlugs[dt].score);
-                console.error("[JKAnime][v2.6-diag] top slugs: " + (diagTop.length ? diagTop.join(" | ") : "NINGUNO"));
+                console.error("[JKAnime][v2.9-final] top slugs: " + (diagTop.length ? diagTop.join(" | ") : "NINGUNO"));
 
                 var pageUrlsToTry = [];
                 for (var sIdx = 0; sIdx < scoredSlugs.length; sIdx++) {
@@ -1165,7 +1243,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                console.error("[JKAnime][v2.6-diag] intentando " + uniquePageUrls.length + " paginas. primeras: " + (uniquePageUrls.length ? uniquePageUrls.slice(0, 3).join(" ; ") : "-"));
+                console.error("[JKAnime][v2.9-final] intentando " + uniquePageUrls.length + " paginas. primeras: " + (uniquePageUrls.length ? uniquePageUrls.slice(0, 3).join(" ; ") : "-"));
 
                 function tryBatch(urls, batchSize, batchNum) {
                     if (!urls || urls.length === 0) return Promise.resolve([]);
@@ -1176,7 +1254,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                     var batchPromises = currentBatch.map(function(url) {
                         return extractStreamsFromEpisodePage(url).then(function(r) {
-                            console.error("[JKAnime][v2.6-diag] lote" + batchNum + ": " + url + " -> " + (r ? r.length : 0) + " streams");
+                            console.error("[JKAnime][v2.9-final] lote" + batchNum + ": " + url + " -> " + (r ? r.length : 0) + " streams");
                             return r;
                         });
                     });
@@ -1195,7 +1273,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
             })
         })
         .catch(function(e) {
-            console.error("[JKAnime][v2.6-diag] ERROR fatal: " + (e && e.message ? e.message : String(e)));
+            console.error("[JKAnime][v2.9-final] ERROR fatal: " + (e && e.message ? e.message : String(e)));
             return [];
         });
 }
