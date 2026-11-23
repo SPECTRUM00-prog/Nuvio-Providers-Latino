@@ -8,10 +8,15 @@
       "description": "Películas y Series en Latino Full HD desde CineCalidad (Vimeos, GoodStream, StreamWish, Filemoon).",
       "version": "2.3.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/cinecalidad.js",
       "enabled": true,
-      "contentLanguage": ["es"]
+      "contentLanguage": [
+        "es"
+      ]
     },
     {
       "id": "pelisgo",
@@ -19,10 +24,16 @@
       "description": "Películas y Series en Latino y Castellano en 1080p (KeKi Direct HLS, Flix GoodStream, Magi Filemoon).",
       "version": "1.0.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv", "series"],
+      "supportedTypes": [
+        "movie",
+        "tv",
+        "series"
+      ],
       "filename": "providers/pelisgo.js",
       "enabled": true,
-      "contentLanguage": ["es"]
+      "contentLanguage": [
+        "es"
+      ]
     },
     {
       "id": "lamovie",
@@ -30,10 +41,15 @@
       "description": "Películas y Series en Español Latino desde LaMovie (Vimeos, GoodStream, StreamWish).",
       "version": "2.2.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/lamovie.js",
       "enabled": true,
-      "contentLanguage": ["es"]
+      "contentLanguage": [
+        "es"
+      ]
     },
     {
       "id": "sololatino",
@@ -41,10 +57,15 @@
       "description": "Películas y Series en Español Latino desde SoloLatino / Embed69 (VidHide, StreamWish, Voe).",
       "version": "1.3.3",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/sololatino.js",
       "enabled": true,
-      "contentLanguage": ["es"]
+      "contentLanguage": [
+        "es"
+      ]
     },
     {
       "id": "hackstore",
@@ -52,10 +73,15 @@
       "description": "Películas y Series en Español Latino desde HackStore2 (Vimeos, GoodStream, StreamWish, VidHide).",
       "version": "2.2.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/hackstore.js",
       "enabled": true,
-      "contentLanguage": ["es"]
+      "contentLanguage": [
+        "es"
+      ]
     },
     {
       "id": "pelisforte",
@@ -63,10 +89,15 @@
       "description": "Películas y Series en Latino, Castellano y Sub con Doblajes Originales (OK.ru CDN 1080p Directo, Byse, StreamWish, VidHide).",
       "version": "1.0.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/pelisforte.js",
       "enabled": true,
-      "contentLanguage": ["es"]
+      "contentLanguage": [
+        "es"
+      ]
     },
     {
       "id": "pelispedia",
@@ -74,10 +105,15 @@
       "description": "Películas, Series y Anime en Español Latino desde PelisPedia (VidHide, StreamWish, Voe).",
       "version": "1.0.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/pelispedia.js",
       "enabled": true,
-      "contentLanguage": ["es"]
+      "contentLanguage": [
+        "es"
+      ]
     },
     {
       "id": "jkanime",
@@ -85,21 +121,33 @@
       "description": "Anime en emisión y finalizados en Sub Español desde JKAnime con AniList Engine (Desu, VidHide, StreamWish, MP4Upload, Streamtape).",
       "version": "1.4.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/jkanime.js",
       "enabled": true,
-      "contentLanguage": ["es", "ja"]
+      "contentLanguage": [
+        "es",
+        "ja"
+      ]
     },
     {
       "id": "animeav1",
       "name": "AnimeAV1",
-      "description": "Anime en Sub Español y Doblaje Latino en Full HD 1080p con AniList Engine (Zilla HLS, MP4Upload, StreamWish).",
-      "version": "1.1.0",
+      "description": "Anime en Sub Español y Doblaje Latino con AniList Engine (Zilla HLS, MP4Upload, StreamWish). v1.2: fix NuvioTV (QuickJS sin setTimeout) + busqueda /api/search.",
+      "version": "1.2.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/animeav1.js",
       "enabled": true,
-      "contentLanguage": ["es", "ja"]
+      "contentLanguage": [
+        "es",
+        "ja"
+      ]
     },
     {
       "id": "animejara",
@@ -107,10 +155,16 @@
       "description": "Anime en emisión y finalizados en Sub, Latino y Castellano (StreamWish, Filemoon, VidHide, MP4Upload, Streamtape, YourUpload, Uqload, Mixdrop).",
       "version": "1.0.0",
       "author": "SPECTRUM00-prog",
-      "supportedTypes": ["movie", "tv"],
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
       "filename": "providers/animejara.js",
       "enabled": true,
-      "contentLanguage": ["es", "ja"]
+      "contentLanguage": [
+        "es",
+        "ja"
+      ]
     }
   ]
-} 
+}
