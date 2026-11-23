@@ -8,7 +8,23 @@
  *   Todo helper que lo usa rechaza al instante y el provider devuelve 0 streams SOLO en TV.
  *   Ahora: si no hay timer (TV), fetch directo con presupuesto global Date.now();
  *   si hay timer (Hermes móvil / PC / Node), se conserva el timeout por llamada.
- *   Marcador de versión: buscar en logcat tag "Plugin:jkanime" el texto [JKAnime][v2.6-diag].
+ *   v2.8-FULL (2026-11): restaura el paquete de 3 streams y su calidad real.
+ *   1) CALIDAD (bug demostrado): la familia VidHide/StreamWish rotó a CDN nueva
+ *      (acek-cdn.com) y el detector por dominio ya no la reconocía -> la variante
+ *      "h" (1080p) quedaba etiquetada 720p. Ahora: dominio nuevo O tríada l,n,h.
+ *   2) 'var servers' se parsea con walker de corchetes tolerante a JSON anidado
+ *      (el regex \\[[^\\]]+\\] se rompía y perdía servidores); acepta base64, URL
+ *      plana y protocol-relative.
+ *   3) jkplayer: cualquier *.php interno (um, umv, uk, asp...) va a Desu.
+ *   4) MERGE: se fusionan streams de varias páginas con dedupe por URL (antes
+ *      solo se devolvía la primera página con resultados).
+ *   5) DIAG por embed: hosts encontrados por página + resultado de cada resolver.
+ *   Marcador de versión: buscar en logcat tag "Plugin:jkanime" el texto [JKAnime][v2.8-full].
+ *   v2.7-FAST (2026-11): el proveedor YA funciona en TV (logcat confirmó 3 streams reales),
+ *   pero el reproductor de NuvioTV cancela la búsqueda al vencer su "timeout de auto-play"
+ *   (~10-12s) justo cuando los resultados llegaban. Optimizado para terminar antes:
+ *   primer lote de 1 URL, variantes con barra al final, sin sondeo m3u8 en TV,
+ *   máximo 4 resolvers por página.
  *   DIAGNOSTICO: esta build escribe TODO por console.error (nivel Error de logcat),
  *   porque NuvioTV/FireOS silencia los mensajes Debug (console.log) en release.
  * v2.5-SLUGFIX (2026-11): Corrige 3 bugs de resolución de slug (fallaba en TODOS los
@@ -179,6 +195,58 @@ function decodeBase64Safe(input) {
     return output;
 }
 
+// v2.8: parser de JSON tolerante a corchetes anidados y a "]" dentro de strings.
+// El regex antiguo \\[[^\\]]+\\] se rompía con cualquier estructura anidada
+// (p.ej. "options":[1,2]) y perdíamos servidores enteros de 'var servers'.
+function extractJsonArrayAfter(html, marker) {
+    if (!html) return null;
+    var idx = html.indexOf(marker);
+    while (idx !== -1) {
+        var eq = html.indexOf("=", idx + marker.length);
+        if (eq !== -1 && eq - idx < 40) {
+            var p = eq + 1;
+            while (p < html.length && (html.charAt(p) === " " || html.charAt(p) === "\n" || html.charAt(p) === "\r" || html.charAt(p) === "\t")) p++;
+            if (p < html.length && html.charAt(p) === "[") {
+                var depth = 0, inStr = false, esc = false, end = -1;
+                for (var q = p; q < html.length; q++) {
+                    var c = html.charAt(q);
+                    if (esc) { esc = false; continue; }
+                    if (c === "\\") { esc = true; continue; }
+                    if (c === "\"") { inStr = !inStr; continue; }
+                    if (inStr) continue;
+                    if (c === "[") depth++;
+                    else if (c === "]") { depth--; if (depth === 0) { end = q + 1; break; } }
+                }
+                if (end !== -1) {
+                    try { return JSON.parse(html.substring(p, end)); } catch (e1) { return null; }
+                }
+            }
+        }
+        idx = html.indexOf(marker, idx + marker.length);
+    }
+    return null;
+}
+
+// v2.8: convierte el array de servidores de la página en embeds. Acepta
+// remote/url/file en base64, URL plana o protocol-relative (//host/...).
+function embedsFromServersArray(sArr) {
+    var out = [];
+    if (!sArr || typeof sArr.length === "undefined") return out;
+    for (var i = 0; i < sArr.length; i++) {
+        var it = sArr[i];
+        if (!it) continue;
+        var raw = it.remote || it.url || it.file || "";
+        if (!raw) continue;
+        var dec = decodeBase64Safe(raw);
+        var cand = "";
+        if (dec && (dec.indexOf("http://") === 0 || dec.indexOf("https://") === 0)) cand = dec;
+        else if (raw.indexOf("http://") === 0 || raw.indexOf("https://") === 0) cand = raw;
+        else if (raw.indexOf("//") === 0 && raw.length > 4) cand = "https:" + raw;
+        if (cand) out.push({ embed: cand, server: it.title || it.name || "" });
+    }
+    return out;
+}
+
 function cleanTitle(text) {
     if (!text) return "";
     var normalized = text;
@@ -322,7 +390,13 @@ function detectQualityFromUrl(url) {
         if (urlsetMatch) {
             var tags = urlsetMatch[1].split(",");
             // Mapa por familia (Regla 7): VidHide/StreamWish/Filemoon h=1080, n=720, l=480
-            var isVswFamily = clean.indexOf("vidhide") !== -1 || clean.indexOf("minochinos") !== -1 || clean.indexOf("morencius") !== -1 || clean.indexOf("callistanise") !== -1 || clean.indexOf("streamwish") !== -1 || clean.indexOf("hlswish") !== -1 || clean.indexOf("flaswish") !== -1 || clean.indexOf("playerwish") !== -1 || clean.indexOf("hglink") !== -1 || clean.indexOf("filemoon") !== -1;
+            // v2.8: la familia rota de CDN (acek-cdn.com, sbspeed, etc.) y el host ya no
+            // contiene el nombre "vidhide/streamwish". Se reconoce por dominio conocido O
+            // por la tríada l,n,h que solo usa este codificador.
+            var isVswFamily = clean.indexOf("vidhide") !== -1 || clean.indexOf("minochinos") !== -1 || clean.indexOf("morencius") !== -1 || clean.indexOf("callistanise") !== -1 || clean.indexOf("streamwish") !== -1 || clean.indexOf("hlswish") !== -1 || clean.indexOf("flaswish") !== -1 || clean.indexOf("playerwish") !== -1 || clean.indexOf("hglink") !== -1 || clean.indexOf("filemoon") !== -1 || clean.indexOf("acek") !== -1 || clean.indexOf("sbspeed") !== -1 || clean.indexOf("videzz") !== -1;
+            if (!isVswFamily && tags.indexOf("l") !== -1 && tags.indexOf("n") !== -1 && tags.indexOf("h") !== -1) {
+                isVswFamily = true; // tríada l,n,h = 480/720/1080 característica de esta familia
+            }
             if (isVswFamily) {
                 if (tags.indexOf("x") !== -1 || tags.indexOf("o") !== -1 || tags.indexOf("h") !== -1) return "1080p";
                 if (tags.indexOf("n") !== -1) return "720p";
@@ -349,6 +423,10 @@ function probeM3u8Quality(m3u8Url, headers, defaultQuality) {
     if (fastQ) return Promise.resolve(fastQ);
 
     if (!m3u8Url || m3u8Url.indexOf(".m3u8") === -1) return Promise.resolve(fallback);
+
+    // v2.7-fast: en el TV no sondeamos el m3u8 (1 petición extra por stream y el
+    // reproductor corta la búsqueda a los ~10-12s). Queda la etiqueta por URL.
+    if (!HAS_TIMER) return Promise.resolve(fallback);
 
     return fetchWithTimeout(m3u8Url, { headers: headers || { "User-Agent": USER_AGENT }, redirect: "follow" }, 2500)
         .then(function(res) {
@@ -563,7 +641,7 @@ function searchJKAnime(query) {
     return Promise.all([
         fetchWithTimeout(apiUrl, { headers: DEFAULT_HEADERS }, 2500)
             .then(function(res) {
-                if (!res || !res.ok) { console.error("[JKAnime][v2.6-diag] search API HTTP " + (res ? res.status : "null") + " q='" + query + "'"); return null; }
+                if (!res || !res.ok) { console.error("[JKAnime][v2.8-full] search API HTTP " + (res ? res.status : "null") + " q='" + query + "'"); return null; }
                 return jsonWithTimeout(res, 2500);
             })
             .then(function(json) {
@@ -583,7 +661,7 @@ function searchJKAnime(query) {
             .catch(function() {}),
         fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2500)
             .then(function(res) {
-                if (!res || !res.ok) { console.error("[JKAnime][v2.6-diag] search HTML HTTP " + (res ? res.status : "null") + " q='" + query + "'"); return ""; }
+                if (!res || !res.ok) { console.error("[JKAnime][v2.8-full] search HTML HTTP " + (res ? res.status : "null") + " q='" + query + "'"); return ""; }
                 return textWithTimeout(res, 2500);
             })
             .then(function(html) {
@@ -604,7 +682,7 @@ function searchJKAnime(query) {
         for (var i = 0; i < htmlSlugs.length; i++) {
             if (out.indexOf(htmlSlugs[i]) === -1) out.push(htmlSlugs[i]);
         }
-        console.error("[JKAnime][v2.6-diag] search '" + query + "': api=" + apiSlugs.length + " html=" + htmlSlugs.length + " total=" + out.length);
+        console.error("[JKAnime][v2.8-full] search '" + query + "': api=" + apiSlugs.length + " html=" + htmlSlugs.length + " total=" + out.length);
         return out;
     });
 }
@@ -806,32 +884,33 @@ function dispatchResolver(url) {
 function extractStreamsFromEpisodePage(pageUrl) {
     return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, 2800)
         .then(function(res) {
-            if (!res || !res.ok) { console.error("[JKAnime][v2.6-diag] pagina HTTP " + (res ? res.status : "null") + " url=" + pageUrl); return ""; }
+            if (!res || !res.ok) { console.error("[JKAnime][v2.8-full] pagina HTTP " + (res ? res.status : "null") + " url=" + pageUrl); return ""; }
             return textWithTimeout(res, 3000);
         })
         .then(function(html) {
             var rawEmbeds = [];
 
-            var serversMatch = html.match(/var\s+servers\s*=\s*(\[[^\]]+\]);/i);
-            if (serversMatch) {
-                try {
-                    var sArr = JSON.parse(serversMatch[1]);
-                    for (var i = 0; i < sArr.length; i++) {
-                        if (sArr[i] && sArr[i].remote) {
-                            var dec = decodeBase64Safe(sArr[i].remote);
-                            if (dec && dec.indexOf("http") === 0) rawEmbeds.push(dec);
-                        }
-                    }
-                } catch (e) {}
+            // v2.8: parser robusto de 'var servers' (corchetes anidados) + respaldo regex
+            var serversObjs = extractJsonArrayAfter(html, "var servers");
+            if (!serversObjs) {
+                var serversMatch = html.match(/var\s+servers\s*=\s*(\[[^\]]+\]);/i);
+                if (serversMatch) {
+                    try { serversObjs = JSON.parse(serversMatch[1]); } catch (e0) { serversObjs = null; }
+                }
+            }
+            var fromServers = embedsFromServersArray(serversObjs);
+            for (var i = 0; i < fromServers.length; i++) {
+                rawEmbeds.push(fromServers[i].embed);
             }
 
             var b64Tokens = html.match(/aHR0cHM6[a-zA-Z0-9+/=_-]+/gi) || [];
             for (var j = 0; j < b64Tokens.length; j++) {
                 var d = decodeBase64Safe(b64Tokens[j]);
-                if (d && d.indexOf("http") === 0) rawEmbeds.push(d);
+                if (d && (d.indexOf("http://") === 0 || d.indexOf("https://") === 0)) rawEmbeds.push(d);
             }
 
-            var umRegex = /https?:\/\/jkanime\.net\/jkplayer\/(?:um|umv|uk)[^\s"'<>]+/gi, umMatch;
+            // v2.8: cualquier player interno de jkanime (um.php, umv.php, uk.php, asp.php...)
+            var umRegex = /https?:\/\/jkanime\.net\/jkplayer\/[a-z0-9_]{1,12}\.php\?[^\s"'<>]+/gi, umMatch;
             while ((umMatch = umRegex.exec(html)) !== null) {
                 rawEmbeds.push(umMatch[0].replace(/&amp;/g, "&"));
             }
@@ -843,15 +922,27 @@ function extractStreamsFromEpisodePage(pageUrl) {
                 }
             }
 
-            if (uniqueEmbeds.length === 0) {
-                if (html.length > 0) console.error("[JKAnime][v2.6-diag] pagina 200 sin embeds (html=" + html.length + " chars) url=" + pageUrl);
-                return [];
+            // v2.8: diag compacto (cuántos servidores trae la página y de qué hosts)
+            var diagHosts = [];
+            for (var h = 0; h < uniqueEmbeds.length; h++) {
+                diagHosts.push(String(uniqueEmbeds[h]).replace(/^https?:\/\//i, "").split("/")[0] || "?");
             }
+            console.error("[JKAnime][v2.8-full] " + pageUrl.replace(BASE_URL + "/", "") + " -> servers=" + fromServers.length + " b64=" + b64Tokens.length + " embeds=" + uniqueEmbeds.length + " [" + diagHosts.join(",") + "]");
+
+            if (uniqueEmbeds.length === 0) return [];
+
+            // v2.7-fast: máximo 4 resolvers por página (cada uno cuesta 1-3s en el TV)
+            if (uniqueEmbeds.length > 4) uniqueEmbeds = uniqueEmbeds.slice(0, 4);
 
             var promises = uniqueEmbeds.map(function(embedUrl) {
+                var hostTag = String(embedUrl).replace(/^https?:\/\//i, "").split("/")[0];
                 return dispatchResolver(embedUrl)
                     .then(function(res) {
-                        if (!res || !res.url) return null;
+                        if (!res || !res.url) {
+                            console.error("[JKAnime][v2.8-full] resolver " + hostTag + " -> SIN resultado");
+                            return null;
+                        }
+                        console.error("[JKAnime][v2.8-full] resolver " + hostTag + " -> OK " + res.serverName + " " + (res.quality || "?"));
                         var q = res.quality || "720p";
                         return {
                             name: "JKAnime",
@@ -861,7 +952,10 @@ function extractStreamsFromEpisodePage(pageUrl) {
                             headers: res.headers || {}
                         };
                     })
-                    .catch(function() { return null; });
+                    .catch(function() {
+                        console.error("[JKAnime][v2.8-full] resolver " + hostTag + " -> EXCEPCION");
+                        return null;
+                    });
             });
 
             return Promise.all(promises);
@@ -884,7 +978,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
     START_TS = tvNow();
     var mt = String(mediaType || "").toLowerCase();
     var isMovie = (mt === "movie" || mt === "pelicula");
-    console.error("[JKAnime][v2.6-diag] getStreams tmdbId=" + tmdbId + " type=" + mt + " s=" + season + " e=" + episode + " timer=" + HAS_TIMER);
+    console.error("[JKAnime][v2.8-full] getStreams tmdbId=" + tmdbId + " type=" + mt + " s=" + season + " e=" + episode + " timer=" + HAS_TIMER);
     var sParsed = parseInt(season, 10);
     var sNum = isNaN(sParsed) ? 1 : sParsed;
     var eNum = isMovie ? 1 : (parseInt(episode, 10) || 1);
@@ -907,7 +1001,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
             if (!isAnimation) {
-                console.error("[JKAnime][v2.6-diag] TMDB sin genero 16 (animation). Se devuelve vacio.");
+                console.error("[JKAnime][v2.8-full] TMDB sin genero 16 (animation). Se devuelve vacio.");
                 return [];
             }
 
@@ -923,7 +1017,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
             if (!isAsianAnim) {
-                console.error("[JKAnime][v2.6-diag] TMDB sin origen asiatico (lang=" + origLang + "). Se devuelve vacio.");
+                console.error("[JKAnime][v2.8-full] TMDB sin origen asiatico (lang=" + origLang + "). Se devuelve vacio.");
                 return [];
             }
 
@@ -988,7 +1082,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
             }
 
-            console.error("[JKAnime][v2.6-diag] TMDB ok: s1Count=" + s1Count + " effS=" + effectiveSeason + " effE=" + effectiveEpisode + " abs=" + absoluteEp + " keyword='" + searchKeyword + "'");
+            console.error("[JKAnime][v2.8-full] TMDB ok: s1Count=" + s1Count + " effS=" + effectiveSeason + " effE=" + effectiveEpisode + " abs=" + absoluteEp + " keyword='" + searchKeyword + "'");
 
             return Promise.all([
                 fetchAniListMapping(searchKeyword),
@@ -1019,7 +1113,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 return secondRound.then(function(nativeSlugs) {
 
                 var aniTarget = resolveUniversalTarget(aniListMedia, effectiveSeason, effectiveEpisode, absoluteEp, titles);
-                console.error("[JKAnime][v2.6-diag] AniList=" + (aniListMedia ? aniListMedia.length : 0) + " items, nativos=" + nativeSlugs.length + ", target=" + (aniTarget && aniTarget.slug ? aniTarget.slug + " ep=" + aniTarget.targetEp : "NINGUNO"));
+                console.error("[JKAnime][v2.8-full] AniList=" + (aniListMedia ? aniListMedia.length : 0) + " items, nativos=" + nativeSlugs.length + ", target=" + (aniTarget && aniTarget.slug ? aniTarget.slug + " ep=" + aniTarget.targetEp : "NINGUNO"));
                 var candidateSlugs = [];
 
                 if (aniTarget && aniTarget.slug) {
@@ -1098,7 +1192,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 }
 
                 if (scoredSlugs.length === 0) {
-                    console.error("[JKAnime][v2.6-diag] SIN slugs con score >= 35 de " + candidateSlugs.length + " candidatos");
+                    console.error("[JKAnime][v2.8-full] SIN slugs con score >= 35 de " + candidateSlugs.length + " candidatos");
                     return [];
                 }
 
@@ -1113,16 +1207,20 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
                 var diagTop = [];
                 for (var dt = 0; dt < scoredSlugs.length && dt < 5; dt++) diagTop.push(scoredSlugs[dt].slug + ":" + scoredSlugs[dt].score);
-                console.error("[JKAnime][v2.6-diag] top slugs: " + (diagTop.length ? diagTop.join(" | ") : "NINGUNO"));
+                console.error("[JKAnime][v2.8-full] top slugs: " + (diagTop.length ? diagTop.join(" | ") : "NINGUNO"));
 
-                var pageUrlsToTry = [];
+                // v2.7-fast: URLs canónicas (/slug/ep, sin barra final) TODAS primero,
+                // las variantes con barra al final. En el TV las peticiones se procesan
+                // casi en serie: el orden importa más que el paralelismo.
+                var canonicalUrls = [];
+                var variantUrls = [];
                 for (var sIdx = 0; sIdx < scoredSlugs.length; sIdx++) {
                     var item = scoredSlugs[sIdx];
                     var curSlug = item.slug;
 
                     if (isMovie) {
-                        pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/pelicula/");
-                        pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/1/");
+                        canonicalUrls.push(BASE_URL + "/" + curSlug + "/pelicula/");
+                        canonicalUrls.push(BASE_URL + "/" + curSlug + "/1/");
                         continue;
                     }
 
@@ -1149,13 +1247,21 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     for (var epI = 0; epI < epsToTry.length; epI++) {
                         var epVal = epsToTry[epI];
                         // Formato canónico actual de jkanime: /slug/ep (sin barra final)
-                        pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + epVal);
+                        canonicalUrls.push(BASE_URL + "/" + curSlug + "/" + epVal);
                         // Variante con barra final (seguía funcionando en móvil) para los
                         // 2 slugs de mayor confianza
                         if (sIdx < 2) {
-                            pageUrlsToTry.push(BASE_URL + "/" + curSlug + "/" + epVal + "/");
+                            variantUrls.push(BASE_URL + "/" + curSlug + "/" + epVal + "/");
                         }
                     }
+                }
+                var pageUrlsToTry = canonicalUrls.concat(variantUrls);
+
+                // v2.8: score del slug de cada URL, para no fusionar streams de
+                // páginas de otro anime (score bajo) cuando ya tenemos resultados.
+                var slugScoreByUrl = {};
+                for (var sm = 0; sm < scoredSlugs.length; sm++) {
+                    slugScoreByUrl[scoredSlugs[sm].slug] = scoredSlugs[sm].score;
                 }
 
                 var uniquePageUrls = [];
@@ -1165,37 +1271,74 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                console.error("[JKAnime][v2.6-diag] intentando " + uniquePageUrls.length + " paginas. primeras: " + (uniquePageUrls.length ? uniquePageUrls.slice(0, 3).join(" ; ") : "-"));
+                console.error("[JKAnime][v2.8-full] intentando " + uniquePageUrls.length + " paginas. primeras: " + (uniquePageUrls.length ? uniquePageUrls.slice(0, 3).join(" ; ") : "-"));
+
+                // v2.8: fusionar streams de varias páginas con dedupe por URL. Antes
+                // se devolvía SOLO la primera página con resultados: si esa página
+                // tenía 1 servidor, el usuario veía 1 stream aunque otra variante del
+                // slug tuviera los 3 servidores.
+                var collected = [];
+                var seenUrls = [];
+                var MERGE_TARGET = HAS_TIMER ? 3 : 1;
+
+                function mergePageResults(results, pageUrl) {
+                    if (!results || !results.length) return;
+                    var pageScore = 0;
+                    if (pageUrl) {
+                        var pslug = pageUrl.replace(BASE_URL + "/", "").split("/")[0];
+                        pageScore = slugScoreByUrl[pslug] || 0;
+                    }
+                    // Con streams en mano, solo sumar páginas de slug con score alto
+                    // (100 = match exacto/prefijo). Sin streams, vale cualquier página.
+                    if (collected.length > 0 && pageScore < 100) return;
+                    for (var r = 0; r < results.length; r++) {
+                        var st = results[r];
+                        if (!st || !st.url) continue;
+                        if (seenUrls.indexOf(st.url) !== -1) continue;
+                        seenUrls.push(st.url);
+                        collected.push(st);
+                    }
+                }
 
                 function tryBatch(urls, batchSize, batchNum) {
-                    if (!urls || urls.length === 0) return Promise.resolve([]);
-                    if (batchNum >= 3) return Promise.resolve([]);
-                    if (tvRemaining() < 6000) return Promise.resolve([]);
+                    if (!urls || urls.length === 0) return Promise.resolve(collected);
+                    if (batchNum >= 3) return Promise.resolve(collected);
+                    if (tvRemaining() < 6000) return Promise.resolve(collected);
                     var currentBatch = urls.slice(0, batchSize);
                     var remaining = urls.slice(batchSize);
 
                     var batchPromises = currentBatch.map(function(url) {
                         return extractStreamsFromEpisodePage(url).then(function(r) {
-                            console.error("[JKAnime][v2.6-diag] lote" + batchNum + ": " + url + " -> " + (r ? r.length : 0) + " streams");
+                            console.error("[JKAnime][v2.8-full] lote" + batchNum + ": " + url + " -> " + (r ? r.length : 0) + " streams");
                             return r;
                         });
                     });
 
                     return Promise.all(batchPromises).then(function(results) {
                         for (var r = 0; r < results.length; r++) {
-                            if (results[r] && results[r].length > 0) return results[r];
+                            mergePageResults(results[r], currentBatch[r]);
                         }
-                        return tryBatch(remaining, batchSize, batchNum + 1);
+                        var suficiente = collected.length >= MERGE_TARGET;
+                        if (suficiente || remaining.length === 0) return collected;
+                        // TV: si ya hay al menos 1 stream, NO seguir (el auto-play
+                        // corta a los ~10-12s; es mejor entregar lo que hay ya).
+                        if (!HAS_TIMER && collected.length > 0) return collected;
+                        if (tvRemaining() < (HAS_TIMER ? 12000 : 9000)) return collected;
+                        // v2.7-fast: los lotes siguientes crecen (TV: 1 -> 2 -> 2)
+                        return tryBatch(remaining, batchSize < 2 ? 2 : batchSize, batchNum + 1);
                     });
                 }
 
-                return tryBatch(uniquePageUrls, 3, 0);
+                // v2.7-fast: en el TV el primer lote es UNA sola URL (la más probable:
+                // slug correcto + formato canónico). Si acierta salimos en la mitad de
+                // tiempo y evitamos el timeout de auto-play del reproductor.
+                return tryBatch(uniquePageUrls, HAS_TIMER ? 3 : 1, 0);
 
                 });
             })
         })
         .catch(function(e) {
-            console.error("[JKAnime][v2.6-diag] ERROR fatal: " + (e && e.message ? e.message : String(e)));
+            console.error("[JKAnime][v2.8-full] ERROR fatal: " + (e && e.message ? e.message : String(e)));
             return [];
         });
 }
