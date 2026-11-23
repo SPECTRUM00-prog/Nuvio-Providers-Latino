@@ -4,6 +4,36 @@
  *   1. Streaming Online Directo: Vimeos (HLS 1080p / 720p dinámico)
  *   2. Streaming P2P / Torrents: Nuvio Engine / Stremio (Magnets Dual Latino 1080p / 720p)
  * Reglas Hermes: ES5 estricto, 100% Promesas, Zero-Dependencies, Fast Timeout (<= 2800ms)
+ *
+ * Cambios v2.4-NUVIOTV (2026-11) - capa runtime portada de jkanime v2.9 / sololatino v2.0:
+ *  1) FIX CRITICO DE TV: el QuickJS de NuvioTV (dokar quickjs-kt + polyfill de
+ *     PluginRuntime.kt) NO define setTimeout/clearTimeout. La v2.3 los usaba sin
+ *     condition dentro de fetchWithTimeout -> el executor de la promesa lanzaba
+ *     TypeError al instante, Promise.race rechazaba, el catch devolvia null para
+ *     TODO fetch y getStreams devolvia [] SOLO en TV (en PC/Hermes funcionaba).
+ *     Ahora HAS_TIMER detecta el runtime: si hay timer (Hermes movil / PC / Node)
+ *     se conserva el timeout por llamada; si no hay (TV) fetch directo con el
+ *     limite real de OkHttp (30s connect / 30s read).
+ *  2) PRESUPUESTO GLOBAL Date.now() de 45s (el runtime mata el plugin a los 60s):
+ *     cada fetch verifica tvRemaining() y se cancela con null si queda < 400ms,
+ *     para que el provider devuelva lo que tenga en vez de morir con error.
+ *  3) PUENTE __native_fetch (NuvioTV 1.1.1): fetch(url, options || {}) y
+ *     try/catch sincrono: el puente puede rechazar opciones nulas o lanzar de
+ *     forma sincrona, lo que cortaba la cadena completa en silencio.
+ *  4) TIMEOUT TAMBIEN SOBRE EL CUERPO: textWithTimeout / jsonWithTimeout.
+ *     Headers 200 con cuerpo colgado ya no congelan la cadena.
+ *  5) CONTRATO GARANTIZADO: getStreams SIEMPRE devuelve una Promesa que resuelve
+ *     a Array (try/catch sincrono + catch final); dedupe final por URL exacta.
+ *  6) LOGICA DE SCRAPING INTACTA (v2.3, probada en produccion): busqueda /?s=,
+ *     scoring de candidatos (umbral 35, anio +20), resolver Vimeos (unpack Dean
+ *     Edwards + m3u8), torrents uTorrent (top 2, solo peliculas), deteccion de
+ *     calidad por tags .urlset y probe RESOLUTION.
+ *  7) SERIES CORREGIDAS (regresion del sitio, 2026-11): cinecalidad.am movio
+ *     los episodios a /ver-el-episodio/{slug}-{s}x{e}/. La v2.3 construia
+ *     {serie}-{s}x{e}/ sobre la URL de la serie y hoy responde 404 (verificado
+ *     con The Last of Us). Ahora se extrae el enlace del episodio desde la
+ *     pagina de la serie (match exacto -SxE, tolerando duplicados -SxE-2) y
+ *     los embeds Vimeos se extraen de la pagina del episodio.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -11,18 +41,115 @@ var BASE_URL = "https://www.cinecalidad.am";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
 var NETWORK_TIMEOUT = 2800;
 
-var DEFAULT_HEADERS = {
-    "User-Agent": USER_AGENT,
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Referer": BASE_URL + "/"
-};
+var LOG_TAG = "[CineCalidad][v2.4]";
 
 // ==========================================
-// 1. HELPERS DE RED Y NORMALIZACIÓN
+// 1. HELPERS DE RED & STRINGS (HERMES / QUICKJS SAFE)
+// En NuvioTV (QuickJS) NO existe setTimeout: OkHttp ya corta cada peticion
+// (30s connect / 30s read) y el runtime mata el plugin a los 60s.
 // ==========================================
+
+var HAS_TIMER = (typeof setTimeout === "function");
+var GLOBAL_BUDGET_MS = 45000;
+var START_TS = 0;
+
+function tvNow() {
+    try { return Date.now(); } catch (e2) { return 0; }
+}
+
+function tvElapsed() {
+    if (!START_TS) return 0;
+    return tvNow() - START_TS;
+}
+
+function tvRemaining() {
+    var left = GLOBAL_BUDGET_MS - tvElapsed();
+    return (left > 0) ? left : 0;
+}
+
+function logDiag(msg) {
+    try { console.error(LOG_TAG + " " + msg); } catch (eLog) {}
+}
+
+function textWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.text !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.text().then(function(t) { return t; }).catch(function() { return null; });
+        } catch (e3) {
+            return Promise.resolve(null);
+        }
+    }
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.text().then(function(t) {
+                if (!done) { done = true; clearTimeout(timer); resolve(t); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
+function jsonWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.json !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.json().then(function(j) { return j; }).catch(function() { return null; });
+        } catch (e4) {
+            return Promise.resolve(null);
+        }
+    }
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.json().then(function(j) {
+                if (!done) { done = true; clearTimeout(timer); resolve(j); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
 
 function fetchWithTimeout(url, options, timeoutMs) {
+    if (tvRemaining() < 400) {
+        logDiag("presupuesto agotado, fetch cancelado: " + url);
+        return Promise.resolve(null);
+    }
+
+    var fetchPromise = null;
+    try {
+        fetchPromise = fetch(url, options || {});
+        if (!fetchPromise || typeof fetchPromise.then !== "function") {
+            fetchPromise = Promise.reject(new Error("fetch sin promesa"));
+        }
+    } catch (eSync) {
+        return Promise.resolve(null);
+    }
+
+    if (!HAS_TIMER) {
+        // NuvioTV: sin timer JS posible. OkHttp (30s/30s) es el limite real.
+        return fetchPromise
+            .then(function(res) { return res; })
+            .catch(function() { return null; });
+    }
+
     var limit = timeoutMs || NETWORK_TIMEOUT;
+    if (limit > tvRemaining()) limit = tvRemaining();
     var timer = null;
 
     var timeoutPromise = new Promise(function(_, reject) {
@@ -31,7 +158,7 @@ function fetchWithTimeout(url, options, timeoutMs) {
         }, limit);
     });
 
-    return Promise.race([fetch(url, options), timeoutPromise])
+    return Promise.race([fetchPromise, timeoutPromise])
         .then(function(res) {
             if (timer) clearTimeout(timer);
             return res;
@@ -41,6 +168,16 @@ function fetchWithTimeout(url, options, timeoutMs) {
             return null;
         });
 }
+
+var DEFAULT_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Referer": BASE_URL + "/"
+};
+
+// ==========================================
+// 2. NORMALIZACIÓN Y SCORING (v2.3 intacto)
+// ==========================================
 
 function cleanTitle(str) {
     if (!str) return "";
@@ -94,7 +231,7 @@ function scoreCandidate(candidateUrl, candidateText, targetTitles, targetYear) {
 }
 
 // ==========================================
-// 2. DESEMPAQUETADOR Y DETECCIÓN DE CALIDAD
+// 3. DESEMPAQUETADOR Y DETECCIÓN DE CALIDAD (v2.3 intacto)
 // ==========================================
 
 function unpackJS(packed) {
@@ -161,7 +298,7 @@ function probeM3u8Quality(m3u8Url, headers) {
     }, 2500)
     .then(function(res) {
         if (!res || !res.ok) return "720p";
-        return res.text();
+        return textWithTimeout(res, 2500);
     })
     .then(function(text) {
         if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
@@ -190,7 +327,7 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
-// 3. RESOLVER DE VIMEOS (STREAMING ONLINE)
+// 4. RESOLVER DE VIMEOS (STREAMING ONLINE) — v2.3 intacto
 // ==========================================
 
 function resolveVimeos(embedUrl) {
@@ -203,7 +340,7 @@ function resolveVimeos(embedUrl) {
     return fetchWithTimeout(targetUrl, {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" }
     }, 2800)
-    .then(function(res) { return res ? res.text() : ""; })
+    .then(function(res) { return res ? textWithTimeout(res, 2800) : ""; })
     .then(function(html) {
         var streamUrl = null;
         var unpacked = unpackJS(html);
@@ -234,14 +371,14 @@ function resolveVimeos(embedUrl) {
 }
 
 // ==========================================
-// 4. RESOLVER DE TORRENTS (P2P / MAGNETS)
+// 5. RESOLVER DE TORRENTS (P2P / MAGNETS) — v2.3 intacto
 // ==========================================
 
 function resolveTorrentMagnet(tItem, refererUrl) {
     return fetchWithTimeout(tItem.url, {
         headers: { "User-Agent": USER_AGENT, "Referer": refererUrl }
     }, 2500)
-    .then(function(res) { return res ? res.text() : ""; })
+    .then(function(res) { return res ? textWithTimeout(res, 2500) : ""; })
     .then(function(html) {
         var magnetMatch = html.match(/magnet:\?xt=urn:btih:[a-zA-Z0-9]+[^"'\s<>]*/i);
         if (magnetMatch) {
@@ -259,12 +396,118 @@ function resolveTorrentMagnet(tItem, refererUrl) {
 }
 
 // ==========================================
-// 5. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// 6. NAVEGACIÓN DE SERIES Y EXTRACCIÓN DE EMBEDS
+// cinecalidad.am movió los episodios a /ver-el-episodio/{slug}-{s}x{e}/:
+// la v2.3 construía {serie}-{s}x{e}/ sobre la URL de la serie y hoy responde 404.
 // ==========================================
 
-function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
-    if (!tmdbId) return Promise.resolve([]);
+function scrapeEpisodeLink(pageHtml, s, e) {
+    if (!pageHtml) return null;
+    var epRegex = /href=["']([^"']*\/ver-el-episodio\/[^"']*)["']/gi;
+    var exactSuffix = "-" + s + "x" + e + "/";
+    var em;
+    var loose = null;
 
+    while ((em = epRegex.exec(pageHtml)) !== null) {
+        var href = em[1].replace(/&amp;/g, "&");
+        var numMatch = href.match(/-(\d+)x(\d+)(?:-\d+)?\/?$/);
+        if (!numMatch) continue;
+        if (parseInt(numMatch[1], 10) !== s || parseInt(numMatch[2], 10) !== e) continue;
+
+        // Match exacto (sin sufijo de duplicado tipo -1x9-2/)
+        if (href.length >= exactSuffix.length && href.slice(href.length - exactSuffix.length) === exactSuffix) {
+            return href;
+        }
+        if (!loose) loose = href;
+    }
+    return loose;
+}
+
+function extractStreamsFromPage(pageHtml, refererUrl, allowTorrents) {
+    if (!pageHtml) return Promise.resolve([]);
+
+    // 1. Extraer streaming online (Vimeos)
+    var onlinePromises = [];
+    var lRegex = /https?:\/\/[a-zA-Z0-9.-]*vimeos\.[a-z]{2,6}\/[^\s"'<>]+/gi;
+    var lm;
+    var vimeosUrls = [];
+
+    while ((lm = lRegex.exec(pageHtml)) !== null) {
+        var clk = lm[0].replace(/\\/g, "").replace(/&amp;/g, "&");
+        if (vimeosUrls.indexOf(clk) === -1) {
+            vimeosUrls.push(clk);
+            onlinePromises.push(
+                resolveVimeos(clk).then(function(stream) {
+                    if (stream && stream.url) {
+                        logDiag("resolver vimeos -> OK " + stream.quality);
+                        return {
+                            name: "CineCalidad",
+                            title: stream.quality + " · Latino · " + stream.server,
+                            quality: stream.quality,
+                            url: stream.url,
+                            headers: stream.headers || {
+                                "User-Agent": USER_AGENT,
+                                "Referer": BASE_URL + "/"
+                            }
+                        };
+                    }
+                    logDiag("resolver vimeos -> SIN resultado");
+                    return null;
+                })
+            );
+        }
+    }
+
+    // 2. Extraer Torrents Duales (uTorrent) solo para películas
+    var torrentPromises = [];
+    if (allowTorrents) {
+        var tRegex = /<a[^>]+href=["']([^"']*\?download=[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+        var tm;
+        var candidateTorrents = [];
+
+        while ((tm = tRegex.exec(pageHtml)) !== null) {
+            var tHref = tm[1];
+            var tText = tm[2].replace(/<[^>]+>/g, "").trim();
+
+            if (tText.toLowerCase().indexOf("utorrent") !== -1 || tText.toLowerCase().indexOf("torrent") !== -1) {
+                var tQuality = "1080p";
+                if (tText.indexOf("4K") !== -1 || tText.indexOf("2160") !== -1) tQuality = "4K";
+                else if (tText.indexOf("1080") !== -1) tQuality = "1080p";
+                else if (tText.indexOf("720") !== -1) tQuality = "720p";
+                else if (tText.indexOf("DVD") !== -1 || tText.indexOf("480") !== -1) tQuality = "480p";
+
+                var label = tText.replace(/uTorrent/i, "").trim() || "Dual";
+                candidateTorrents.push({ url: tHref, label: label, quality: tQuality });
+            }
+        }
+
+        // Tomar los mejores 2 torrents para mantener tiempo < 2.8s
+        var topTorrents = candidateTorrents.slice(0, 2);
+        for (var ti = 0; ti < topTorrents.length; ti++) {
+            torrentPromises.push(resolveTorrentMagnet(topTorrents[ti], refererUrl));
+        }
+    }
+
+    // Resolver streams online y torrents en paralelo
+    return Promise.all(onlinePromises.concat(torrentPromises)).then(function(allResults) {
+        var valid = [];
+        var seen = [];
+        for (var v = 0; v < allResults.length; v++) {
+            if (allResults[v] && allResults[v].url && seen.indexOf(allResults[v].url) === -1) {
+                seen.push(allResults[v].url);
+                valid.push(allResults[v]);
+            }
+        }
+        logDiag("total " + valid.length + " streams de " + onlinePromises.length + " embeds vimeos + " + torrentPromises.length + " torrents (" + Math.round(tvElapsed()) + "ms)");
+        return valid;
+    });
+}
+
+// ==========================================
+// 7. FUNCIÓN PRINCIPAL DE NUVIO (getStreams)
+// ==========================================
+
+function getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum) {
     var isTv = mediaType === "tv" || mediaType === "series";
     var s = parseInt(seasonNum || 1, 10);
     var e = parseInt(episodeNum || 1, 10);
@@ -273,12 +516,15 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     return fetchWithTimeout(tmdbUrl, {}, 2500)
         .then(function(res) {
             if (!res || !res.ok) throw new Error("TMDB Error");
-            return res.json();
+            return jsonWithTimeout(res, 2500);
         })
         .then(function(meta) {
+            if (!meta) throw new Error("TMDB JSON vacio");
             var title = isTv ? (meta.name || meta.original_name) : (meta.title || meta.original_title);
             var origTitle = isTv ? meta.original_name : meta.original_title;
             var year = ((isTv ? meta.first_air_date : meta.release_date) || "").substring(0, 4);
+
+            logDiag("TMDB ok: '" + (title || "?") + "' (" + year + ") " + (isTv ? "S" + s + "E" + e : "movie") + " timer=" + HAS_TIMER);
 
             var titles = [];
             if (title) titles.push(title);
@@ -297,10 +543,13 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
             return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2800)
                 .then(function(res) {
                     if (!res || !res.ok) return "";
-                    return res.text();
+                    return textWithTimeout(res, 2800);
                 })
                 .then(function(html) {
-                    if (!html) return [];
+                    if (!html) {
+                        logDiag("busqueda sin respuesta (" + Math.round(tvElapsed()) + "ms)");
+                        return [];
+                    }
 
                     var candidates = [];
                     var regex = /<a[^>]+href=["']([^"']*(?:ver-pelicula|ver-serie)\/[^"']*)["'][^>]*>([\s\S]*?)<\/a>/gi;
@@ -318,101 +567,60 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
                         }
                     }
 
-                    if (candidates.length === 0) return [];
+                    if (candidates.length === 0) {
+                        logDiag("sin candidatos en la busqueda");
+                        return [];
+                    }
 
                     candidates.sort(function(a, b) { return b.score - a.score; });
                     var targetUrl = candidates[0].url;
+                    logDiag("candidato: " + targetUrl + " (score " + candidates[0].score + ", " + candidates.length + " candidatos)");
 
                     if (targetUrl.indexOf("http") !== 0) {
                         targetUrl = BASE_URL + (targetUrl.indexOf("/") === 0 ? "" : "/") + targetUrl;
                     }
 
-                    if (isTv) {
-                        var epPath = targetUrl.replace(/\/$/, "") + "-" + s + "x" + e + "/";
-                        targetUrl = epPath;
-                    }
-
                     return fetchWithTimeout(targetUrl, { headers: DEFAULT_HEADERS }, 2800)
-                        .then(function(r) { return r ? r.text() : ""; })
+                        .then(function(r) { return r ? textWithTimeout(r, 2800) : ""; })
                         .then(function(pageHtml) {
                             if (!pageHtml) return [];
 
-                            // 1. Extraer streaming online (Vimeos)
-                            var onlinePromises = [];
-                            var lRegex = /https?:\/\/[a-zA-Z0-9.-]*vimeos\.[a-z]{2,6}\/[^\s"'<>]+/gi;
-                            var lm;
-                            var vimeosUrls = [];
-
-                            while ((lm = lRegex.exec(pageHtml)) !== null) {
-                                var clk = lm[0].replace(/\\/g, "").replace(/&amp;/g, "&");
-                                if (vimeosUrls.indexOf(clk) === -1) {
-                                    vimeosUrls.push(clk);
-                                    onlinePromises.push(
-                                        resolveVimeos(clk).then(function(stream) {
-                                            if (stream && stream.url) {
-                                                return {
-                                                    name: "CineCalidad",
-                                                    title: stream.quality + " · Latino · " + stream.server,
-                                                    quality: stream.quality,
-                                                    url: stream.url,
-                                                    headers: stream.headers || {
-                                                        "User-Agent": USER_AGENT,
-                                                        "Referer": BASE_URL + "/"
-                                                    }
-                                                };
-                                            }
-                                            return null;
-                                        })
-                                    );
+                            if (isTv) {
+                                // cinecalidad.am movió los episodios a /ver-el-episodio/{slug}-{s}x{e}/:
+                                // extraer el enlace desde la página de la serie y resolver ahí.
+                                var epUrl = scrapeEpisodeLink(pageHtml, s, e);
+                                if (epUrl) {
+                                    logDiag("episodio: " + epUrl);
+                                    return fetchWithTimeout(epUrl, { headers: DEFAULT_HEADERS }, 2800)
+                                        .then(function(r2) { return r2 ? textWithTimeout(r2, 2800) : ""; })
+                                        .then(function(epHtml) {
+                                            return extractStreamsFromPage(epHtml || pageHtml, targetUrl, false);
+                                        });
                                 }
+                                logDiag("sin enlace de episodio en la página de serie; extrayendo embeds de la página de serie");
+                                return extractStreamsFromPage(pageHtml, targetUrl, false);
                             }
 
-                            // 2. Extraer Torrents Duales (uTorrent) para películas
-                            var torrentPromises = [];
-                            if (!isTv) {
-                                var tRegex = /<a[^>]+href=["']([^"']*\?download=[^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
-                                var tm;
-                                var candidateTorrents = [];
-
-                                while ((tm = tRegex.exec(pageHtml)) !== null) {
-                                    var tHref = tm[1];
-                                    var tText = tm[2].replace(/<[^>]+>/g, "").trim();
-
-                                    if (tText.toLowerCase().indexOf("utorrent") !== -1 || tText.toLowerCase().indexOf("torrent") !== -1) {
-                                        var tQuality = "1080p";
-                                        if (tText.indexOf("4K") !== -1 || tText.indexOf("2160") !== -1) tQuality = "4K";
-                                        else if (tText.indexOf("1080") !== -1) tQuality = "1080p";
-                                        else if (tText.indexOf("720") !== -1) tQuality = "720p";
-                                        else if (tText.indexOf("DVD") !== -1 || tText.indexOf("480") !== -1) tQuality = "480p";
-
-                                        var label = tText.replace(/uTorrent/i, "").trim() || "Dual";
-                                        candidateTorrents.push({ url: tHref, label: label, quality: tQuality });
-                                    }
-                                }
-
-                                // Tomar los mejores 2 torrents para mantener tiempo < 2.8s
-                                var topTorrents = candidateTorrents.slice(0, 2);
-                                for (var ti = 0; ti < topTorrents.length; ti++) {
-                                    torrentPromises.push(resolveTorrentMagnet(topTorrents[ti], targetUrl));
-                                }
-                            }
-
-                            // Resolver streams online y torrents en paralelo
-                            return Promise.all(onlinePromises.concat(torrentPromises)).then(function(allResults) {
-                                var valid = [];
-                                for (var v = 0; v < allResults.length; v++) {
-                                    if (allResults[v] && allResults[v].url) {
-                                        valid.push(allResults[v]);
-                                    }
-                                }
-                                return valid;
-                            });
+                            return extractStreamsFromPage(pageHtml, targetUrl, true);
                         });
                 });
         })
-        .catch(function() {
+        .catch(function(eStage) {
+            logDiag("fallo de etapa: " + (eStage && eStage.message ? eStage.message : eStage));
             return [];
         });
+}
+
+// Contrato: getStreams SIEMPRE devuelve una Promesa que resuelve a un Array.
+function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
+    try {
+        START_TS = tvNow();
+        logDiag("getStreams tmdbId=" + tmdbId + " type=" + mediaType + " s=" + seasonNum + " e=" + episodeNum);
+        if (!tmdbId) return Promise.resolve([]);
+        return getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum);
+    } catch (eSync) {
+        return Promise.resolve([]);
+    }
 }
 
 if (typeof module !== "undefined") {
