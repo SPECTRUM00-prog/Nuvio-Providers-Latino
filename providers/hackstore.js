@@ -1,13 +1,53 @@
 /**
  * Provider: Hackstore2 (Películas y Series)
  * Motor: 100% Cadenas de Promesas (Hermes / QuickJS / Android TV / FireTV Safe)
- * Reglas Hermes: ES5 estricto, fetchWithTimeout + AbortController seguro, cero dependencias.
+ * Reglas Hermes: ES5 estricto, timeouts en headers Y body, cero dependencias.
+ *
+ * Cambios v2.3-NUVIOTV (2026-11) - capa runtime portada de jkanime v2.9 / sololatino v2.0 /
+ * cinecalidad v2.4-NUVIOTV:
+ *  1) FIX CRITICO DE TV: el QuickJS de NuvioTV (dokar quickjs-kt + polyfill de
+ *     PluginRuntime.kt) NO define setTimeout/clearTimeout. La v2.2 los usaba sin
+ *     condition dentro de fetchWithTimeout (y montaba un AbortController solo
+ *     disponible en Hermes) -> el executor de la promesa lanzaba TypeError al
+ *     instante, TODA la cadena rechazaba y getStreams devolvia [] SOLO en TV
+ *     (en PC/Hermes funcionaba). Ahora HAS_TIMER detecta el runtime: con timer
+ *     (Hermes movil / PC / Node) se conserva el timeout por llamada con abort;
+ *     sin timer (TV) fetch directo apoyado en el corte real de OkHttp (30s
+ *     connect / 30s read).
+ *  2) PRESUPUESTO GLOBAL Date.now() de 45s (el runtime mata el plugin a los 60s):
+ *     cada fetch verifica tvRemaining() y se cancela con null si queda < 400ms,
+ *     para que el provider devuelva lo que tenga en vez de morir con error.
+ *  3) PUENTE __native_fetch (NuvioTV 1.1.1): fetch(url, options || {}) y
+ *     try/catch sincrono: el puente puede rechazar opciones nulas o lanzar de
+ *     forma sincrona, lo que cortaba la cadena completa en silencio.
+ *  4) TIMEOUT TAMBIEN SOBRE EL CUERPO: textWithTimeout / jsonWithTimeout en
+ *     TODAS las respuestas (TMDB, /api/rest search|single|episodes|player y
+ *     paginas de Vimeos/GoodStream/StreamWish/VidHide/Filemoon/VideoApp).
+ *     Headers 200 con cuerpo colgado ya no congelan la cadena.
+ *  5) FALLOS DE RED RESUELVEN null (no rechazan): fetchWithTimeout ahora
+ *     resuelve null en timeout/error y todos los call sites toleran null
+ *     (if (!res || !res.ok)), igual que en cinecalidad/lamovie/pelisforte.
+ *  6) DIAGNOSTICO: rastro por console.error (NuvioTV/FireOS silencia
+ *     console.log) + CONTRATO GARANTIZADO: getStreams SIEMPRE devuelve una
+ *     Promesa que resuelve a Array (try/catch sincrono + catch final).
+ *  7) LOGICA DE SCRAPING INTACTA (v2.2, verificada en vivo 2026-11 contra
+ *     hackstore2.com/api/rest): busqueda /search por post_type, slugs candidatos
+ *     (temporada-N-episodio-M / NxM / movie-year), scoring con anio (+20/-45),
+ *     /single por post_name, /episodes por post_id de la serie, /player por
+ *     post_id, resolvers Vimeos/GoodStream/StreamWish/VidHide/Filemoon (unpack
+ *     Dean Edwards + m3u8) y VideoApp (iframe -> dispatcher). Verificado:
+ *     Matrix resurrecciones -> Vimeos + VideoApp(->Vimeos); The Last of Us
+ *     S1E1 -> Vimeos + VideoApp. Mapa de calidad por tags .urlset propio de
+ *     cada servidor y probe RESOLUTION intactos.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
 var BASE_URL = "https://hackstore2.com";
 var API_URL = BASE_URL + "/api/rest";
 var USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+var NETWORK_TIMEOUT = 2500;
+
+var LOG_TAG = "[Hackstore][v2.3]";
 
 var DEFAULT_HEADERS = {
     "User-Agent": USER_AGENT,
@@ -17,14 +57,96 @@ var DEFAULT_HEADERS = {
 };
 
 // ==========================================
-// CONTROL DE CONCURRENCIA Y TIMEOUTS (REGLA 4)
+// 1. CONTROL DE CONCURRENCIA Y TIMEOUTS (HERMES / QUICKJS SAFE)
+// En NuvioTV (QuickJS) NO existe setTimeout ni AbortController: OkHttp ya
+// corta cada peticion (30s connect / 30s read) y el runtime mata el plugin
+// a los 60s.
 // ==========================================
 
-function fetchWithTimeout(url, options, timeoutMs) {
-    var timeout = timeoutMs || 2500;
-    var controller = typeof AbortController !== "undefined" ? new AbortController() : null;
-    var fetchOpts = {};
+var HAS_TIMER = (typeof setTimeout === "function");
+var HAS_ABORT = (typeof AbortController === "function");
+var GLOBAL_BUDGET_MS = 45000;
+var START_TS = 0;
 
+function tvNow() {
+    try { return Date.now(); } catch (e2) { return 0; }
+}
+
+function tvElapsed() {
+    if (!START_TS) return 0;
+    return tvNow() - START_TS;
+}
+
+function tvRemaining() {
+    var left = GLOBAL_BUDGET_MS - tvElapsed();
+    return (left > 0) ? left : 0;
+}
+
+function logDiag(msg) {
+    try { console.error(LOG_TAG + " " + msg); } catch (eLog) {}
+}
+
+function textWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.text !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.text().then(function(t) { return t; }).catch(function() { return null; });
+        } catch (e3) {
+            return Promise.resolve(null);
+        }
+    }
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.text().then(function(t) {
+                if (!done) { done = true; clearTimeout(timer); resolve(t); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
+function jsonWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.json !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.json().then(function(j) { return j; }).catch(function() { return null; });
+        } catch (e4) {
+            return Promise.resolve(null);
+        }
+    }
+    var limit = timeoutMs || 3000;
+    return new Promise(function(resolve, reject) {
+        var done = false;
+        var timer = setTimeout(function() {
+            if (!done) { done = true; reject(new Error("Body timeout")); }
+        }, limit);
+        try {
+            res.json().then(function(j) {
+                if (!done) { done = true; clearTimeout(timer); resolve(j); }
+            }).catch(function(e) {
+                if (!done) { done = true; clearTimeout(timer); reject(e); }
+            });
+        } catch (e) {
+            if (!done) { done = true; clearTimeout(timer); reject(e); }
+        }
+    });
+}
+
+function fetchWithTimeout(url, options, timeoutMs) {
+    if (tvRemaining() < 400) {
+        logDiag("presupuesto agotado, fetch cancelado: " + url);
+        return Promise.resolve(null);
+    }
+
+    var fetchOpts = {};
     if (options) {
         for (var key in options) {
             if (Object.prototype.hasOwnProperty.call(options, key)) {
@@ -32,32 +154,62 @@ function fetchWithTimeout(url, options, timeoutMs) {
             }
         }
     }
-    if (controller) {
-        fetchOpts.signal = controller.signal;
+
+    var controller = null;
+    if (HAS_TIMER && HAS_ABORT) {
+        // AbortController solo donde existe (Hermes/PC/Node): en QuickJS no hay.
+        try {
+            controller = new AbortController();
+            fetchOpts.signal = controller.signal;
+        } catch (eA) {
+            controller = null;
+        }
     }
 
-    return new Promise(function(resolve, reject) {
-        var timer = setTimeout(function() {
-            if (controller) {
-                try { controller.abort(); } catch (e) {}
-            }
-            reject(new Error("Timeout tras " + timeout + "ms: " + url));
-        }, timeout);
+    var fetchPromise = null;
+    try {
+        fetchPromise = fetch(url, fetchOpts);
+        if (!fetchPromise || typeof fetchPromise.then !== "function") {
+            fetchPromise = Promise.reject(new Error("fetch sin promesa"));
+        }
+    } catch (eSync) {
+        return Promise.resolve(null);
+    }
 
-        fetch(url, fetchOpts)
-            .then(function(response) {
-                clearTimeout(timer);
-                resolve(response);
-            })
-            .catch(function(err) {
-                clearTimeout(timer);
-                reject(err);
-            });
+    if (!HAS_TIMER) {
+        // NuvioTV: sin timer ni AbortController JS posible. OkHttp (30s/30s)
+        // es el limite real. Errores/timeout -> null (contrato de esta capa).
+        return fetchPromise
+            .then(function(res) { return res; })
+            .catch(function() { return null; });
+    }
+
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    if (limit > tvRemaining()) limit = tvRemaining();
+    var timer = null;
+
+    var timeoutPromise = new Promise(function(_, reject) {
+        timer = setTimeout(function() {
+            if (controller) {
+                try { controller.abort(); } catch (eAbort) {}
+            }
+            reject(new Error("Timeout"));
+        }, limit);
     });
+
+    return Promise.race([fetchPromise, timeoutPromise])
+        .then(function(res) {
+            if (timer) clearTimeout(timer);
+            return res;
+        })
+        .catch(function() {
+            if (timer) clearTimeout(timer);
+            return null;
+        });
 }
 
 // ==========================================
-// UTILIDADES Y NORMALIZACIÓN (REGLAS 5 Y 7)
+// 2. UTILIDADES Y NORMALIZACIÓN (v2.2 intacto)
 // ==========================================
 
 function padZero(num) {
@@ -206,7 +358,7 @@ function extractM3u8FromHtml(html) {
 }
 
 // ==========================================
-// DETECCIÓN DINÁMICA DE RESOLUCIÓN (REGLA 6)
+// 3. DETECCIÓN DINÁMICA DE RESOLUCIÓN (v2.2 intacto)
 // ==========================================
 
 var QUALITY_MAPS = {
@@ -261,8 +413,8 @@ function probeM3u8Quality(m3u8Url, headers) {
         redirect: "follow"
     }, 2500)
     .then(function(res) {
-        if (!res.ok) return "720p";
-        return res.text();
+        if (!res || !res.ok) return "";
+        return textWithTimeout(res, 2500);
     })
     .then(function(text) {
         if (!text || text.indexOf("#EXT-X-STREAM-INF") === -1) {
@@ -307,7 +459,7 @@ function getServerLabel(url) {
 }
 
 // ==========================================
-// RESOLVERS DE STREAMING (PROMESAS PURAS)
+// 4. RESOLVERS DE STREAMING (PROMESAS PURAS, tolerantes a res null)
 // ==========================================
 
 function resolveVimeos(url) {
@@ -315,8 +467,9 @@ function resolveVimeos(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://vimeos.net/" },
         redirect: "follow"
     }, 2500)
-    .then(function(res) { return res.ok ? res.text() : ""; })
+    .then(function(res) { return (res && res.ok) ? textWithTimeout(res, 2500) : ""; })
     .then(function(html) {
+        if (!html) return null;
         var streamUrl = extractM3u8FromHtml(html);
         if (!streamUrl) return null;
 
@@ -337,8 +490,9 @@ function resolveGoodStream(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": "https://goodstream.one/" },
         redirect: "follow"
     }, 2500)
-    .then(function(res) { return res.ok ? res.text() : ""; })
+    .then(function(res) { return (res && res.ok) ? textWithTimeout(res, 2500) : ""; })
     .then(function(html) {
+        if (!html) return null;
         var streamUrl = extractM3u8FromHtml(html);
         if (!streamUrl) return null;
 
@@ -365,8 +519,9 @@ function resolveStreamWish(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
     }, 2500)
-    .then(function(res) { return res.ok ? res.text() : ""; })
+    .then(function(res) { return (res && res.ok) ? textWithTimeout(res, 2500) : ""; })
     .then(function(html) {
+        if (!html) return null;
         var streamUrl = extractM3u8FromHtml(html);
         if (!streamUrl) return null;
 
@@ -387,8 +542,9 @@ function resolveVidHide(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
     }, 2500)
-    .then(function(res) { return res.ok ? res.text() : ""; })
+    .then(function(res) { return (res && res.ok) ? textWithTimeout(res, 2500) : ""; })
     .then(function(html) {
+        if (!html) return null;
         var streamUrl = extractM3u8FromHtml(html);
         if (!streamUrl) return null;
 
@@ -409,8 +565,9 @@ function resolveFilemoon(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": url },
         redirect: "follow"
     }, 2500)
-    .then(function(res) { return res.ok ? res.text() : ""; })
+    .then(function(res) { return (res && res.ok) ? textWithTimeout(res, 2500) : ""; })
     .then(function(html) {
+        if (!html) return null;
         var streamUrl = extractM3u8FromHtml(html);
         if (!streamUrl) return null;
 
@@ -431,7 +588,7 @@ function resolveVideoApp(url) {
         headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" },
         redirect: "follow"
     }, 2500)
-    .then(function(res) { return res.ok ? res.text() : ""; })
+    .then(function(res) { return (res && res.ok) ? textWithTimeout(res, 2500) : ""; })
     .then(function(html) {
         if (!html) return null;
         var iframeMatch = html.match(/<iframe[^>]+src=["']([^"']+)["']/i);
@@ -458,7 +615,7 @@ function dispatchResolver(url) {
 }
 
 // ==========================================
-// CLIENTE API REST (CONCURRENTE EN LOTES)
+// 5. CLIENTE API REST (CONCURRENTE EN LOTES, tolerante a res null)
 // ==========================================
 
 function getPostId(slugs, postType) {
@@ -474,8 +631,8 @@ function getPostId(slugs, postType) {
             var endpoint = API_URL + "/single?post_name=" + encodeURIComponent(slug) + "&post_type=" + postType;
             return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2500)
                 .then(function(res) {
-                    if (!res.ok) return null;
-                    return res.json();
+                    if (!res || !res.ok) return null;
+                    return jsonWithTimeout(res, 2500);
                 })
                 .then(function(json) {
                     if (!json || !json.data) return null;
@@ -505,8 +662,8 @@ function getEpisodeIdFromSeries(baseSlugs, sNum, eNum) {
         var endpoint = API_URL + "/episodes?post_id=" + seriesId;
         return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2500)
             .then(function(res) {
-                if (!res.ok) return null;
-                return res.json();
+                if (!res || !res.ok) return null;
+                return jsonWithTimeout(res, 2500);
             })
             .then(function(json) {
                 var list = (json && Array.isArray(json.data)) ? json.data : [];
@@ -536,8 +693,8 @@ function searchHackstoreApi(queries, titles, year, postType) {
 
         return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, 2500)
             .then(function(res) {
-                if (!res.ok) return null;
-                return res.json();
+                if (!res || !res.ok) return null;
+                return jsonWithTimeout(res, 2500);
             })
             .then(function(json) {
                 var posts = (json && json.data && Array.isArray(json.data.posts)) ? json.data.posts : [];
@@ -554,7 +711,10 @@ function searchHackstoreApi(queries, titles, year, postType) {
                     }
                 }
 
-                if (bestId) return bestId;
+                if (bestId) {
+                    logDiag("search '" + cleanQ + "' -> id " + bestId + " (score " + bestScore + ")");
+                    return bestId;
+                }
                 return tryNext(index + 1);
             })
             .catch(function() {
@@ -569,8 +729,8 @@ function getPlayerEmbeds(postId) {
     var endpoint = API_URL + "/player?post_id=" + postId;
     return fetchWithTimeout(endpoint, { headers: DEFAULT_HEADERS, redirect: "follow" }, 2500)
         .then(function(res) {
-            if (!res.ok) return [];
-            return res.json();
+            if (!res || !res.ok) return [];
+            return jsonWithTimeout(res, 2500);
         })
         .then(function(json) {
             return (json && json.data && Array.isArray(json.data)) ? json.data : [];
@@ -579,10 +739,10 @@ function getPlayerEmbeds(postId) {
 }
 
 // ==========================================
-// FUNCIÓN PRINCIPAL EXPORTADA
+// 6. FUNCIÓN PRINCIPAL EXPORTADA
 // ==========================================
 
-function getStreams(tmdbId, mediaType, season, episode) {
+function getStreamsInner(tmdbId, mediaType, season, episode) {
     var isMovie = mediaType === "movie";
     var sNum = parseInt(season, 10) || 1;
     var eNum = parseInt(episode, 10) || 1;
@@ -591,13 +751,16 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
     return fetchWithTimeout(tmdbUrl, {}, 2500)
         .then(function(res) {
-            if (!res.ok) throw new Error("TMDB HTTP " + res.status);
-            return res.json();
+            if (!res || !res.ok) throw new Error("TMDB HTTP " + (res ? res.status : "null"));
+            return jsonWithTimeout(res, 2500);
         })
         .then(function(meta) {
+            if (!meta) throw new Error("TMDB JSON vacio");
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
             var year = (isMovie ? meta.release_date : meta.first_air_date || "").slice(0, 4);
+
+            logDiag("TMDB ok: '" + (title || "?") + "' (" + year + ") " + (isMovie ? "movie" : "S" + sNum + "E" + eNum) + " timer=" + HAS_TIMER);
 
             var titles = [];
             if (!isMovie && origTitle) {
@@ -661,7 +824,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
 
             var postType = isMovie ? "movies" : "episodes";
             return getPostId(candidateSlugs, postType).then(function(postId) {
-                if (postId) return postId;
+                if (postId) {
+                    logDiag("postId por slug: " + postId);
+                    return postId;
+                }
 
                 if (isMovie) {
                     return searchHackstoreApi(searchQueries, titles, year, "movies");
@@ -672,11 +838,19 @@ function getStreams(tmdbId, mediaType, season, episode) {
             });
         })
         .then(function(postId) {
-            if (!postId) return [];
+            if (!postId) {
+                logDiag("sin postId tras slugs + fallback (" + Math.round(tvElapsed()) + "ms)");
+                return [];
+            }
             return getPlayerEmbeds(postId);
         })
         .then(function(embeds) {
-            if (!embeds.length) return [];
+            if (!embeds.length) {
+                logDiag("sin embeds en /player");
+                return [];
+            }
+
+            logDiag("embeds en /player: " + embeds.length + " (" + Math.round(tvElapsed()) + "ms)");
 
             var promises = embeds.map(function(embed) {
                 var url = embed.url || embed.link || "";
@@ -687,6 +861,7 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     .then(function(result) {
                         if (!result || !result.url) return null;
                         var qual = result.quality || "720p";
+                        logDiag("resolver " + serverName + " -> OK " + qual);
                         return {
                             name: "Hackstore",
                             title: qual + " · " + lang.toUpperCase() + " · " + serverName,
@@ -701,11 +876,26 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return Promise.all(promises);
         })
         .then(function(results) {
-            return results.filter(function(st) { return st !== null; });
+            var valid = results.filter(function(st) { return st !== null; });
+            logDiag("total " + valid.length + " streams (" + Math.round(tvElapsed()) + "ms)");
+            return valid;
         })
-        .catch(function() {
+        .catch(function(eStage) {
+            logDiag("fallo de etapa: " + (eStage && eStage.message ? eStage.message : eStage));
             return [];
         });
+}
+
+// Contrato: getStreams SIEMPRE devuelve una Promesa que resuelve a un Array.
+function getStreams(tmdbId, mediaType, season, episode) {
+    try {
+        START_TS = tvNow();
+        logDiag("getStreams tmdbId=" + tmdbId + " type=" + mediaType + " s=" + season + " e=" + episode);
+        if (!tmdbId) return Promise.resolve([]);
+        return getStreamsInner(tmdbId, mediaType, season, episode);
+    } catch (eSync) {
+        return Promise.resolve([]);
+    }
 }
 
 if (typeof module !== "undefined" && module.exports) {
