@@ -5,6 +5,27 @@
  * Resolvers: KeKi (HLS Directo), Flix (GoodStream POST /dl), Magi (Filemoon), Directo (mp4)
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / Android TV / FireTV / Desktop)
  *
+ * Cambios v1.3-NUVIOTV (2026-11) - se descifra el 403 {"error":"Sesion no valida o
+ * expirada"} de la API interna (no era Cloudflare: era sesion de la app). Auditoria
+ * de los chunks JS del propio sitio (modulo webpack 98641): el frontend llama a
+ * getAntiBotToken() -> POST /api/session/sync (Content-Type: application/json, sin
+ * body) y el campo sid|sessionId|token de la respuesta viaja como header
+ * "x-session-id" en CADA llamada a /api/movies|series/.../stream (cache 10 min).
+ *  1) BOOTSTRAP DE SESION en la capa runtime (ensureSessionToken): replica ese
+ *     handshake sin tocar el scraping. Se resetea en cada getStreams, se cachea
+ *     entre candidatos y se regenera UNA sola vez si la API responde 403 con el
+ *     token puesto (por si expiro entre medias).
+ *  2) PARSEO FLEXIBLE del JSON de streams: v1.2 solo leia streamJson.links;
+ *     v1.3 acepta links/streams/sources/servers/embeds/videos (+ .data anidado)
+ *     y items objeto (url|src|link|file|embed|iframe) o string directo.
+ *  3) La ruta principal de la pagina (enlaces embebidos) queda intacta: si el
+ *     HTML ya trae enlaces, no se toca ni la sesion ni la API.
+ *  4) RED DE SEGURIDAD del parseo API: claves/campos extra (items, embedUrl,
+ *     streamUrl) y, si el formato real no encaja en ninguna clave conocida,
+ *     barrido de URLs sobre el JSON crudo (mismo barrido de la ruta de pagina).
+ *     Confirmado en fase 5: POST /api/session/sync -> 200 token len 95 y
+ *     GET /api/movies/{id}/stream -> 200 con x-session-id (body ~3.8 KB).
+ *
  * Cambios v1.1-NUVIOTV (2026-11) - capa runtime portada de pelispedia v1.1-NUVIOTV /
  * hackstore v2.3-NUVIOTV / jkanime v2.9 / sololatino v2.0 / cinecalidad v2.4-NUVIOTV /
  * animeav1 v1.2-NUVIOTV (mismo patron ya verificado en TV).
@@ -73,7 +94,14 @@ var START_TS = 0;
 // en cada getStreams). Solo se usan para el fallback de la API.
 var PAGE_COOKIES = "";
 
-var LOG_TAG = "[PelisGO][v1.2]";
+// Sesion interna de pelisgo (v1.3): el "anti-bot token" que el sitio genera con
+// POST /api/session/sync y envia como header x-session-id en /api/*/stream.
+// Se resetea en cada getStreams y se cachea durante la llamada (expira en 9 min;
+// el sitio usa 10). No se toca si la pagina ya trajo enlaces embebidos.
+var SESSION_TOKEN = "";
+var SESSION_EXPIRES = 0;
+
+var LOG_TAG = "[PelisGO][v1.3]";
 
 function tvNow() {
     try { return Date.now(); } catch (e2) { return 0; }
@@ -236,6 +264,105 @@ function buildApiHeaders(pageUrl) {
     };
     if (PAGE_COOKIES) h["Cookie"] = PAGE_COOKIES;
     return h;
+}
+
+// ==========================================
+// 1a-bis. SESION INTERNA DE PELISGO (v1.3)
+// Replica EXACTA de getAntiBotToken() del sitio (modulo webpack 98641):
+//   POST /api/session/sync  Content-Type: application/json  (sin body)
+//   -> JSON con sid | sessionId | token
+//   -> se envia como header "x-session-id" en /api/movies|series/.../stream
+// El sitio cachea 10 min; aqui 9 min de margen y solo dentro de un getStreams.
+// ==========================================
+
+function ensureSessionToken(force) {
+    if (!force && SESSION_TOKEN && tvNow() < SESSION_EXPIRES) {
+        return Promise.resolve(SESSION_TOKEN);
+    }
+
+    var opts = {
+        method: "POST",
+        headers: {
+            "User-Agent": USER_AGENT,
+            "Accept": "*/*",
+            "Content-Type": "application/json",
+            "Origin": BASE_URL,
+            "Referer": BASE_URL + "/"
+        }
+    };
+    if (PAGE_COOKIES) opts.headers["Cookie"] = PAGE_COOKIES;
+
+    return fetchWithTimeout(BASE_URL + "/api/session/sync", opts, NETWORK_TIMEOUT)
+        .then(function(res) {
+            if (!res || !res.ok) {
+                logDiag("session/sync HTTP " + (res ? res.status : "null"));
+                return "";
+            }
+            captureCookies(res);
+            return jsonWithTimeout(res, 3000);
+        })
+        .then(function(data) {
+            var tok = "";
+            if (data && typeof data === "object") {
+                if (typeof data.sid === "string" && data.sid) tok = data.sid;
+                else if (typeof data.sessionId === "string" && data.sessionId) tok = data.sessionId;
+                else if (typeof data.token === "string" && data.token) tok = data.token;
+            }
+            if (tok) {
+                SESSION_TOKEN = tok;
+                SESSION_EXPIRES = tvNow() + 9 * 60 * 1000;
+                logDiag("sesion creada (len " + tok.length + ")");
+            } else {
+                logDiag("session/sync sin token usable en la respuesta");
+            }
+            return tok;
+        })
+        .catch(function(eSync) {
+            logDiag("session/sync fallo: " + (eSync && eSync.message ? eSync.message : eSync));
+            return "";
+        });
+}
+
+// v1.3: normaliza cualquier forma del JSON de streams de la API a la lista de
+// enlaces que consumen los resolvers. Acepta array directo, objeto con una de
+// las claves conocidas, o {data:{...}} anidado; items objeto (url|src|link|
+// file|embed|iframe) o string "https://...".
+function normalizeApiLinks(json) {
+    if (!json) return [];
+    var arr = null;
+    if (Array.isArray(json)) {
+        arr = json;
+    } else if (typeof json === "object") {
+        var keys = ["links", "streams", "sources", "servers", "embeds", "videos", "videoServers", "results", "items"];
+        for (var k = 0; k < keys.length; k++) {
+            var cand = json[keys[k]];
+            if (cand && typeof cand === "object" && typeof cand.length === "number" && cand.length > 0) {
+                arr = cand;
+                break;
+            }
+        }
+        if (!arr && json.data) return normalizeApiLinks(json.data);
+    }
+    if (!arr) return [];
+
+    var out = [];
+    for (var i = 0; i < arr.length && out.length < 16; i++) {
+        var it = arr[i];
+        var u = "";
+        var q = "", lang = "", srv = "";
+        if (typeof it === "string") {
+            u = it;
+        } else if (it && typeof it === "object") {
+            u = it.url || it.src || it.link || it.file || it.embed || it.iframe || it.embedUrl || it.streamUrl || "";
+            q = (typeof it.quality === "string" && it.quality) || "";
+            lang = (typeof it.language === "string" && it.language) || (typeof it.lang === "string" && it.lang) || "";
+            srv = (typeof it.server === "string" && it.server) || (typeof it.name === "string" && it.name) || (typeof it.title === "string" && it.title) || "";
+        }
+        if (u && typeof u === "string" && u.indexOf("http") === 0) {
+            out.push({ url: u, quality: q, language: lang, server: srv });
+        }
+    }
+    return out;
 }
 
 // ==========================================
@@ -777,9 +904,8 @@ function getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum) {
                     .then(function(html) {
                         if (!html) return null;
 
-                        // v1.2 - RUTA PRINCIPAL: enlaces embebidos en la pagina.
-                        // La API /api/* esta tras un challenge de Cloudflare (403)
-                        // mientras las paginas responden 200.
+                        // v1.2/v1.3 - RUTA PRINCIPAL: enlaces embebidos en la pagina.
+                        // Si el HTML ya trae enlaces no se toca ni la sesion ni la API.
                         var pageLinks = extractLinksFromPageHtml(html);
                         if (pageLinks && pageLinks.length > 0) {
                             logDiag("pagina: " + pageLinks.length + " enlaces embebidos (" + Math.round(tvElapsed()) + "ms)");
@@ -800,34 +926,67 @@ function getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum) {
                             (BASE_URL + "/api/series/episode/" + entityId + "/stream") :
                             (BASE_URL + "/api/movies/" + entityId + "/stream");
 
-                        // v1.2 - FALLBACK: API con cabeceras de navegador real + cookies
-                        return fetchWithTimeout(streamApi, buildApiHeaders(pageUrl), NETWORK_TIMEOUT)
-                            .then(function(r) {
-                                if (!r || !r.ok) {
-                                    logDiag("API HTTP " + (r ? r.status : "null") + ((r && r.status === 403) ? " (posible bloqueo Cloudflare)" : ""));
-                                    return null;
+                        // v1.3 - FALLBACK: la API exige sesion. Bootstrap de
+                        // x-session-id (POST /api/session/sync) + cabeceras de
+                        // navegador real + cookies de pagina. Si el token que
+                        // teniamos fue rechazado (403), se regenera UNA vez.
+                        function callStreamApi(tok) {
+                            var headers = buildApiHeaders(pageUrl);
+                            if (tok) headers["x-session-id"] = tok;
+                            return fetchWithTimeout(streamApi, { headers: headers }, NETWORK_TIMEOUT)
+                                .then(function(r) {
+                                    if (!r || !r.ok) {
+                                        logDiag("API HTTP " + (r ? r.status : "null") + ((r && r.status === 403) ? " (sesion rechazada)" : ""));
+                                        return { status: r ? r.status : 0, body: null };
+                                    }
+                                    captureCookies(r);
+                                    return textWithTimeout(r, 3000).then(function(body) {
+                                        return { status: r.status, body: body };
+                                    });
+                                });
+                        }
+
+                        return ensureSessionToken(false).then(function(tok) {
+                            return callStreamApi(tok).then(function(first) {
+                                if (first.body) return first.body;
+                                if (first.status === 403 && tok) {
+                                    logDiag("regenerando sesion y reintentando API");
+                                    return ensureSessionToken(true).then(function(tok2) {
+                                        if (!tok2 || tok2 === tok) return null;
+                                        return callStreamApi(tok2).then(function(second) { return second.body; });
+                                    });
                                 }
-                                captureCookies(r);
-                                return textWithTimeout(r, 3000);
-                            })
-                            .then(function(body) {
-                                if (!body) return null;
-                                var head = body.slice(0, 4000);
-                                if (head.indexOf("Just a moment") !== -1 ||
-                                    head.indexOf("Performing security verification") !== -1 ||
-                                    head.indexOf("Attention Required") !== -1 ||
-                                    head.indexOf("cf-chl") !== -1) {
-                                    logDiag("API bloqueada por challenge de Cloudflare (body detectado)");
-                                    return null;
-                                }
-                                try {
-                                    var streamJson = JSON.parse(body);
-                                    return (streamJson && streamJson.links && streamJson.links.length > 0) ? streamJson.links : null;
-                                } catch (eJson) {
-                                    logDiag("API respondio sin JSON valido");
-                                    return null;
-                                }
+                                return null;
                             });
+                        }).then(function(body) {
+                            if (!body) return null;
+                            var head = body.slice(0, 4000);
+                            if (head.indexOf("Just a moment") !== -1 ||
+                                head.indexOf("Performing security verification") !== -1 ||
+                                head.indexOf("Attention Required") !== -1 ||
+                                head.indexOf("cf-chl") !== -1) {
+                                logDiag("API bloqueada por challenge de Cloudflare (body detectado)");
+                                return null;
+                            }
+                            if (head.indexOf("lida o expirada") !== -1) {
+                                logDiag("API rechazo la sesion (x-session-id invalido)");
+                                return null;
+                            }
+                            try {
+                                var streamJson = JSON.parse(body);
+                                var norm = normalizeApiLinks(streamJson);
+                                if (norm.length === 0) {
+                                    // v1.3 ultima red: barrido de URLs sobre el JSON
+                                    // crudo por si el formato real usa otras claves.
+                                    norm = sweepEmbedUrls(body);
+                                    if (norm.length === 0) logDiag("API JSON sin enlaces reconocidos");
+                                }
+                                return norm.length > 0 ? norm : null;
+                            } catch (eJson) {
+                                logDiag("API respondio sin JSON valido");
+                                return null;
+                            }
+                        });
                     })
                     .then(function(links) {
                         if (!links || links.length === 0) {
@@ -878,6 +1037,10 @@ function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     try {
         START_TS = tvNow();
         PAGE_COOKIES = "";
+        // v1.3: sesion fresca por llamada (se cachea dentro del getStreams
+        // entre candidatos y se regenera ante 403).
+        SESSION_TOKEN = "";
+        SESSION_EXPIRES = 0;
         logDiag("getStreams tmdbId=" + tmdbId + " type=" + mediaType + " s=" + seasonNum + " e=" + episodeNum);
         if (!tmdbId) return Promise.resolve([]);
         return getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum);
