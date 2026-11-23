@@ -70,8 +70,8 @@
     {
       "id": "hackstore",
       "name": "HackStore",
-      "description": "Películas y Series en Español Latino desde HackStore2 (Vimeos, GoodStream, StreamWish, VidHide).",
-      "version": "2.2.0",
+      "description": "Películas y Series en Español Latino desde HackStore2 (Vimeos, GoodStream, StreamWish, VidHide). v2.3: fix NuvioTV (QuickJS sin setTimeout/AbortController) + timeout en cuerpo.",
+      "version": "2.3.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": [
         "movie",
