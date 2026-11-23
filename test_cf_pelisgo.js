@@ -1,37 +1,37 @@
 #!/usr/bin/env node
 /**
- * test_cf_pelisgo3.js — fase 3: identificar COMO se genera x-session-id
+ * test_cf_pelisgo4.js — fase 4: encontrar getAntiBotToken (generador de x-session-id)
  *
- * Hallazgos de la fase 2 (test_cf_pelisgo2.js):
- *   - El sitio usa Auth.js v5 (cookies __Host-authjs.csrf-token,
- *     __Secure-authjs.callback-url; /api/auth/* responden 200).
- *   - El header propio de la app es x-session-id -> casi seguro es lo que
- *     valida /api/movies/{id}/stream ("Sesion no valida o expirada").
- *   - POST al stream da 405 -> el metodo correcto es GET.
+ * Hallazgos de la fase 3 (test_cf_pelisgo3.js):
+ *   - La llamada real al stream es:
+ *       let t = await getAntiBotToken();
+ *       s["x-session-id"] = t   (si hay token)
+ *       fetch(`/api/movies/${movieId}/stream`, ...)
+ *   - El token NO es el csrf de Auth.js (S1..S4 dieron 403) ni un uuid libre (S6 403).
+ *   - getAntiBotToken se importa del modulo webpack 98641.
  *
- * Esta prueba (correr en la MISMA carpeta donde quedaron pelisgo_chunk_*.js):
- *   A) Analiza offline los chunks guardados con contexto amplio para ver
- *      como se genera y usa x-session-id.
- *   B) Consulta /api/auth/session y /api/auth/csrf completos (body + cookies).
- *   C) Reintenta el stream enviando x-session-id con valores derivados del
- *      token CSRF (doble envio) y de un UUID aleatorio.
+ * Esta prueba:
+ *   A) Descarga TODOS los chunks JS del sitio y los guarda en pelisgo_chunk_*.js
+ *      (ademas intenta chunks "lazy" derivados del runtime de webpack).
+ *   B) Busca la DEFINICION de getAntiBotToken / modulo 98641 con contexto amplio,
+ *      mas pistas de turnstile/altcha/pow/sha256 y el inventario de endpoints /api/.
+ *   C) Sondea los endpoints candidatos (antibot/challenge/token/captcha...)
+ *      y reintenta el stream con cualquier token que aparezca en sus respuestas.
  *
- * Uso: node test_cf_pelisgo3.js matrix [movieId]
- *      (el movieId es opcional: si lo das, no vuelve a bajar la pagina)
- * Sale: consola + pelisgo_pistas.txt
+ * Uso: node test_cf_pelisgo4.js matrix [movieId]
+ * Sale: consola + pelisgo_pistas2.txt
  */
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 const slug = (process.argv[2] || 'matrix').trim();
 const movieIdArg = (process.argv[3] || '').trim();
 const BASE = (process.env.PELISGO_BASE || 'https://pelisgo.online').replace(/\/+$/, '');
-const CHUNK_DIR = process.env.PELISGO_CHUNK_DIR || process.cwd();
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const PAGE_URL = BASE + '/movies/' + slug;
+const CHUNK_RE = /\/_next\/static\/[A-Za-z0-9_.\/%[\]-]+\.js/g;
 
 /* ---------- frasco de cookies ---------- */
 const jar = new Map();
@@ -73,30 +73,37 @@ function fetchTo(url, opts = {}, ms = 20000) {
   return fetch(url, { ...opts, signal: ac.signal }).finally(() => clearTimeout(t));
 }
 
-/* ---------- patrones de la fase A (chunks locales) ---------- */
-const PATTERNS_A = [
-  { tag: 'x-session-id', re: /x-session-id/gi, ctx: 700, fileMax: 6 },
-  { tag: 'api/movies',   re: /api\/movies/g, ctx: 700, fileMax: 3 },
-  { tag: 'sessionId',    re: /sessionId|session_id/gi, ctx: 350, fileMax: 8 },
-  { tag: 'error-sesion', re: /expirad|Sesi[oó]n no v|expired/gi, ctx: 400, fileMax: 3 },
-  { tag: 'auth',         re: /authjs|\/api\/auth\/|signIn|credentials/gi, ctx: 350, fileMax: 8 },
-  { tag: 'uuid-gen',     re: /randomUUID|nanoid|uuidv4|getRandomValues/gi, ctx: 250, fileMax: 6 },
-  { tag: 'fetch-wrapper', re: /window\.fetch\s*=|globalThis\.fetch\s*=|self\.fetch\s*=/g, ctx: 500, fileMax: 2 },
-  { tag: 'localStorage', re: /localStorage/gi, ctx: 200, fileMax: 10 },
+async function bajarChunk(u) {
+  try {
+    const r = await fetchTo(BASE + u, {
+      headers: { ...BROWSER, Referer: PAGE_URL, Accept: '*/*', 'Sec-Fetch-Dest': 'script', 'Sec-Fetch-Mode': 'no-cors', 'Sec-Fetch-Site': 'same-origin' },
+    });
+    takeCookies(r);
+    if (!r.ok) return null;
+    return await r.text();
+  } catch (e) { return null; }
+}
+
+/* ---------- patrones de la fase B ---------- */
+const PATTERNS_B = [
+  { tag: 'DEF-getAntiBotToken', re: /getAntiBotToken/g, ctx: 1400, consoleMax: 5, fileMax: 8 },
+  { tag: 'MOD-98641', re: /\b98641\s*[:=]/g, ctx: 1400, consoleMax: 3, fileMax: 3 },
+  { tag: 'x-session-id', re: /x-session-id/gi, ctx: 800, consoleMax: 6, fileMax: 8 },
+  { tag: 'api/movies', re: /api\/movies/g, ctx: 1500, consoleMax: 3, fileMax: 3 },
+  { tag: 'captcha/pow', re: /turnstile|sitekey|altcha|recaptcha|hcaptcha|challenge|difficulty|proof/gi, ctx: 500, consoleMax: 6, fileMax: 12 },
+  { tag: 'hash', re: /sha-?256|subtle\.digest|createHash/gi, ctx: 400, consoleMax: 5, fileMax: 10 },
 ];
 
 (async () => {
   let movieId = movieIdArg;
-  const resultsC = [];
+  const apiPaths = new Map();
+  const probes = [];
+  const streamRetry = [];
   let ganador = null;
-  let sessionBody = '';
-  let csrfBodyStr = '';
-  let csrfFromBody = '';
-  let csrfCookieLen = 0;
-  let archivosCount = 0;
-  const resumenA = {};
-  let primerCtxXSid = '';
-  let primerCtxApi = '';
+  let antibotDef = '';
+  let mod98641Ctx = '';
+  let apiMoviesFull = '';
+  let chunksBajados = 0;
 
   try {
     /* fase 0: movieId */
@@ -113,119 +120,201 @@ const PATTERNS_A = [
       const m = html.match(/movieId[\\":\s]+([A-Za-z0-9_-]{10,})/);
       movieId = m ? m[1] : '';
       line('movieId: ' + (movieId || '(NO ENCONTRADO)'));
+      global.__html = html;
     }
   } catch (e) { line('ERROR fase 0: ' + e.message); }
 
+  const corpus = [];
   try {
-    /* fase A: analisis offline de los chunks guardados por test_cf_pelisgo2.js */
-    sep('A', 'Analisis offline de pelisgo_chunk_*.js (contexto amplio)');
-    const archivos = fs.readdirSync(CHUNK_DIR).filter(f => /^pelisgo_chunk_.*\.js$/.test(f)).sort();
-    archivosCount = archivos.length;
-    if (!archivos.length) {
-      line('No hay pelisgo_chunk_*.js en ' + CHUNK_DIR);
-      line('(corre antes test_cf_pelisgo2.js en esta carpeta; la fase C sigue igual)');
-    } else {
-      line('chunks encontrados: ' + archivos.length + ' -> ' + archivos.join(', '));
+    /* fase A: descargar TODOS los chunks */
+    sep('A', 'Descarga de todos los chunks JS (~40 s)');
+    let html = global.__html || '';
+    if (!html) {
+      try {
+        const r0 = await fetchTo(PAGE_URL, { headers: { ...BROWSER, Accept: 'text/html,*/*;q=0.8' } });
+        takeCookies(r0);
+        html = await r0.text();
+      } catch (e) {}
     }
-    for (const archivo of archivos) {
-      let texto = '';
-      try { texto = fs.readFileSync(path.join(CHUNK_DIR, archivo), 'utf8'); } catch (e) { continue; }
-      for (const p of PATTERNS_A) {
+    let urls = [...new Set(html.match(CHUNK_RE) || [])];
+    try {
+      const rh = await fetchTo(BASE + '/', { headers: { ...BROWSER, Accept: 'text/html,*/*;q=0.8' } });
+      takeCookies(rh);
+      urls = urls.concat(rh.text ? [] : []);
+      const hh = await rh.text();
+      urls = urls.concat(hh.match(CHUNK_RE) || []);
+    } catch (e) {}
+    urls = [...new Set(urls)].slice(0, 90);
+    line('chunks detectados en HTML: ' + urls.length);
+
+    for (let i = 0; i < urls.length; i += 6) {
+      const lote = await Promise.all(urls.slice(i, i + 6).map(u => bajarChunk(u)));
+      for (let j = 0; j < lote.length; j++) {
+        const txt = lote[j];
+        if (txt == null) continue;
+        chunksBajados++;
+        const name = urls[i + j].replace('/_next/static/chunks/', '');
+        corpus.push({ name, text: txt });
+        const fname = 'pelisgo_chunk_' + name.replace(/\.js$/, '').replace(/[^A-Za-z0-9._-]/g, '_') + '.js';
+        try { fs.writeFileSync(fname, txt); } catch (e) {}
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    line('descargados: ' + chunksBajados);
+
+    /* fase A2: chunks "lazy" derivados del runtime de webpack */
+    try {
+      const extras = new Set();
+      for (const { text } of corpus) {
+        const pares = text.match(/\{(?:\s*["']?\w{1,6}["']?\s*:\s*["'][0-9a-f]{8,32}["']\s*,?){2,}\}/g) || [];
+        for (const p of pares) {
+          const m2 = p.matchAll(/["']?(\w{1,6})["']?\s*:\s*["']([0-9a-f]{8,32})["']/g);
+          for (const [, id, hash] of m2) {
+            extras.add('/_next/static/chunks/' + id + '.' + hash + '.js');
+          }
+        }
+      }
+      const listaExtras = [...extras].slice(0, 40).filter(u => !urls.includes(u));
+      if (listaExtras.length) {
+        line('chunks lazy derivados del runtime: ' + listaExtras.length);
+        for (let i = 0; i < listaExtras.length; i += 6) {
+          const lote = await Promise.all(listaExtras.slice(i, i + 6).map(u => bajarChunk(u)));
+          for (let j = 0; j < lote.length; j++) {
+            const txt = lote[j];
+            if (txt == null) continue;
+            chunksBajados++;
+            const name = listaExtras[i + j].replace('/_next/static/chunks/', '');
+            corpus.push({ name, text: txt });
+            const fname = 'pelisgo_chunk_' + name.replace(/\.js$/, '').replace(/[^A-Za-z0-9._-]/g, '_') + '.js';
+            try { fs.writeFileSync(fname, txt); } catch (e) {}
+          }
+        }
+        line('total tras lazy: ' + chunksBajados);
+      }
+    } catch (e) {}
+  } catch (e) { line('ERROR fase A: ' + e.message); }
+
+  try {
+    /* fase B: cazar la definicion */
+    sep('B', 'Definicion de getAntiBotToken y pistas');
+    for (const { name, text } of corpus) {
+      for (const p of PATTERNS_B) {
         p.re.lastIndex = 0;
         let m, n = 0;
-        while ((m = p.re.exec(texto)) !== null && n < p.fileMax) {
+        while ((m = p.re.exec(text)) !== null && n < p.fileMax) {
           const ini = Math.max(0, m.index - p.ctx);
-          const fin = Math.min(texto.length, m.index + m[0].length + p.ctx);
-          const ctx = texto.slice(ini, fin).replace(/\s+/g, ' ');
-          resumenA[p.tag] = (resumenA[p.tag] || 0) + 1;
-          if (p.tag === 'x-session-id' && !primerCtxXSid) primerCtxXSid = ctx;
-          if (p.tag === 'api/movies' && !primerCtxApi) primerCtxApi = ctx;
-          out('   [' + p.tag + '] ' + archivo + ':');
-          out('     > ' + clip(ctx, p.tag === 'x-session-id' || p.tag === 'api/movies' ? 1400 : 700));
+          const fin = Math.min(text.length, m.index + m[0].length + p.ctx);
+          const ctx = text.slice(ini, fin).replace(/\s+/g, ' ');
+          if (p.tag === 'DEF-getAntiBotToken') {
+            const esDef = /getAntiBotToken\s*[:=]\s*(async\s*)?(function|\()/.test(ctx) || /function\s+getAntiBotToken\s*\(/.test(ctx) || /getAntiBotToken\s*=\s*async\s*\(?\s*\)?\s*=>/.test(ctx);
+            if (esDef && ctx.length > antibotDef.length) antibotDef = ctx;
+          }
+          if (p.tag === 'MOD-98641' && ctx.length > mod98641Ctx.length) mod98641Ctx = ctx;
+          if (p.tag === 'api/movies' && !apiMoviesFull) apiMoviesFull = ctx;
+          if (p.tag !== 'api/movies' || n < p.consoleMax) {
+            out('   [' + p.tag + '] ' + name + ':');
+            out('     > ' + clip(ctx, p.ctx <= 500 ? 600 : 1600));
+          }
           n++;
           if (m.index === p.re.lastIndex) p.re.lastIndex++;
         }
       }
+      /* inventario de endpoints /api/ */
+      const reApi = /["'`](\/api\/[A-Za-z0-9\-_.]+)["'`]/g;
+      let m3;
+      while ((m3 = reApi.exec(text)) !== null) {
+        apiPaths.set(m3[1], (apiPaths.get(m3[1]) || 0) + 1);
+      }
     }
-    if (!archivosCount) out('   (sin chunks locales que analizar)');
-  } catch (e) { line('ERROR fase A: ' + e.message); }
-
-  try {
-    /* fase B: endpoints de Auth.js completos */
-    sep('B', 'Endpoints de Auth.js (body completo + cookies)');
-    const authProbe = async pathname => {
-      const r = await fetchTo(BASE + pathname, {
-        headers: { ...BROWSER, Accept: 'application/json', Referer: PAGE_URL, 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin' },
-      });
-      const sc = takeCookies(r);
-      const b = await r.text();
-      line('GET ' + pathname + ' -> ' + r.status);
-      line('   set-cookie: ' + (sc.length ? sc.map(c => c.split(';')[0]).join(' | ') : '(ninguna)'));
-      line('   body: ' + clip(b, 1000));
-      return b;
-    };
-    sessionBody = await authProbe('/api/auth/session');
-    csrfBodyStr = await authProbe('/api/auth/csrf');
-    try { csrfFromBody = String(JSON.parse(csrfBodyStr).csrfToken || ''); } catch (e) {}
+    out('   --- Inventario de endpoints /api/ usados por el frontend ---');
+    const inv = [...apiPaths.entries()].sort((a, b) => b[1] - a[1]).slice(0, 30);
+    for (const [p, c] of inv) out('     ' + p + '  (x' + c + ')');
   } catch (e) { line('ERROR fase B: ' + e.message); }
 
   try {
-    /* fase C: stream con x-session-id */
-    sep('C', 'Stream con x-session-id (doble envio CSRF / uuid aleatorio)');
-    if (!movieId) {
-      line('(sin movieId, se omite)');
-    } else {
-      const csrfCookie = jar.get('__Host-authjs.csrf-token') || jar.get('__Secure-authjs.csrf-token') || jar.get('authjs.csrf-token') || jar.get('next-auth.csrf-token') || '';
-      csrfCookieLen = csrfCookie.length;
-      const partes = csrfCookie ? csrfCookie.split('|') : [];
-      const cand = [];
-      if (csrfCookie) cand.push(['S1 csrf-cookie completa', csrfCookie]);
-      if (partes[0]) cand.push(['S2 csrf-cookie antes de |', partes[0]]);
-      if (partes[1]) cand.push(['S3 csrf-cookie despues de |', partes[1]]);
-      if (csrfFromBody) cand.push(['S4 csrfToken del body', csrfFromBody]);
-      const idLike = (sessionBody.match(/[A-Za-z0-9_-]{20,}/g) || [])[0];
-      if (idLike) cand.push(['S5 campo largo del body session', idLike]);
-      cand.push(['S6 uuid aleatorio', crypto.randomUUID()]);
+    /* fase C: sondear endpoints candidatos y reintentar stream */
+    sep('C', 'Sondeo de endpoints candidatos y reintento del stream');
+    const score = p => (/antibot/i.test(p) ? 0 : /challenge|captcha|altcha/i.test(p) ? 1 : /token/i.test(p) ? 2 : /session|init|guard|shield|protect/i.test(p) ? 3 : 4);
+    const candidatos = [...apiPaths.keys()]
+      .filter(p => p.length > 5 && !/^\/api\/movies/.test(p) && !/^\/api\/auth/.test(p))
+      .sort((a, b) => score(a) - score(b))
+      .slice(0, 6);
+    const supuestos = ['/api/antibot', '/api/challenge', '/api/antibot-token', '/api/session-token'];
+    for (const s of supuestos) if (!candidatos.includes(s)) candidatos.push(s);
 
-      const url = BASE + '/api/movies/' + movieId + '/stream';
-      for (const [etiqueta, valor] of cand) {
-        try {
-          const r = await fetchTo(url, {
-            headers: {
-              ...BROWSER, Accept: 'application/json', Referer: PAGE_URL, Origin: BASE,
-              Cookie: cookieHeader(), 'x-session-id': valor,
-              'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin',
-            },
+    const tokens = [];
+    for (const cpath of candidatos.slice(0, 8)) {
+      let status = 0, body = '', metodo = 'GET';
+      try {
+        let r = await fetchTo(BASE + cpath, {
+          headers: { ...BROWSER, Accept: 'application/json', Referer: PAGE_URL, Origin: BASE, Cookie: cookieHeader(), 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin' },
+        });
+        takeCookies(r);
+        status = r.status; body = await r.text();
+        if (status === 404 || status === 405) {
+          metodo = 'POST';
+          r = await fetchTo(BASE + cpath, {
+            method: 'POST',
+            headers: { ...BROWSER, Accept: 'application/json', Referer: PAGE_URL, Origin: BASE, Cookie: cookieHeader(), 'Content-Type': 'application/json', 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin' },
+            body: '{}',
           });
-          const scC = takeCookies(r);
-          const bC = await r.text();
-          resultsC.push({ etiqueta, status: r.status });
-          line(etiqueta + '  [len ' + valor.length + ', inicia "' + clip(valor, 10) + '"] -> ' + r.status + (scC.length ? '  set-cookie: ' + scC.map(c => c.split(';')[0]).join(', ') : ''));
-          line('   body: ' + clip(bC, 400));
-          if (r.status === 200) ganador = { etiqueta, valor };
-        } catch (e) { line(etiqueta + ' -> ERROR ' + e.message); }
-      }
-      if (ganador) console.log('\n>>> GANADOR: ' + ganador.etiqueta + ' — el stream responde 200 con ese x-session-id <<<');
+          takeCookies(r);
+          status = r.status; body = await r.text();
+        }
+        probes.push({ path: cpath, method: metodo, status, body: clip(body, 300) });
+        line((metodo + ' ' + cpath + ' -> ' + status).padEnd(46) + ' body: ' + clip(body, 240));
+        /* extraer token de la respuesta */
+        let tok = '';
+        const limpio = body.trim();
+        if (/^[A-Za-z0-9_\-=+]{16,}$/.test(limpio)) tok = limpio;
+        else {
+          try {
+            const j = JSON.parse(body);
+            for (const v of Object.values(j)) {
+              if (typeof v === 'string' && v.length >= 16 && /^[A-Za-z0-9_\-=+:.|]{16,}$/.test(v)) { tok = v; break; }
+            }
+          } catch (e) {}
+        }
+        if (tok && !tokens.includes(tok) && tokens.length < 3) tokens.push(tok);
+      } catch (e) { line('GET ' + cpath + ' -> ERROR ' + e.message); }
+    }
+
+    if (!movieId) line('(sin movieId no se reintenta el stream)');
+    const reintentos = tokens.map((t, i) => ['T' + (i + 1) + ' token de ' + (probes.find(p => p.body && p.body.length && t && p.body.includes(t.slice(0, 12))) ? probes.find(p => p.body.includes(t.slice(0, 12))).path : '?'), t]);
+    for (const [etiqueta, valor] of reintentos) {
+      try {
+        const r = await fetchTo(BASE + '/api/movies/' + movieId + '/stream', {
+          headers: { ...BROWSER, Accept: 'application/json', Referer: PAGE_URL, Origin: BASE, Cookie: cookieHeader(), 'x-session-id': valor, 'Sec-Fetch-Dest': 'empty', 'Sec-Fetch-Mode': 'cors', 'Sec-Fetch-Site': 'same-origin' },
+        });
+        const b = await r.text();
+        streamRetry.push({ etiqueta, status: r.status });
+        line(etiqueta + ' [len ' + valor.length + '] -> ' + r.status);
+        line('   body: ' + clip(b, 600));
+        if (r.status === 200) { ganador = { etiqueta, valor, body: b }; break; }
+      } catch (e) { line(etiqueta + ' -> ERROR ' + e.message); }
+    }
+    if (ganador) {
+      console.log('\n>>> GANADOR: ' + ganador.etiqueta + ' <<<');
+      console.log('>>> BODY COMPLETO DEL STREAM:');
+      console.log(ganador.body.slice(0, 3000));
     }
   } catch (e) { line('ERROR fase C: ' + e.message); }
 
   /* ---------- resumen ---------- */
   console.log('\n' + '='.repeat(56));
-  out('RESUMEN (pega esto en el chat):');
+  out('RESUMEN (pega esto en el chat, incluye la definicion de getAntiBotToken):');
   out(JSON.stringify({
     slug,
     movieId,
-    chunksAnalizados: archivosCount,
-    hallazgosFaseA: resumenA,
-    xsidCtx: primerCtxXSid ? clip(primerCtxXSid, 600) : '',
-    apiMoviesCtx: primerCtxApi ? clip(primerCtxApi, 700) : '',
-    authSessionBody: clip(sessionBody, 400),
-    csrfBody: clip(csrfBodyStr, 200),
-    csrfCookieLen,
-    cookiesEnJar: Array.from(jar.keys()),
-    pruebasStream: resultsC.map(r => r.etiqueta.split(' ')[0] + ':' + r.status),
+    chunksBajados,
+    antibotDef: antibotDef ? clip(antibotDef, 1800) : '(NO ENCONTRADA en los chunks bajados)',
+    mod98641: mod98641Ctx ? clip(mod98641Ctx, 1200) : '',
+    apiMoviesFull: apiMoviesFull ? clip(apiMoviesFull, 1200) : '',
+    apiPaths: [...apiPaths.keys()].slice(0, 25),
+    probes: probes.map(p => p.method + ' ' + p.path + ' -> ' + p.status + ' :: ' + p.body.slice(0, 120)),
+    streamRetry: streamRetry.map(s => s.etiqueta + ' -> ' + s.status),
     ganador: ganador ? ganador.etiqueta : 'ninguno',
-    pistas: 'pelisgo_pistas.txt',
+    pistas: 'pelisgo_pistas2.txt',
   }));
-  try { fs.writeFileSync('pelisgo_pistas.txt', pistas.join('\n') + '\n'); console.log('\nDetalle completo en pelisgo_pistas.txt (misma carpeta).'); } catch (e) {}
+  try { fs.writeFileSync('pelisgo_pistas2.txt', pistas.join('\n') + '\n'); console.log('\nDetalle completo en pelisgo_pistas2.txt (misma carpeta).'); } catch (e) {}
 })().catch(e => { console.log('ERROR fatal: ' + (e && e.message)); }); 
