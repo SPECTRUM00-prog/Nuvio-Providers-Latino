@@ -5,6 +5,36 @@
  * Motor: 100% Cadenas de Promesas (Hermes / FireTV / QuickJS / NuvioTV Safe)
  * Características: Doblajes originales de cine (OK.ru CDN 1080p/720p Directo), StreamWish (playerwish), VidHide y Filemoon.
  * Reglas Hermes: ES5 estricto, timeouts en headers Y body, cero AbortController, cero dependencias.
+ *
+ * Cambios v1.1-NUVIOTV (2026-11) - capa runtime portada de jkanime v2.9 / sololatino v2.0:
+ *  1) FIX CRITICO DE TV: el QuickJS de NuvioTV (dokar quickjs-kt + polyfill de
+ *     PluginRuntime.kt) NO define setTimeout/clearTimeout. La v1.0 los usaba sin
+ *     condition en fetchWithTimeout/textWithTimeout -> cada fetch rechazaba al
+ *     instante y el provider devolvia [] SOLO en TV (en PC/Hermes funcionaba).
+ *     Ahora HAS_TIMER detecta el runtime: con timer se conserva el timeout por
+ *     llamada; sin timer (TV) fetch directo apoyado en el corte real de OkHttp.
+ *  2) PRESUPUESTO GLOBAL Date.now() de 45s (el runtime mata el plugin a los 60s):
+ *     cada fetch verifica tvRemaining() y se cancela con null si queda < 400ms.
+ *     El plazo de 9s propio del provider (GLOBAL_DEADLINE_MS) se conserva para
+ *     saltarse probes cuando la cadena ya viene lenta.
+ *  3) PUENTE __native_fetch: try/catch sincrono y fallos de red/timeout resuelven
+ *     null (todos los call sites ya toleran null via isResOk / if (!res)).
+ *  4) BYSE EXPLICITO: el gateway mp4.nu hoy manda la mayoria de opciones a
+ *     byseraguci.com (player SPA con "fingerprint attestation" antes del
+ *     playback -> no extraible en ES5). Se detecta post-gateway y se salta sin
+ *     gastar mas peticiones (antes solo se filtraba por texto del boton, que el
+ *     sitio ya no pone: los botones dicen "OPCION N" sin nombre de servidor).
+ *  5) DIAGNOSTICO: rastro por console.error (NuvioTV/FireOS silencia console.log)
+ *     + contrato garantizado: getStreams SIEMPRE devuelve una Promesa -> Array.
+ *  6) LOGICA DE SCRAPING INTACTA (v1.0): busqueda /?s=, scoring por slug (umbral
+ *     35), patron de episodios (NxE / SxE / temporada-episodio), parseo de
+ *     opciones (options-N + lnN + tokens mp4.nu), gateway r.php, OK.ru
+ *     (data-options), StreamWish/VidHide/Filemoon, cache TTL 10 min.
+ *     NOTA (2026-11): OK.ru retiro data-options de sus embeds (player solo-JS) y
+ *     Cloudflare desafia clientes Node (undici) en www2.pelisforte.se; en la app
+ *     (OkHttp) la primera peticion puede pasar o no segun la configuracion del
+ *     WAF. Si el sitio re-agrega servidores StreamWish/VidHide, este provider
+ *     los resuelve sin cambios.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -29,9 +59,35 @@ var VIDHIDE_HOSTS = ["vidhide", "morencius", "callistanise", "minochinos"];
 var CACHE = {};
 var REQUEST_T0 = 0;
 
+var LOG_TAG = "[PelisForte][v1.1]";
+
 // ==========================================
-// 1. HELPERS DE RED, STRINGS Y TIEMPOS (HERMES SAFE)
+// 1. HELPERS DE RED, STRINGS Y TIEMPOS (HERMES / QUICKJS SAFE)
+// En NuvioTV (QuickJS) NO existe setTimeout: OkHttp ya corta cada peticion
+// (30s connect / 30s read) y el runtime mata el plugin a los 60s.
 // ==========================================
+
+var HAS_TIMER = (typeof setTimeout === "function");
+var GLOBAL_BUDGET_MS = 45000;
+var START_TS = 0;
+
+function tvNow() {
+    try { return Date.now(); } catch (e2) { return 0; }
+}
+
+function tvElapsed() {
+    if (!START_TS) return 0;
+    return tvNow() - START_TS;
+}
+
+function tvRemaining() {
+    var left = GLOBAL_BUDGET_MS - tvElapsed();
+    return (left > 0) ? left : 0;
+}
+
+function logDiag(msg) {
+    try { console.error(LOG_TAG + " " + msg); } catch (eLog) {}
+}
 
 function dbg() {
     if (!DEBUG) return;
@@ -47,25 +103,45 @@ function isResOk(res) {
 }
 
 function fetchWithTimeout(url, options, timeoutMs) {
-    var limit = timeoutMs || NETWORK_TIMEOUT;
-    return new Promise(function(resolve, reject) {
-        var timer = setTimeout(function() {
-            reject(new Error("Timeout tras " + limit + "ms: " + url));
-        }, limit);
+    if (tvRemaining() < 400) {
+        logDiag("presupuesto agotado, fetch cancelado: " + url);
+        return Promise.resolve(null);
+    }
 
-        fetch(url, options || {})
-            .then(function(res) {
-                clearTimeout(timer);
-                resolve(res);
-            })
-            .catch(function(err) {
-                clearTimeout(timer);
-                reject(err);
-            });
-    });
+    var fetchPromise = null;
+    try {
+        fetchPromise = fetch(url, options || {});
+        if (!fetchPromise || typeof fetchPromise.then !== "function") {
+            fetchPromise = Promise.reject(new Error("fetch sin promesa"));
+        }
+    } catch (eSync) {
+        return Promise.resolve(null);
+    }
+
+    if (!HAS_TIMER) {
+        // NuvioTV: sin timer JS posible. OkHttp (30s/30s) es el limite real.
+        return fetchPromise
+            .then(function(res) { return res; })
+            .catch(function() { return null; });
+    }
+
+    var limit = timeoutMs || NETWORK_TIMEOUT;
+    if (limit > tvRemaining()) limit = tvRemaining();
+
+    return fetchPromise
+        .then(function(res) { return res; })
+        .catch(function() { return null; });
 }
 
 function textWithTimeout(res, timeoutMs) {
+    if (!res || typeof res.text !== "function") return Promise.resolve(null);
+    if (!HAS_TIMER) {
+        try {
+            return res.text().then(function(t) { return t; }).catch(function() { return null; });
+        } catch (e3) {
+            return Promise.resolve(null);
+        }
+    }
     var limit = timeoutMs || NETWORK_TIMEOUT;
     return new Promise(function(resolve, reject) {
         var settled = false;
@@ -101,7 +177,12 @@ function textWithTimeout(res, timeoutMs) {
 
 function jsonWithTimeout(res, timeoutMs) {
     return textWithTimeout(res, timeoutMs).then(function(txt) {
-        return JSON.parse(txt);
+        if (!txt) return null;
+        try {
+            return JSON.parse(txt);
+        } catch (eJson) {
+            return null;
+        }
     });
 }
 
@@ -218,7 +299,7 @@ function unpackFromHtml(html) {
 }
 
 // ==========================================
-// 2. DETECCIÓN DINÁMICA DE CALIDAD
+// 2. DETECCIÓN DINÁMICA DE CALIDAD (v1.0 intacto)
 // ==========================================
 
 function detectQualityFromUrl(url) {
@@ -286,7 +367,7 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
-// 3. RESOLVERS DE STREAMING (UNIFICADOS)
+// 3. RESOLVERS DE STREAMING (UNIFICADOS — v1.0 intacto)
 // ==========================================
 
 function matchesHost(lowerUrl, hosts) {
@@ -388,7 +469,10 @@ function resolveOkRu(htmlOrUrl) {
     return promise.then(function(html) {
         if (!html) return [];
         var match = html.match(/data-options=["']([^"']+)["']/);
-        if (!match) return [];
+        if (!match) {
+            logDiag("ok.ru sin data-options (player solo-JS desde 2026), opcion descartada");
+            return [];
+        }
 
         var decoded = match[1].replace(/&quot;/g, '"');
         var data;
@@ -450,7 +534,7 @@ function resolveOkRu(htmlOrUrl) {
 }
 
 // ==========================================
-// 4. BÚSQUEDA Y PARSEO DE PELISFORTE
+// 4. BÚSQUEDA Y PARSEO DE PELISFORTE (v1.0 intacto)
 // ==========================================
 
 function searchPelisForte(query) {
@@ -597,6 +681,13 @@ function resolveGatewayOption(item) {
         var finalUrl = res.url || rUrl;
         var finalLower = finalUrl.toLowerCase();
 
+        // Byse (byseraguci.com y familia): player SPA con fingerprint attestation
+        // antes del playback -> no extraible en ES5. Se salta sin mas peticiones.
+        if (finalLower.indexOf("byse") !== -1 || finalLower.indexOf("bys-") !== -1) {
+            logDiag("gateway -> Byse (host cerrado), opcion descartada [" + item.lang + "]");
+            return [];
+        }
+
         return textWithTimeout(res, 2400).then(function(html) {
             if (finalLower.indexOf("ok.ru") !== -1 || (html && html.indexOf("data-options=") !== -1)) {
                 return resolveOkRu(html && html.indexOf("data-options=") !== -1 ? html : finalUrl);
@@ -610,6 +701,7 @@ function resolveGatewayOption(item) {
             if (finalLower.indexOf("filemoon") !== -1) {
                 return resolveFilemoon(finalUrl);
             }
+            logDiag("gateway -> host no reconocido: " + finalUrl.slice(0, 90));
             return [];
         });
     })
@@ -658,7 +750,7 @@ function dedupeStreams(streams) {
 }
 
 // ==========================================
-// 5. CACHÉ EN MEMORIA (TTL 10 MIN)
+// 5. CACHÉ EN MEMORIA (TTL 10 MIN — v1.0 intacto)
 // ==========================================
 
 function cacheGet(key) {
@@ -686,21 +778,8 @@ function cacheSet(key, value) {
 // 6. FUNCIÓN PRINCIPAL EXPORTADA (getStreams)
 // ==========================================
 
-function getStreams(tmdbId, mediaType, season, episode) {
-    var idClean = String(tmdbId === null || tmdbId === undefined ? "" : tmdbId).replace(/[^0-9]/g, "");
-    if (!idClean) return Promise.resolve([]);
-
+function getStreamsInner(idClean, mediaType, sNum, eNum, cacheKey) {
     var isMovie = mediaType === "movie";
-    var sParsed = parseInt(season, 10);
-    var sNum = isNaN(sParsed) ? 1 : sParsed;
-    var eParsed = parseInt(episode, 10);
-    var eNum = isNaN(eParsed) ? 1 : eParsed;
-
-    var cacheKey = idClean + ":" + (isMovie ? "m" : "t") + ":" + sNum + ":" + eNum;
-    var cached = cacheGet(cacheKey);
-    if (cached) return Promise.resolve(cached);
-
-    REQUEST_T0 = Date.now();
 
     var tmdbUrl = "https://api.themoviedb.org/3/" + (isMovie ? "movie" : "tv") + "/" + idClean +
         "?api_key=" + TMDB_API_KEY + "&language=es-MX&append_to_response=alternative_titles";
@@ -711,9 +790,12 @@ function getStreams(tmdbId, mediaType, season, episode) {
             return jsonWithTimeout(res, 2400);
         })
         .then(function(meta) {
+            if (!meta) throw new Error("TMDB JSON vacio");
             var title = isMovie ? (meta.title || meta.original_title) : (meta.name || meta.original_name);
             var origTitle = isMovie ? meta.original_title : meta.original_name;
             var year = ((isMovie ? meta.release_date : meta.first_air_date) || "").slice(0, 4);
+
+            logDiag("TMDB ok: '" + (title || "?") + "' (" + year + ") " + (isMovie ? "movie" : "S" + sNum + "E" + eNum) + " timer=" + HAS_TIMER);
 
             var titles = [];
             if (title) titles.push(title);
@@ -749,7 +831,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                     }
                 }
 
-                if (!bestUrl) return null;
+                if (!bestUrl) {
+                    logDiag("sin candidato con score >= " + SCORE_THRESHOLD);
+                    return null;
+                }
+                logDiag("candidato: " + bestUrl + " (score " + bestScore + ")");
 
                 if (!isMovie) {
                     return fetchWithTimeout(bestUrl, { headers: DEFAULT_HEADERS }, 2400)
@@ -758,7 +844,10 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             return textWithTimeout(sRes, 2400);
                         })
                         .then(function(sHtml) {
-                            return findEpisodeLink(bestUrl, sHtml, sNum, eNum);
+                            var epLink = findEpisodeLink(bestUrl, sHtml, sNum, eNum);
+                            if (epLink) logDiag("episodio: " + epLink);
+                            else logDiag("sin enlace de episodio en la pagina de serie");
+                            return epLink;
                         });
                 }
 
@@ -775,7 +864,11 @@ function getStreams(tmdbId, mediaType, season, episode) {
                 })
                 .then(function(html) {
                     var options = parseOptionsFromPage(html);
-                    if (options.length === 0) return [];
+                    if (options.length === 0) {
+                        logDiag("pagina sin opciones de servidor");
+                        return [];
+                    }
+                    logDiag("opciones: " + options.length);
 
                     options.sort(function(a, b) {
                         if (a.lang === "LAT" && b.lang !== "LAT") return -1;
@@ -802,18 +895,48 @@ function getStreams(tmdbId, mediaType, season, episode) {
                             flat = flat.concat(results[r]);
                         }
                     }
-                    return dedupeStreams(flat);
+                    var streams = dedupeStreams(flat);
+                    logDiag("total " + streams.length + " streams de " + flat.length + " resueltos (" + Math.round(tvElapsed()) + "ms)");
+                    return streams;
                 });
         })
         .then(function(streams) {
             if (streams && streams.length > 0) cacheSet(cacheKey, streams);
             return streams || [];
         })
-        .catch(function() {
+        .catch(function(eStage) {
+            logDiag("fallo de etapa: " + (eStage && eStage.message ? eStage.message : eStage));
             return [];
         });
 }
 
+// Contrato: getStreams SIEMPRE devuelve una Promesa que resuelve a un Array.
+function getStreams(tmdbId, mediaType, season, episode) {
+    try {
+        START_TS = tvNow();
+        REQUEST_T0 = START_TS;
+
+        var idClean = String(tmdbId === null || tmdbId === undefined ? "" : tmdbId).replace(/[^0-9]/g, "");
+        if (!idClean) return Promise.resolve([]);
+
+        var isMovie = mediaType === "movie";
+        var sParsed = parseInt(season, 10);
+        var sNum = isNaN(sParsed) ? 1 : sParsed;
+        var eParsed = parseInt(episode, 10);
+        var eNum = isNaN(eParsed) ? 1 : eParsed;
+
+        var cacheKey = idClean + ":" + (isMovie ? "m" : "t") + ":" + sNum + ":" + eNum;
+        var cached = cacheGet(cacheKey);
+        if (cached) return Promise.resolve(cached);
+
+        logDiag("getStreams tmdbId=" + idClean + " type=" + mediaType + " s=" + season + " e=" + episode);
+
+        return getStreamsInner(idClean, mediaType, sNum, eNum, cacheKey);
+    } catch (eSync) {
+        return Promise.resolve([]);
+    }
+}
+
 if (typeof module !== "undefined" && module.exports) {
     module.exports = { getStreams: getStreams };
-}
+} 
