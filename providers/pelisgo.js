@@ -2,7 +2,7 @@
  * Provider: PelisGO (Películas y Series)
  * Dominio: https://pelisgo.online
  * Arquitectura: Next.js App Router + API REST Interna (/api/movies y /api/series)
- * Resolvers: KeKi (HLS Directo), Flix (GoodStream POST /dl), Magi (Filemoon)
+ * Resolvers: KeKi (HLS Directo), Flix (GoodStream POST /dl), Magi (Filemoon), Directo (mp4)
  * Motor: 100% Cadenas de Promesas (Compatible con Hermes / Android TV / FireTV / Desktop)
  *
  * Cambios v1.1-NUVIOTV (2026-11) - capa runtime portada de pelispedia v1.1-NUVIOTV /
@@ -17,28 +17,35 @@
  *     si no hay (TV) fetch directo con el limite real de OkHttp (30s connect /
  *     30s read).
  *  2) PRESUPUESTO GLOBAL Date.now() de 45s (el runtime mata el plugin a los 60s):
- *     cada fetch verifica tvRemaining() y se cancela con null si queda < 400ms,
- *     para que el provider devuelva lo que tenga en vez de morir con error; y en
- *     TV el probe m3u8 solo corre si quedan >= 25s de presupuesto (el probe va
- *     sin cancelacion JS y OkHttp tarda hasta 30s en cortar una lectura colgada).
+ *     cada fetch verifica tvRemaining() y se cancela con null si queda < 400ms;
+ *     y en TV el probe m3u8 solo corre si quedan >= 25s de presupuesto.
  *  3) PUENTE __native_fetch (NuvioTV 1.1.1): fetch(url, options || {}) y
- *     try/catch sincrono: el puente puede rechazar opciones nulas (la v1.0
- *     pasaba null en la peticion a TMDB) o lanzar de forma sincrona, cortando
- *     la cadena en silencio.
- *  4) TIMEOUT TAMBIEN SOBRE EL CUERPO: textWithTimeout / jsonWithTimeout en
- *     TODAS las respuestas (TMDB, /search, paginas de titulo y API interna
- *     /api/movies|series/{id}/stream). Headers 200 con cuerpo colgado ya no
- *     congelan la cadena.
- *  5) FALLOS DE RED RESUELVEN null (no rechazan): fetchWithTimeout resuelve null
- *     en timeout/error y todos los call sites toleran null (if (!res || !res.ok)),
- *     igual que en pelispedia/hackstore/pelisforte.
- *  6) DIAGNOSTICO por console.error (NuvioTV/FireOS silencia console.log) +
- *     CONTRATO GARANTIZADO: getStreams SIEMPRE devuelve una Promesa que resuelve
- *     a Array (try/catch sincrono + catch final).
- *  7) LOGICA DE SCRAPING INTACTA (v1.0): busqueda /search?q= multi-query con
- *     scoring de slugs (umbral 35), extraccion de episodeId/movieId del HTML,
- *     API interna de streams, resolvers KeKi (HLS directo) / Flix (GoodStream
- *     POST /dl + unpacker Dean Edwards) / Magi (Filemoon) y probe de calidad m3u8.
+ *     try/catch sincrono; fallos de red resuelven null (no rechazan) y todos
+ *     los call sites toleran null.
+ *  4) TIMEOUT TAMBIEN SOBRE EL CUERPO: textWithTimeout / jsonWithTimeout.
+ *  5) DIAGNOSTICO por console.error + CONTRATO GARANTIZADO: getStreams SIEMPRE
+ *     devuelve una Promesa que resuelve a Array.
+ *
+ * Cambios v1.2-NUVIOTV (2026-11) - fix bloqueo Cloudflare en /api/* (reportado por
+ * el runner de escritorio: paginas /movies y /search responden 200 pero
+ * /api/movies/{id}/stream devuelve 403 "Performing security verification"):
+ *  1) ENLACES DESDE LA PAGINA (ruta principal): las paginas pasan Cloudflare y la
+ *     API no, asi que los enlaces se extraen del propio HTML de /movies|/series
+ *     (bloque JSON "links":[...] con extraccion de corchetes balanceados sobre el
+ *     payload des-escapado, + barrido de URLs goodstream/filemoon/.m3u8/.mp4 con
+ *     deduplicacion). La API interna queda SOLO como fallback.
+ *  2) API FALLBACK ENDURECIDA: cabeceras de navegador real (sec-fetch-*,
+ *     sec-ch-ua, Accept-Language y Accept comodino), cookies capturadas de la respuesta
+ *     de pagina reenviadas a la API (defensivo: si el puente no expone
+ *     res.headers se ignora), y deteccion del body del challenge -> logDiag claro
+ *     "API bloqueada por challenge de Cloudflare" en vez de fallo silencioso.
+ *  3) FIX regex movieId/episodeId: la clase [^"\\s] excluye la letra "s" y
+ *     truncaba IDs CUID que la contienen (los IDs reales son tipo cmm...) ->
+ *     ahora [^"\\] (corta solo en comilla o backslash).
+ *  4) Nuevo resolver passthrough para .mp4 directo (enlaces embebidos en pagina).
+ *  5) LOGICA DE SCRAPING v1.0 intacta en lo demás: busqueda /search?q= multi-query
+ *     con scoring (umbral 35), resolvers KeKi / Flix (POST /dl + unpacker Dean
+ *     Edwards) / Magi (Filemoon) y probe de calidad m3u8.
  */
 
 var TMDB_API_KEY = "439c478a771f35c05022f9feabcca01c";
@@ -62,7 +69,11 @@ var HAS_TIMER = (typeof setTimeout === "function");
 var GLOBAL_BUDGET_MS = 45000;
 var START_TS = 0;
 
-var LOG_TAG = "[PelisGO][v1.1]";
+// Cookies capturadas de la primera respuesta que las traiga (v1.2, se resetean
+// en cada getStreams). Solo se usan para el fallback de la API.
+var PAGE_COOKIES = "";
+
+var LOG_TAG = "[PelisGO][v1.2]";
 
 function tvNow() {
     try { return Date.now(); } catch (e2) { return 0; }
@@ -178,6 +189,53 @@ function fetchWithTimeout(url, options, timeoutMs) {
             if (timer) clearTimeout(timer);
             return null;
         });
+}
+
+function captureCookies(res) {
+    if (PAGE_COOKIES) return;
+    try {
+        if (!res || !res.headers) return;
+        var pairs = [];
+        if (typeof res.headers.getSetCookie === "function") {
+            var arr = res.headers.getSetCookie();
+            for (var i = 0; i < arr.length; i++) {
+                var nv = String(arr[i] || "").split(";")[0];
+                if (nv && nv.indexOf("=") !== -1) pairs.push(nv);
+            }
+        }
+        if (pairs.length === 0 && typeof res.headers.get === "function") {
+            var raw = String(res.headers.get("set-cookie") || "");
+            if (raw) {
+                // Cortar por coma solo cuando empieza un nuevo par nombre=valor
+                var chunks = raw.split(/,(?=[A-Za-z0-9_.-]+=[A-Za-z0-9_.\-\/+~]*)/);
+                for (var c = 0; c < chunks.length; c++) {
+                    var nv2 = chunks[c].split(";")[0].trim();
+                    if (nv2 && nv2.indexOf("=") !== -1) pairs.push(nv2);
+                }
+            }
+        }
+        if (pairs.length > 0) {
+            PAGE_COOKIES = pairs.join("; ");
+            logDiag("cookies capturadas: " + pairs.length);
+        }
+    } catch (eCk) {}
+}
+
+function buildApiHeaders(pageUrl) {
+    var h = {
+        "User-Agent": USER_AGENT,
+        "Accept": "*/*",
+        "Accept-Language": "es-MX,es;q=0.9",
+        "Referer": pageUrl,
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+        "sec-ch-ua": "\"Chromium\";v=\"122\", \"Google Chrome\";v=\"122\", \"Not:A-Brand\";v=\"99\"",
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": "\"Windows\""
+    };
+    if (PAGE_COOKIES) h["Cookie"] = PAGE_COOKIES;
+    return h;
 }
 
 // ==========================================
@@ -325,6 +383,125 @@ function probeM3u8Quality(m3u8Url, headers) {
 }
 
 // ==========================================
+// 3b. EXTRACCION DE ENLACES DESDE LA PAGINA (v1.2 - RUTA PRINCIPAL)
+// Las paginas /movies y /series pasan Cloudflare mientras la API interna
+// responde 403 (challenge). Los enlaces se sacan del propio HTML: bloque
+// JSON "links":[...] (__NEXT_DATA__ / payload RSC, des-escapado) + barrido
+// de URLs de embeds conocidos con deduplicacion.
+// ==========================================
+
+function flattenEscapedHtml(html) {
+    return String(html)
+        .replace(/\\u002f/gi, "/")
+        .replace(/\\u0022/gi, "\"")
+        .replace(/\\\//g, "/")
+        .replace(/\\"/g, "\"");
+}
+
+function extractJsonArrayBlock(flat, key) {
+    var marker = "\"" + key + "\":[";
+    var idx = flat.indexOf(marker);
+    if (idx === -1) {
+        marker = "\"" + key + "\": [";
+        idx = flat.indexOf(marker);
+        if (idx === -1) return null;
+    }
+    var start = flat.indexOf("[", idx);
+    if (start === -1) return null;
+
+    var depth = 0;
+    var inStr = false;
+    var esc = false;
+    for (var i = start; i < flat.length && i < start + 80000; i++) {
+        var ch = flat.charAt(i);
+        if (inStr) {
+            if (esc) { esc = false; continue; }
+            if (ch === "\\") { esc = true; continue; }
+            if (ch === "\"") inStr = false;
+            continue;
+        }
+        if (ch === "\"") { inStr = true; continue; }
+        if (ch === "[") depth++;
+        else if (ch === "]") {
+            depth--;
+            if (depth === 0) return flat.slice(start, i + 1);
+        }
+    }
+    return null;
+}
+
+function parseLinksJson(flat) {
+    var out = [];
+    var keys = ["links", "streams", "embeds", "servers", "sources"];
+    for (var k = 0; k < keys.length; k++) {
+        var block = extractJsonArrayBlock(flat, keys[k]);
+        if (!block) continue;
+        try {
+            var arr = JSON.parse(block);
+            if (arr && arr.length) {
+                for (var i = 0; i < arr.length; i++) {
+                    var it = arr[i];
+                    var u = it && (it.url || it.link || it.file || it.src);
+                    if (u && typeof u === "string" && u.indexOf("http") === 0) {
+                        out.push({
+                            url: u,
+                            quality: (typeof it.quality === "string" && it.quality) || "",
+                            language: (typeof it.language === "string" && it.language) || (typeof it.lang === "string" && it.lang) || "",
+                            server: (typeof it.server === "string" && it.server) || (typeof it.name === "string" && it.name) || ""
+                        });
+                    }
+                }
+            }
+        } catch (eJson) {}
+    }
+    return out;
+}
+
+function sweepEmbedUrls(flat) {
+    var out = [];
+    var seen = {};
+    var sources = [
+        /https?:\/\/[^\s"'<>\\]{6,300}\.m3u8(?:\?[^\s"'<>\\]*)?/gi,
+        /https?:\/\/[^\s"'<>\\]*goodstream[^\s"'<>\\]*\/(?:e|v|f|d)\/[a-z0-9]{3,48}/gi,
+        /https?:\/\/[^\s"'<>\\]*(?:filemoon|moonplayer)[^\s"'<>\\]*\/(?:e|v|f|d)\/[a-z0-9]{3,48}/gi,
+        /https?:\/\/[^\s"'<>\\]{6,300}\.mp4(?:\?[^\s"'<>\\]*)?/gi
+    ];
+    for (var p = 0; p < sources.length; p++) {
+        var re = new RegExp(sources[p].source, "gi");
+        var m;
+        while ((m = re.exec(flat)) !== null) {
+            var u = m[0];
+            if (u && !seen[u]) {
+                seen[u] = 1;
+                out.push({ url: u, quality: "", language: "", server: "" });
+            }
+            if (out.length >= 16) return out;
+        }
+    }
+    return out;
+}
+
+function extractLinksFromPageHtml(html) {
+    if (!html || html.length < 20) return [];
+    var flat = flattenEscapedHtml(html);
+    var found = parseLinksJson(flat);
+    var swept = sweepEmbedUrls(flat);
+
+    var seen = {};
+    var out = [];
+    function push(link) {
+        if (!link || !link.url || typeof link.url !== "string") return;
+        if (link.url.indexOf("http") !== 0) return;
+        if (seen[link.url]) return;
+        seen[link.url] = 1;
+        if (out.length < 16) out.push(link);
+    }
+    for (var j = 0; j < found.length; j++) push(found[j]);
+    for (var s = 0; s < swept.length; s++) push(swept[s]);
+    return out;
+}
+
+// ==========================================
 // 4. RESOLVERS DE STREAMING (PROMISES)
 // ==========================================
 
@@ -431,6 +608,16 @@ function dispatchLinkResolver(item) {
         return resolveFilemoon(item.url);
     }
 
+    // 4. MP4 directo (enlaces embebidos en pagina, v1.2)
+    if (/\.mp4(\?|$)/.test(u)) {
+        return Promise.resolve({
+            url: item.url,
+            quality: item.quality || "1080p",
+            server: "Directo",
+            headers: { "User-Agent": USER_AGENT, "Referer": BASE_URL + "/" }
+        });
+    }
+
     return Promise.resolve(null);
 }
 
@@ -492,7 +679,10 @@ function searchPelisGO(query, isTv) {
     var searchUrl = BASE_URL + "/search?q=" + encodeURIComponent(query);
 
     return fetchWithTimeout(searchUrl, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
-        .then(function(res) { return res && res.ok ? textWithTimeout(res, 3000) : ""; })
+        .then(function(res) {
+            if (res && res.ok) captureCookies(res);
+            return res && res.ok ? textWithTimeout(res, 3000) : "";
+        })
         .then(function(html) {
             if (!html) html = "";
             var linkPattern = isTv ? /href=["'](\/series\/[^"'\s<>]+)["']/gi : /href=["'](\/movies\/[^"'\s<>]+)["']/gi;
@@ -581,38 +771,69 @@ function getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum) {
                 return fetchWithTimeout(pageUrl, { headers: DEFAULT_HEADERS }, NETWORK_TIMEOUT)
                     .then(function(res) {
                         if (!res || !res.ok) return null;
+                        captureCookies(res);
                         return textWithTimeout(res, 3000);
                     })
                     .then(function(html) {
                         if (!html) return null;
 
+                        // v1.2 - RUTA PRINCIPAL: enlaces embebidos en la pagina.
+                        // La API /api/* esta tras un challenge de Cloudflare (403)
+                        // mientras las paginas responden 200.
+                        var pageLinks = extractLinksFromPageHtml(html);
+                        if (pageLinks && pageLinks.length > 0) {
+                            logDiag("pagina: " + pageLinks.length + " enlaces embebidos (" + Math.round(tvElapsed()) + "ms)");
+                            return pageLinks;
+                        }
+
                         var idMatch = isTv ?
-                            (html.match(/\\?"episodeId\\?"\s*:\s*\\?"([^"\\s]+)\\?"/i) || html.match(/episodeId\s*:\s*["']([^"']+)["']/i)) :
-                            (html.match(/\\?"movieId\\?"\s*:\s*\\?"([^"\\s]+)\\?"/i) || html.match(/movieId\s*:\s*["']([^"']+)["']/i));
+                            (html.match(/\\?"episodeId\\?"\s*:\s*\\?"([^"\\]+)\\?"/i) || html.match(/episodeId\s*:\s*["']([^"']+)["']/i)) :
+                            (html.match(/\\?"movieId\\?"\s*:\s*\\?"([^"\\]+)\\?"/i) || html.match(/movieId\s*:\s*["']([^"']+)["']/i));
 
                         var entityId = idMatch ? idMatch[1] : null;
-                        if (!entityId) return null;
+                        if (!entityId) {
+                            logDiag("sin enlaces embebidos ni id interno en la pagina");
+                            return null;
+                        }
 
                         var streamApi = isTv ?
                             (BASE_URL + "/api/series/episode/" + entityId + "/stream") :
                             (BASE_URL + "/api/movies/" + entityId + "/stream");
 
-                        return fetchWithTimeout(streamApi, {
-                            headers: { "User-Agent": USER_AGENT, "Accept": "application/json", "Referer": pageUrl }
-                        }, NETWORK_TIMEOUT)
-                        .then(function(r) {
-                            if (!r || !r.ok) return null;
-                            return jsonWithTimeout(r, 3000);
-                        })
-                        .then(function(streamJson) {
-                            return (streamJson && streamJson.links && streamJson.links.length > 0) ? streamJson.links : null;
-                        });
+                        // v1.2 - FALLBACK: API con cabeceras de navegador real + cookies
+                        return fetchWithTimeout(streamApi, buildApiHeaders(pageUrl), NETWORK_TIMEOUT)
+                            .then(function(r) {
+                                if (!r || !r.ok) {
+                                    logDiag("API HTTP " + (r ? r.status : "null") + ((r && r.status === 403) ? " (posible bloqueo Cloudflare)" : ""));
+                                    return null;
+                                }
+                                captureCookies(r);
+                                return textWithTimeout(r, 3000);
+                            })
+                            .then(function(body) {
+                                if (!body) return null;
+                                var head = body.slice(0, 4000);
+                                if (head.indexOf("Just a moment") !== -1 ||
+                                    head.indexOf("Performing security verification") !== -1 ||
+                                    head.indexOf("Attention Required") !== -1 ||
+                                    head.indexOf("cf-chl") !== -1) {
+                                    logDiag("API bloqueada por challenge de Cloudflare (body detectado)");
+                                    return null;
+                                }
+                                try {
+                                    var streamJson = JSON.parse(body);
+                                    return (streamJson && streamJson.links && streamJson.links.length > 0) ? streamJson.links : null;
+                                } catch (eJson) {
+                                    logDiag("API respondio sin JSON valido");
+                                    return null;
+                                }
+                            });
                     })
                     .then(function(links) {
                         if (!links || links.length === 0) {
                             return tryCandidates(cIdx + 1);
                         }
-                        logDiag("api stream: " + links.length + " enlaces (" + Math.round(tvElapsed()) + "ms)");
+                        logDiag("resolviendo " + links.length + " enlaces (" + Math.round(tvElapsed()) + "ms)");
 
                         var resolvePromises = links.map(function(item) {
                             return dispatchLinkResolver(item).then(function(res) {
@@ -656,6 +877,7 @@ function getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum) {
 function getStreams(tmdbId, mediaType, seasonNum, episodeNum) {
     try {
         START_TS = tvNow();
+        PAGE_COOKIES = "";
         logDiag("getStreams tmdbId=" + tmdbId + " type=" + mediaType + " s=" + seasonNum + " e=" + episodeNum);
         if (!tmdbId) return Promise.resolve([]);
         return getStreamsInner(tmdbId, mediaType, seasonNum, episodeNum);
