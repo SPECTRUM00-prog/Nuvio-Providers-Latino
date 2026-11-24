@@ -1,6 +1,6 @@
 {
   "name": "Nuvio-Spectrum-Latino",
-  "version": "2.8.1",
+  "version": "2.9.0",
   "scrapers": [
     {
       "id": "cinecalidad",
@@ -151,7 +151,7 @@
     {
       "id": "animejara",
       "name": "AnimeJara",
-      "description": "Anime en emisión y finalizados en Sub, Latino y Castellano (StreamWish, Filemoon, VidHide, MP4Upload, Streamtape, YourUpload, Uqload, Mixdrop).",
+      "description": "Anime en emisión y finalizados en Sub, Latino y Castellano (StreamWish, Filemoon, VidHide, MP4Upload, Streamtape, YourUpload, Uqload, Mixdrop). SITIO CAIDO - deshabilitado.",
       "version": "1.0.0",
       "author": "SPECTRUM00-prog",
       "supportedTypes": [
@@ -159,11 +159,42 @@
         "tv"
       ],
       "filename": "providers/animejara.js",
-      "enabled": true,
+      "enabled": false,
       "contentLanguage": [
         "es",
         "ja"
       ]
+    },
+    {
+      "id": "cinezo",
+      "name": "Cinezo",
+      "description": "Películas y Series en Español Latino desde Cinezo (HLS directo por TMDB-ID: punkflix 4K + Flikhub, sin búsqueda). Compatible NuvioTV QuickJS.",
+      "version": "1.0.0",
+      "author": "SPECTRUM00-prog",
+      "supportedTypes": [
+        "movie",
+        "tv"
+      ],
+      "filename": "providers/cinezo.js",
+      "enabled": true,
+      "contentLanguage": [
+        "es"
+      ]
+    },
+    {
+      "id": "tubepelis",
+      "name": "TubePelis",
+      "description": "Películas en Español Latino desde TubePelis (Byse HLS 1080p con POW+AES en ES5 puro, DoodStream). Compatible NuvioTV QuickJS.",
+      "version": "1.0.0",
+      "author": "SPECTRUM00-prog",
+      "supportedTypes": [
+        "movie"
+      ],
+      "filename": "providers/tubepelis.js",
+      "enabled": true,
+      "contentLanguage": [
+        "es"
+      ]
     }
   ]
-}
+} 
